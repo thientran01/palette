@@ -24,7 +24,7 @@
   --fg: 31 26 18;
   --muted: 110 102 92;
   --border: 31 26 18;
-  --accent: 224 106 74; /* same hue, shade-shifted for contrast */
+  --accent: 184 66 38; /* same hue, darkened to ≥4.5:1 on light surface (accent carries lyric text in M3) */
 }
 
 @theme {
@@ -60,6 +60,12 @@ body {
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   user-select: none;
+}
+
+/* Keyboard focus is always visible; accent is reserved for exactly this. */
+:focus-visible {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {

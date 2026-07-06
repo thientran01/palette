@@ -8,7 +8,7 @@ function App() {
         </p>
         <div className="mt-4 flex items-center gap-3">
           <button
-            className="rounded-lg bg-fg px-3 py-1.5 text-sm font-medium text-surface transition-transform duration-2 ease-out-tk active:scale-[0.97]"
+            className="rounded-lg bg-fg px-3 py-1.5 text-sm font-medium text-surface transition duration-2 ease-out-tk hover:bg-fg/90 active:scale-[0.97]"
             type="button"
           >
             Primary
