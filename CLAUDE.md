@@ -14,11 +14,11 @@ Full plan: `C:\Users\Thien\.claude\plans\i-want-to-start-buzzing-wreath.md` (mil
 
 ```
 src-tauri/src/
-  media_core/   GSMTC watcher → NowPlaying events + play_pause/next/prev/seek commands
-  adapters/     spotify.rs (Web API: position/seek/like) · apple_music.rs (quirks)
-  audio/        WASAPI loopback → FFT → ~30Hz band-energy events (suspends when hidden)
-  lyrics/       LRCLIB lookup + disk cache
-src/            React widget: pill ↔ card ↔ expanded-lyrics modes
+  media.rs      GSMTC poller → now-playing events + transport/seek commands + art cache
+                (M1 state — splits into media_core/ + adapters/ when M5 adds Spotify Web API)
+  audio/        (M4) WASAPI loopback → FFT → ~30Hz band-energy events (suspends when hidden)
+  lyrics/       (M3) LRCLIB lookup + disk cache
+src/            React widget: card now; pill ↔ card ↔ expanded-lyrics modes in M2
 ```
 
 Design rule: chrome stays neutral (house semantic tokens); the album-art palette is the **accent layer only** (glow, progress fill, current lyric line). Motion uses EASE/DUR tokens — `/emil-pass` binds to them.
@@ -26,7 +26,7 @@ Design rule: chrome stays neutral (house semantic tokens); the album-art palette
 ## Global hotkeys (M1 defaults, constants in src-tauri/src/lib.rs)
 
 - `Ctrl+Alt+K` play/pause (Space variant was taken system-wide on this machine)
-- `Ctrl+Alt+←/→` seek ∓10s (current session; no-op on Apple Music — it ignores SMTC seek)
+- `Ctrl+Alt+←/→` seek ∓10s (current session; the hotkey always fires the SMTC call — Apple Music silently ignores it, only the UI buttons are capability-gated)
 - `Ctrl+Alt+N/P` next/previous track
 - `Ctrl+Alt+M` show/hide the widget
 

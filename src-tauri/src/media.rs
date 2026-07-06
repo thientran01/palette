@@ -39,8 +39,18 @@ pub struct NowPlaying {
     pub art_id: Option<String>,
 }
 
-/// Cached album art for the currently playing media (one entry is enough).
-pub struct ArtCache(pub Mutex<Option<(String, String)>>); // (art_id, data_url)
+/// Cached album art for the currently playing media. Failed reads are cached
+/// too (url: None) so a bad thumbnail isn't re-fetched every poll cycle.
+pub struct ArtCache(pub Mutex<Option<ArtEntry>>);
+
+pub struct ArtEntry {
+    pub key: String,
+    pub url: Option<String>,
+}
+
+fn lock_art(cache: &ArtCache) -> std::sync::MutexGuard<'_, Option<ArtEntry>> {
+    cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -147,18 +157,28 @@ pub fn snapshot(art_cache: &ArtCache) -> NowPlaying {
     if duration_ms > 0 {
         position_ms = position_ms.clamp(0, duration_ms);
     }
+    // Stamp BEFORE the (potentially slow) art read below — the frontend treats
+    // position_ms as true at emitted_at_ms and interpolates from there.
+    let emitted_at_ms = now_ms();
 
     let art_id = if has_thumb {
         let key = art_key(&app_id, &title, &artist);
-        let mut cache = art_cache.0.lock().unwrap();
-        let cached = cache.as_ref().map(|(id, _)| id == &key).unwrap_or(false);
-        if !cached {
-            match read_art(&session) {
-                Some(url) => *cache = Some((key.clone(), url)),
-                None => *cache = None,
+        // Never hold the lock across the WinRT stream read — media_art (IPC)
+        // shares this mutex.
+        let cached_url_present: Option<bool> = {
+            let cache = lock_art(art_cache);
+            cache.as_ref().filter(|e| e.key == key).map(|e| e.url.is_some())
+        };
+        let url_present = match cached_url_present {
+            Some(present) => present,
+            None => {
+                let url = read_art(&session);
+                let present = url.is_some();
+                *lock_art(art_cache) = Some(ArtEntry { key: key.clone(), url });
+                present
             }
-        }
-        cache.as_ref().map(|(id, _)| id.clone())
+        };
+        url_present.then_some(key)
     } else {
         None
     };
@@ -172,16 +192,18 @@ pub fn snapshot(art_cache: &ArtCache) -> NowPlaying {
         status,
         position_ms,
         duration_ms,
-        emitted_at_ms: now_ms(),
+        emitted_at_ms,
         can_seek,
         art_id,
     }
 }
 
-/// (position_ms, duration_ms) with staleness correction: Spotify pushes its
-/// timeline only ~every 5s, so while playing we add the time elapsed since
-/// LastUpdatedTime. Correction is skipped for insane staleness values
-/// (clock skew, first emit after a session appears).
+/// (position_ms, duration_ms) with staleness correction for ANY player:
+/// position + elapsed-since-LastUpdatedTime is the best estimate of the true
+/// position while playing. It matters for Spotify (pushes its timeline only
+/// ~every 5s) and is a ≤1s refinement for Apple Music (reports fresh every
+/// second). Correction is skipped for insane staleness values (clock skew,
+/// first emit after a session appears).
 fn corrected_position(session: &Session, status: &str) -> (i64, i64) {
     let Ok(t) = session.GetTimelineProperties() else {
         return (0, 0);

@@ -9,6 +9,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const POLL_INTERVAL_MS: u64 = 500;
+// Keep in sync with SEEK_STEP_MS in src/App.tsx (UI buttons) — this one drives
+// the global hotkeys.
 const SEEK_STEP_MS: i64 = 10_000;
 
 // V1 hotkeys — constants for now, a settings surface later.
@@ -58,11 +60,11 @@ fn media_seek_abs(app: AppHandle, position_ms: i64) -> bool {
 /// Return the cached art data URL if it matches the requested id.
 #[tauri::command]
 fn media_art(art_id: String, cache: State<ArtCache>) -> Option<String> {
-    let cache = cache.0.lock().unwrap();
+    let cache = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     cache
         .as_ref()
-        .filter(|(id, _)| *id == art_id)
-        .map(|(_, url)| url.clone())
+        .filter(|e| e.key == art_id)
+        .and_then(|e| e.url.clone())
 }
 
 fn emit_now(app: &AppHandle) {
@@ -79,6 +81,8 @@ fn toggle_widget(app: &AppHandle) {
             }
             _ => {
                 let _ = win.show();
+                // The poll loop skips hidden windows — refresh immediately on show.
+                emit_now(app);
             }
         }
     }
@@ -106,8 +110,12 @@ pub fn run() {
         .setup(|app| {
             // Tray: Show/Hide + Quit.
             let show_hide = MenuItem::with_id(app, "toggle", "Show / Hide", true, None::<&str>)?;
+            // Recovery for a position persisted on a now-disconnected monitor —
+            // the window is chromeless and skips the taskbar, so this is the
+            // only way to pull it back on-screen.
+            let center = MenuItem::with_id(app, "center", "Center on screen", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Pulse", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_hide, &quit])?;
+            let menu = Menu::with_items(app, &[&show_hide, &center, &quit])?;
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Pulse")
@@ -115,6 +123,12 @@ pub fn run() {
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "toggle" => toggle_widget(app),
+                    "center" => {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.center();
+                        }
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -156,10 +170,17 @@ pub fn run() {
                 }
             }
 
-            // Media poll loop → "now-playing" events.
+            // Media poll loop → "now-playing" events. Skips all work while the
+            // widget is hidden (toggle_widget emits fresh state on show).
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
-                emit_now(&handle);
+                let visible = handle
+                    .get_webview_window("main")
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(true);
+                if visible {
+                    emit_now(&handle);
+                }
                 std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
             });
             Ok(())

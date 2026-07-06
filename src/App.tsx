@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { commands, onNowPlaying } from "./lib/backend";
 import type { NowPlaying } from "./types";
 
+// Keep in sync with SEEK_STEP_MS in src-tauri/src/lib.rs (global hotkeys).
 const SEEK_STEP_MS = 10_000;
 
 function fmt(ms: number): string {
@@ -27,14 +28,18 @@ function useArt(artId: string | null): string | null {
   const lastId = useRef<string | null>(null);
   useEffect(() => {
     if (artId === lastId.current) return;
-    lastId.current = artId;
     if (!artId) {
+      lastId.current = null;
       setUrl(null);
       return;
     }
     let alive = true;
     void commands.art(artId).then((u) => {
-      if (alive) setUrl(u);
+      if (!alive) return;
+      setUrl(u);
+      // Only latch on success — a null (cache already advanced past this id)
+      // retries on the next payload instead of leaving the cover blank.
+      if (u) lastId.current = artId;
     });
     return () => {
       alive = false;
@@ -61,7 +66,7 @@ function IconButton({
       title={label}
       disabled={disabled}
       onClick={onClick}
-      className="grid h-7 w-7 place-items-center rounded-md text-fg transition duration-2 ease-out-tk hover:bg-fg/10 active:scale-95 disabled:pointer-events-none disabled:opacity-30"
+      className="grid h-7 w-7 place-items-center rounded-md text-fg transition duration-2 ease-out-tk hover:bg-fg/10 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
     >
       {children}
     </button>
@@ -123,35 +128,67 @@ const icons = {
 
 function ProgressBar({ np, position }: { np: NowPlaying; position: number }) {
   const barRef = useRef<HTMLDivElement>(null);
-  const frac = np.duration_ms > 0 ? position / np.duration_ms : 0;
+  // While dragging, the bar tracks the pointer; the seek commits on release.
+  const [dragFrac, setDragFrac] = useState<number | null>(null);
   const seekable = np.can_seek && np.duration_ms > 0;
+  const shownMs = dragFrac !== null ? dragFrac * np.duration_ms : position;
+  const frac = np.duration_ms > 0 ? shownMs / np.duration_ms : 0;
+
+  const fracFromPointer = (clientX: number): number => {
+    const r = barRef.current!.getBoundingClientRect();
+    return Math.min(Math.max((clientX - r.left) / r.width, 0), 1);
+  };
+
   return (
     <div className="flex items-center gap-2">
-      <span className="w-8 text-right text-[10px] tabular-nums text-muted">{fmt(position)}</span>
+      <span className="w-8 text-right text-[10px] tabular-nums text-muted">{fmt(shownMs)}</span>
       <div
         ref={barRef}
         role={seekable ? "slider" : "progressbar"}
         aria-label="Track position"
         aria-valuemin={0}
         aria-valuemax={np.duration_ms}
-        aria-valuenow={Math.round(position)}
+        aria-valuenow={Math.round(shownMs)}
+        aria-valuetext={`${fmt(shownMs)} of ${fmt(np.duration_ms)}`}
         tabIndex={seekable ? 0 : -1}
         onKeyDown={(e) => {
           if (!seekable) return;
           if (e.key === "ArrowLeft") commands.seekRel(-5000);
           if (e.key === "ArrowRight") commands.seekRel(5000);
+          if (e.key === "Home") commands.seekAbs(0);
+          if (e.key === "End") commands.seekAbs(np.duration_ms);
         }}
         onPointerDown={(e) => {
           if (!seekable || !barRef.current) return;
-          const r = barRef.current.getBoundingClientRect();
-          const f = Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1);
-          commands.seekAbs(Math.round(f * np.duration_ms));
+          try {
+            e.currentTarget.setPointerCapture(e.pointerId);
+          } catch {
+            // Pointer already gone (e.g. released between events) — a plain
+            // click-to-seek still commits via onPointerUp.
+          }
+          setDragFrac(fracFromPointer(e.clientX));
         }}
-        className={`group relative h-3 flex-1 ${seekable ? "cursor-pointer" : ""}`}
+        onPointerMove={(e) => {
+          if (dragFrac === null || !barRef.current) return;
+          setDragFrac(fracFromPointer(e.clientX));
+        }}
+        onPointerUp={() => {
+          if (dragFrac === null) return;
+          commands.seekAbs(Math.round(dragFrac * np.duration_ms));
+          setDragFrac(null);
+        }}
+        onPointerCancel={() => setDragFrac(null)}
+        className={`group relative h-3 flex-1 touch-none ${seekable ? "cursor-pointer" : ""}`}
       >
-        <div className="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 overflow-hidden rounded-full bg-fg/10">
+        <div
+          className={`absolute inset-x-0 top-1/2 -translate-y-1/2 overflow-hidden rounded-full bg-fg/10 transition-[height] duration-2 ease-out-tk ${
+            dragFrac !== null ? "h-[5px]" : seekable ? "h-[3px] group-hover:h-[5px]" : "h-[3px]"
+          }`}
+        >
           <div
-            className="h-full rounded-full bg-accent transition-[width] duration-1 ease-out-tk"
+            className={`h-full rounded-full bg-accent ${
+              dragFrac === null ? "transition-[width] duration-1 ease-out-tk" : ""
+            }`}
             style={{ width: `${Math.min(frac * 100, 100)}%` }}
           />
         </div>
@@ -199,7 +236,7 @@ function App() {
                 </p>
                 {/* Windows routes commands to the OS "current" session, which
                     hops between apps — always show which app this card controls. */}
-                <span className="shrink-0 text-[9px] uppercase tracking-wider text-muted/80" data-tauri-drag-region>
+                <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted" data-tauri-drag-region>
                   {PLAYER_NAMES[np.player]}
                 </span>
               </div>
@@ -212,7 +249,7 @@ function App() {
                   {icons.prev}
                 </IconButton>
                 <IconButton
-                  label="Back 10 seconds"
+                  label={seekable ? "Back 10 seconds" : `Seeking not supported by ${PLAYER_NAMES[np.player]}`}
                   disabled={!seekable}
                   onClick={() => commands.seekRel(-SEEK_STEP_MS)}
                 >
@@ -222,7 +259,7 @@ function App() {
                   {playing ? icons.pause : icons.play}
                 </IconButton>
                 <IconButton
-                  label="Forward 10 seconds"
+                  label={seekable ? "Forward 10 seconds" : `Seeking not supported by ${PLAYER_NAMES[np.player]}`}
                   disabled={!seekable}
                   onClick={() => commands.seekRel(SEEK_STEP_MS)}
                 >
