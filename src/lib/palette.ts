@@ -25,6 +25,13 @@ const CONTRAST_FLOOR = 3.0;
 const MIN_VIBRANT_SCORE = 8;
 /** Saturation cap for the tone fallback — neutral covers get MUTED accents. */
 const TONE_MAX_SATURATION = 0.3;
+/**
+ * The tone fallback needs a real sample: a sliver of opaque pixels on an
+ * otherwise transparent image is no more representative than the speckles the
+ * vibrant gate screens out. Below this fraction of the 24×24 grid, resolve
+ * null instead.
+ */
+const MIN_OPAQUE_FRACTION = 0.1;
 
 function srgbChannel(c: number): number {
   const s = c / 255;
@@ -107,7 +114,7 @@ function currentSurface(): [number, number, number] {
  * the --accent CSS var: the dominant vibrant hue when the cover has real
  * chroma, otherwise a saturation-capped average tone (white cover → soft
  * cream, black cover → subtle gray). Resolves null only when the image is
- * unusable (decode failure, fully transparent) — callers keep the house
+ * unusable (decode failure, effectively transparent) — callers keep the house
  * accent for that and for the no-art state.
  */
 export function extractAccent(url: string): Promise<string | null> {
@@ -167,7 +174,7 @@ export function extractAccent(url: string): Promise<string | null> {
       // Neutral-dominant cover: no hue earned the accent, so match the
       // cover's overall tone instead — muted by the saturation cap, readable
       // via the contrast floor.
-      if (opaque === 0) {
+      if (opaque < SAMPLE * SAMPLE * MIN_OPAQUE_FRACTION) {
         resolve(null);
         return;
       }
