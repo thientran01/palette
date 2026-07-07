@@ -3,9 +3,9 @@
  * plain browser so the UI can be developed and verified with preview tooling.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { LogicalSize } from "@tauri-apps/api/dpi";
+import { LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { IN_TAURI, type NowPlaying } from "../types";
 
 const MOCK_DURATION = 204_000;
@@ -70,9 +70,29 @@ export const commands = {
   startDrag(): void {
     if (IN_TAURI) void getCurrentWindow().startDragging();
   },
-  /** Resize the native window to match the active size mode. */
+  /**
+   * Resize the native window to match the active size mode, then clamp the
+   * position back into the monitor bounds — growing a window parked near the
+   * bottom/right edge (or restored there by window-state) would otherwise
+   * push it off-screen with no chrome to grab.
+   */
   setWindowSize(width: number, height: number): void {
-    if (IN_TAURI) void getCurrentWindow().setSize(new LogicalSize(width, height));
+    if (!IN_TAURI) return;
+    void (async () => {
+      const win = getCurrentWindow();
+      await win.setSize(new LogicalSize(width, height));
+      const monitor = await currentMonitor();
+      if (!monitor) return;
+      const pos = await win.outerPosition();
+      const size = await win.outerSize();
+      const maxX = monitor.position.x + monitor.size.width - size.width;
+      const maxY = monitor.position.y + monitor.size.height - size.height;
+      const nx = Math.min(Math.max(pos.x, monitor.position.x), Math.max(maxX, monitor.position.x));
+      const ny = Math.min(Math.max(pos.y, monitor.position.y), Math.max(maxY, monitor.position.y));
+      if (nx !== pos.x || ny !== pos.y) {
+        await win.setPosition(new PhysicalPosition(nx, ny));
+      }
+    })().catch((e) => console.error("setWindowSize failed:", e));
   },
   playPause(): void {
     if (IN_TAURI) {

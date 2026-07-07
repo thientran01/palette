@@ -107,9 +107,11 @@ export function extractAccent(url: string): Promise<string | null> {
         resolve(null);
         return;
       }
-      ctx.drawImage(img, 0, 0, SAMPLE, SAMPLE);
       let data: Uint8ClampedArray;
       try {
+        // drawImage throws InvalidStateError for zero-dimension decodes —
+        // keep it inside the guard so the promise always resolves.
+        ctx.drawImage(img, 0, 0, SAMPLE, SAMPLE);
         data = ctx.getImageData(0, 0, SAMPLE, SAMPLE).data;
       } catch {
         resolve(null);

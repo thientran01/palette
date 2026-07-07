@@ -14,7 +14,7 @@ type Mode = "pill" | "card" | "expanded";
 const MODE_SIZES: Record<Mode, [number, number]> = {
   pill: [300, 48],
   card: [380, 124],
-  expanded: [380, 296],
+  expanded: [380, 310], // measured content ~292px — headroom for real font metrics
 };
 
 function fmt(ms: number): string {
@@ -300,11 +300,19 @@ function App() {
   useArtAccent(shownArt);
 
   const [mode, setMode] = useState<Mode>(() => {
-    const saved = localStorage.getItem("pulse.mode");
-    return saved === "pill" || saved === "expanded" ? saved : "card";
+    try {
+      const saved = localStorage.getItem("pulse.mode");
+      return saved === "pill" || saved === "expanded" ? saved : "card";
+    } catch {
+      return "card"; // storage unavailable — mode just won't persist
+    }
   });
   useEffect(() => {
-    localStorage.setItem("pulse.mode", mode);
+    try {
+      localStorage.setItem("pulse.mode", mode);
+    } catch {
+      // non-fatal: mode resets to card on next launch
+    }
     const [w, h] = MODE_SIZES[mode];
     commands.setWindowSize(w, h);
   }, [mode]);
@@ -349,9 +357,9 @@ function App() {
           <>
             <div className="flex h-full items-center gap-2 pl-1.5 pr-1">
               <Art url={shownArt} sizeClass="h-[26px] w-[26px] rounded-md" />
-              <p className="min-w-0 flex-1 truncate text-xs text-fg">
+              <p className="min-w-0 flex-1 truncate text-xs font-medium text-fg">
                 {np.title}
-                <span className="text-muted"> — {np.artist}</span>
+                <span className="font-normal text-muted"> — {np.artist}</span>
               </p>
               <IconButton size="sm" label={playing ? "Pause" : "Play"} onClick={commands.playPause}>
                 {playing ? icons.pause : icons.play}
@@ -360,8 +368,16 @@ function App() {
                 {icons.chevronUp}
               </IconButton>
             </div>
-            {/* Non-interactive progress hairline. */}
-            <div className="absolute inset-x-0 bottom-0 h-[2px] bg-fg/10">
+            {/* Non-interactive progress hairline — still announced to AT. */}
+            <div
+              role="progressbar"
+              aria-label="Track position"
+              aria-valuemin={0}
+              aria-valuemax={np.duration_ms}
+              aria-valuenow={Math.round(position)}
+              aria-valuetext={`${fmt(position)} of ${fmt(np.duration_ms)}`}
+              className="absolute inset-x-0 bottom-0 h-[2px] bg-fg/10"
+            >
               <div
                 className="h-full bg-accent [transition:width_90ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)]"
                 style={{ width: `${frac * 100}%` }}
@@ -418,17 +434,18 @@ function App() {
             </div>
           </div>
         )}
-        {/* Broken-art detector renders offscreen so every mode benefits. */}
-        {artUrl && artUrl !== brokenArtUrl && (
-          <img
-            src={artUrl}
-            alt=""
-            className="hidden"
-            aria-hidden
-            onError={() => setBrokenArtUrl(artUrl)}
-          />
-        )}
       </motion.div>
+      {/* Broken-art detector — OUTSIDE the mode-keyed subtree so the data URL
+          isn't re-decoded on every mode switch, only per track. */}
+      {artUrl && artUrl !== brokenArtUrl && (
+        <img
+          src={artUrl}
+          alt=""
+          className="hidden"
+          aria-hidden
+          onError={() => setBrokenArtUrl(artUrl)}
+        />
+      )}
     </div>
   );
 }
