@@ -8,7 +8,7 @@ Full plan: `C:\Users\Thien\.claude\plans\i-want-to-start-buzzing-wreath.md` (mil
 
 - **Tauri v2** — Rust backend, frameless/transparent/always-on-top window
 - **React 19 + TypeScript + Vite 7** frontend, **Tailwind v4** (CSS-first config), **motion** for layout morphs
-- Rust side: hand-rolled GSMTC poller (media.rs), LRCLIB lyrics with disk cache (lyrics.rs, shipped M3), WASAPI loopback + FFT (M4, pending), Spotify Web API adapter (M5, pending — demoted to like/unlike only)
+- Rust side: hand-rolled GSMTC poller (media.rs), LRCLIB lyrics with disk cache (lyrics.rs), WASAPI loopback + FFT audio-reactive core (audio.rs), Spotify Web API adapter (M5, pending — demoted to like/unlike only)
 
 ## Architecture
 
@@ -17,7 +17,9 @@ src-tauri/src/
   media.rs      GSMTC poller → now-playing events + transport/seek commands + art cache
                 (splits into media_core/ + adapters/ when M5 adds Spotify Web API)
   lyrics.rs     LRCLIB get→search fallback, disk cache (bounded, app-data) + session miss set
-  audio/        (M4, pending) WASAPI loopback → FFT → ~30Hz band-energy events
+  audio.rs      WASAPI loopback (cpal input stream on the output device) → FFT →
+                smoothed auto-gained band energies at ~30Hz; capture runs ONLY
+                while visible AND playing (stream dropped otherwise)
 src/            React widget: pill ↔ card ↔ expanded modes; expanded = karaoke lyrics view
                 (click-line-to-seek) with big-art fallback; palette.ts accent extraction
 ```

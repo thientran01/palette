@@ -65,7 +65,43 @@ export function onNowPlaying(cb: (np: NowPlaying) => void): () => void {
   return () => window.clearInterval(id);
 }
 
+export interface AudioBands {
+  bass: number;
+  mid: number;
+  high: number;
+  level: number;
+}
+
+/** ~30Hz band energies while music plays; zeroed on stop/hide. */
+export function onAudioBands(cb: (b: AudioBands) => void): () => void {
+  if (IN_TAURI) {
+    const un = listen<AudioBands>("audio-bands", (e) => cb(e.payload));
+    return () => {
+      un.then((f) => f());
+    };
+  }
+  // Mock: musical-ish motion so preview exercises the reactive layer.
+  const id = window.setInterval(() => {
+    if (mock.status !== "playing") {
+      cb({ bass: 0, mid: 0, high: 0, level: 0 });
+      return;
+    }
+    const t = Date.now() / 1000;
+    const beat = Math.max(0, Math.sin(t * Math.PI * 2 * 1.9)) ** 3; // ~114bpm kick
+    const bass = 0.25 + beat * 0.75;
+    const mid = 0.35 + 0.3 * Math.sin(t * 2.7) ** 2;
+    const high = 0.25 + 0.35 * Math.sin(t * 8.1) ** 2;
+    cb({ bass, mid, high, level: bass * 0.5 + mid * 0.35 + high * 0.15 });
+  }, 33);
+  return () => window.clearInterval(id);
+}
+
 export const commands = {
+  /** Tell the backend whether reactive visuals are wanted (false under
+   * reduced motion) — it stops audio capture entirely when not. */
+  setReactiveEnabled(enabled: boolean): void {
+    if (IN_TAURI) void invoke("set_reactive_enabled", { enabled });
+  },
   /** Native window drag — call from mousedown on any non-interactive surface. */
   startDrag(): void {
     if (IN_TAURI) void getCurrentWindow().startDragging();

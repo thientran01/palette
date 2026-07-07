@@ -1,7 +1,10 @@
+mod audio;
 mod lyrics;
 mod media;
 
 use media::ArtCache;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
@@ -58,6 +61,15 @@ fn media_seek_abs(app: AppHandle, position_ms: i64) -> bool {
     ok
 }
 
+/// The frontend's vote on audio reactivity (false under OS reduced-motion) —
+/// ANDed into the capture switch so suppressed visuals also stop the capture.
+struct UiReactive(Arc<AtomicBool>);
+
+#[tauri::command]
+fn set_reactive_enabled(enabled: bool, state: State<UiReactive>) {
+    state.0.store(enabled, Ordering::Relaxed);
+}
+
 /// Fetch synced/plain lyrics for a track (LRCLIB + disk cache). Blocking
 /// network call — Tauri runs sync commands on a worker thread.
 #[tauri::command]
@@ -86,10 +98,11 @@ fn media_art(art_id: String, cache: State<ArtCache>) -> Option<String> {
         .and_then(|e| e.url.clone())
 }
 
-fn emit_now(app: &AppHandle) {
+fn emit_now(app: &AppHandle) -> media::NowPlaying {
     let cache = app.state::<ArtCache>();
     let payload = media::snapshot(&cache);
-    let _ = app.emit("now-playing", payload);
+    let _ = app.emit("now-playing", payload.clone());
+    payload
 }
 
 fn toggle_widget(app: &AppHandle) {
@@ -118,6 +131,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(ArtCache(Mutex::new(None)))
+        .manage(UiReactive(Arc::new(AtomicBool::new(true))))
         .invoke_handler(tauri::generate_handler![
             media_play_pause,
             media_next,
@@ -125,7 +139,8 @@ pub fn run() {
             media_seek_rel,
             media_seek_abs,
             media_art,
-            media_lyrics
+            media_lyrics,
+            set_reactive_enabled
         ])
         .setup(|app| {
             // Tray: Show/Hide + Quit.
@@ -190,17 +205,30 @@ pub fn run() {
                 }
             }
 
+            // Audio-reactive capture switch: on ONLY while visible AND playing
+            // (plan M4 — a hidden or paused widget does zero audio work).
+            let audio_switch = Arc::new(AtomicBool::new(false));
+            audio::spawn(app.handle().clone(), audio_switch.clone());
+            let ui_reactive = app.state::<UiReactive>().0.clone();
+
             // Media poll loop → "now-playing" events. Skips all work while the
             // widget is hidden (toggle_widget emits fresh state on show).
+            // NOTE: is_visible() is "not hidden/minimized", not "unoccluded" —
+            // a fully covered widget still captures. Occlusion detection isn't
+            // exposed through Tauri; accepted for v1.
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 let visible = handle
                     .get_webview_window("main")
                     .and_then(|w| w.is_visible().ok())
                     .unwrap_or(true);
-                if visible {
-                    emit_now(&handle);
-                }
+                let playing = if visible {
+                    emit_now(&handle).status == "playing"
+                } else {
+                    false
+                };
+                let reactive = ui_reactive.load(Ordering::Relaxed);
+                audio_switch.store(visible && playing && reactive, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
             });
             Ok(())
