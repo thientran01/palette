@@ -161,13 +161,9 @@ fn snap_animation_enabled() -> bool {
     on.as_bool()
 }
 
-/// EASE.out from src/lib/tokens.ts — cubic-bezier(0.16, 1, 0.3, 1), solved by
-/// bisection on the x-spline. Keep the control points in sync with tokens.ts.
-fn ease_out(p: f64) -> f64 {
-    const X1: f64 = 0.16;
-    const X2: f64 = 0.3;
-    const Y1: f64 = 1.0;
-    const Y2: f64 = 1.0;
+/// Evaluate cubic-bezier(x1, y1, x2, y2) at time-fraction `p` by bisection on
+/// the x-spline. Control points mirror EASE in src/lib/tokens.ts — keep in sync.
+fn cubic_bezier(x1: f64, y1: f64, x2: f64, y2: f64, p: f64) -> f64 {
     fn bez(a: f64, b: f64, t: f64) -> f64 {
         3.0 * a * t * (1.0 - t) * (1.0 - t) + 3.0 * b * t * t * (1.0 - t) + t * t * t
     }
@@ -180,13 +176,26 @@ fn ease_out(p: f64) -> f64 {
     let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
     for _ in 0..24 {
         let mid = (lo + hi) / 2.0;
-        if bez(X1, X2, mid) < p {
+        if bez(x1, x2, mid) < p {
             lo = mid;
         } else {
             hi = mid;
         }
     }
-    bez(Y1, Y2, (lo + hi) / 2.0)
+    bez(y1, y2, (lo + hi) / 2.0)
+}
+
+/// EASE.out — for the drag-release snap: a direct response to letting go, it
+/// starts fast to read as inheriting the drag's momentum (iOS-PiP-style).
+/// Deliberately NOT used for the mode resize.
+fn ease_out(p: f64) -> f64 {
+    cubic_bezier(0.16, 1.0, 0.3, 1.0, p)
+}
+
+/// EASE.inOut — for the mode resize: a morph of an element already on screen
+/// (Emil's framework: morph → ease-in-out; ease-out reads as "shoved open").
+fn ease_in_out(p: f64) -> f64 {
+    cubic_bezier(0.65, 0.0, 0.35, 1.0, p)
 }
 
 /// Glide the window to `target` over SNAP_MS with the EASE.out curve.
@@ -206,19 +215,21 @@ fn animate_to(window: &WebviewWindow, from: (i32, i32), target: (i32, i32)) {
         }
         return;
     }
-    spawn_animation(window, move |win, e| {
+    spawn_animation(window, ease_out, move |win, e| {
         let x = from.0 + (dx as f64 * e).round() as i32;
         let y = from.1 + (dy as f64 * e).round() as i32;
         apply_pos(win, x, y, None);
     });
 }
 
-/// Drive `frame(window, eased_fraction)` at FRAME_MS over SNAP_MS. The frame
-/// closure applies the geometry for its fraction; `frame(_, 1.0)` must land
-/// exactly on the target. Dies mid-flight (no landing) when another
-/// positioning op bumps the epoch; jumps straight to 1.0 under reduced motion.
+/// Drive `frame(window, eased_fraction)` at FRAME_MS over SNAP_MS with the
+/// given easing. The frame closure applies the geometry for its fraction;
+/// `frame(_, 1.0)` must land exactly on the target. Dies mid-flight (no
+/// landing) when another positioning op bumps the epoch; jumps straight to
+/// 1.0 under reduced motion.
 fn spawn_animation(
     window: &WebviewWindow,
+    ease: fn(f64) -> f64,
     frame: impl Fn(&WebviewWindow, f64) + Send + 'static,
 ) {
     let dock = window.state::<Dock>();
@@ -239,7 +250,7 @@ fn spawn_animation(
                 // Progress from wall-clock, not frame count: Windows timer
                 // granularity (~15.6ms) drops frames instead of slowing down.
                 let t = (start.elapsed().as_secs_f64() * 1000.0 / SNAP_MS as f64).min(1.0);
-                frame(&window, ease_out(t));
+                frame(&window, ease(t));
                 if t >= 1.0 {
                     break;
                 }
@@ -302,7 +313,7 @@ pub fn set_window_size(window: WebviewWindow, dock: State<Dock>, width: f64, hei
         dock.animating.store(false, Ordering::SeqCst);
         return;
     }
-    spawn_animation(&window, move |win, e| {
+    spawn_animation(&window, ease_in_out, move |win, e| {
         let wi = (w0 as f64 + (w - w0) as f64 * e).round() as i32;
         let hi = (h0 as f64 + (h - h0) as f64 * e).round() as i32;
         let (xi, yi) = corner_origin(corner, &wa, wi, hi, margin);
