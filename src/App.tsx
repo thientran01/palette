@@ -203,44 +203,63 @@ function App() {
   useEffect(() => onNowPlaying(setNp), []);
   const position = useLivePosition(np);
   const artUrl = useArt(np?.art_id ?? null);
+  // A data URL that fails to decode falls back to the note glyph instead of
+  // the browser's broken-image icon.
+  const [brokenArtUrl, setBrokenArtUrl] = useState<string | null>(null);
+  const showArt = artUrl !== null && artUrl !== brokenArtUrl;
 
   const nothing = !np || np.player === "none";
   const playing = np?.status === "playing";
   // AM can't seek over SMTC (support matrix) — buttons gate on capability.
   const seekable = !!np?.can_seek;
 
+  // Whole-card drag, except interactive elements. (data-tauri-drag-region only
+  // fires when the pressed element itself carries the attribute — art, gaps,
+  // and icons didn't, which made the window feel undraggable.)
+  const onDragStart = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('button, [role="slider"]')) return;
+    commands.startDrag();
+  };
+
   return (
-    <div data-tauri-drag-region className="h-screen p-1.5">
+    <div className="h-screen p-1.5" onMouseDown={onDragStart}>
       <div
-        data-tauri-drag-region
-        className="flex h-full items-center gap-3 rounded-xl border border-border/10 bg-surface/95 px-3"
+               className="flex h-full items-center gap-3 rounded-xl border border-border/10 bg-surface/95 px-3"
       >
         {nothing ? (
-          <div data-tauri-drag-region className="flex w-full items-center justify-center gap-2 text-muted">
+          <div className="flex w-full items-center justify-center gap-2 text-muted">
             {icons.note}
             <span className="text-sm">Nothing playing</span>
           </div>
         ) : (
           <>
             <div className="grid h-[72px] w-[72px] shrink-0 place-items-center overflow-hidden rounded-lg bg-surface-2 text-muted">
-              {artUrl ? (
-                <img src={artUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+              {showArt ? (
+                <img
+                  src={artUrl}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  draggable={false}
+                  onError={() => setBrokenArtUrl(artUrl)}
+                />
               ) : (
                 icons.note
               )}
             </div>
-            <div className="flex min-w-0 flex-1 flex-col gap-0.5" data-tauri-drag-region>
-              <div className="flex items-baseline gap-2" data-tauri-drag-region>
-                <p className="min-w-0 flex-1 truncate text-sm font-medium text-fg" data-tauri-drag-region>
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <div className="flex items-baseline gap-2">
+                <p className="min-w-0 flex-1 truncate text-sm font-medium text-fg">
                   {np.title}
                 </p>
                 {/* Windows routes commands to the OS "current" session, which
                     hops between apps — always show which app this card controls. */}
-                <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted" data-tauri-drag-region>
+                <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted">
                   {PLAYER_NAMES[np.player]}
                 </span>
               </div>
-              <p className="truncate text-xs text-muted" data-tauri-drag-region>
+              <p className="truncate text-xs text-muted">
                 {np.artist}
                 {np.album ? ` — ${np.album}` : ""}
               </p>

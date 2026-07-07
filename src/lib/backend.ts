@@ -4,6 +4,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { IN_TAURI, type NowPlaying } from "../types";
 
 const MOCK_DURATION = 204_000;
@@ -45,6 +46,10 @@ export function onNowPlaying(cb: (np: NowPlaying) => void): () => void {
 }
 
 export const commands = {
+  /** Native window drag — call from mousedown on any non-interactive surface. */
+  startDrag(): void {
+    if (IN_TAURI) void getCurrentWindow().startDragging();
+  },
   playPause(): void {
     if (IN_TAURI) {
       void invoke("media_play_pause");

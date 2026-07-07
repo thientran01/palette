@@ -85,7 +85,10 @@ fn art_key(app_id: &str, title: &str, artist: &str) -> String {
 }
 
 /// Read the session thumbnail into a data URL. Best-effort: any failure → None.
+/// ReadAsync may return FEWER bytes than requested (that was shipping truncated
+/// images that failed to decode) — loop until the stream is drained.
 fn read_art(session: &Session) -> Option<String> {
+    const CHUNK: u32 = 262_144;
     let props = session.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
     let thumb = props.Thumbnail().ok()?;
     let stream = thumb.OpenReadAsync().ok()?.get().ok()?;
@@ -93,19 +96,39 @@ fn read_art(session: &Session) -> Option<String> {
     if size == 0 || size > 8_000_000 {
         return None;
     }
+    // Apple Music reports a comma-separated LIST ("image/jpeg,image/jpe,image/jpg");
+    // commas are invalid inside a data: URL mime — take the first entry only.
     let mime = stream
         .ContentType()
         .map(|h| h.to_string())
-        .unwrap_or_else(|_| "image/jpeg".into());
-    let buffer = Buffer::Create(size as u32).ok()?;
-    let buffer = stream
-        .ReadAsync(&buffer, size as u32, InputStreamOptions::ReadAhead)
-        .ok()?
-        .get()
-        .ok()?;
-    let reader = DataReader::FromBuffer(&buffer).ok()?;
-    let mut bytes = vec![0u8; buffer.Length().ok()? as usize];
-    reader.ReadBytes(&mut bytes).ok()?;
+        .ok()
+        .and_then(|m| m.split(',').next().map(|s| s.trim().to_string()))
+        .filter(|m| m.starts_with("image/"))
+        .unwrap_or_else(|| "image/jpeg".into());
+    let mut bytes: Vec<u8> = Vec::with_capacity(size as usize);
+    while (bytes.len() as u64) < size {
+        // Cap the final request to the declared remainder — some streams are
+        // views into a larger backing store and would return trailing garbage.
+        let want = CHUNK.min((size - bytes.len() as u64) as u32);
+        let chunk = Buffer::Create(want).ok()?;
+        let chunk = stream
+            .ReadAsync(&chunk, want, InputStreamOptions::ReadAhead)
+            .ok()?
+            .get()
+            .ok()?;
+        let len = chunk.Length().ok()? as usize;
+        if len == 0 {
+            break; // stream ended early — bail below if incomplete
+        }
+        let reader = DataReader::FromBuffer(&chunk).ok()?;
+        let mut part = vec![0u8; len];
+        reader.ReadBytes(&mut part).ok()?;
+        bytes.extend_from_slice(&part);
+    }
+    if (bytes.len() as u64) < size {
+        return None;
+    }
+    bytes.truncate(size as usize);
     Some(format!("data:{};base64,{}", mime, B64.encode(bytes)))
 }
 
