@@ -33,9 +33,9 @@ export type MorphName =
 
 export type Stroke = { d: string; o: 0 | 1 };
 
-/** 1.75 (was 1.5): the set read too sharp/thin at product sizes. The seek
- * arrowhead wings were lengthened 2.4 → 3.0 units to keep the tip weld from
- * clogging at this weight (the audit flagged >1.6 as the clog threshold). */
+/** 1.75 (was 1.5): the set read too sharp/thin at product sizes. Anything
+ * with tight interior clearances (seek head, mic head, contract gap) was
+ * re-proportioned for this weight — check those before bumping it again. */
 export const STROKE_WIDTH = 1.75;
 
 export const ICONS: Record<MorphName, [Stroke, Stroke, Stroke]> = {
@@ -67,16 +67,22 @@ export const ICONS: Record<MorphName, [Stroke, Stroke, Stroke]> = {
   // 260° arc (center (8,8.2), r 4.7) ending at 12 o'clock where the tangent
   // is horizontal; arrowhead tip welds there, pointing along travel
   // (counterclockwise = rewind). No numeral — tooltip + time jump carry ±10s.
+  // Head construction (v2): the chevron straddles the arc terminal RADIALLY —
+  // vertex forward of the arc end (in the gap, pointing along travel), wing
+  // tips bracketing the terminal above/below. Reads as a solid triangle
+  // capping the arc. v1 welded the chevron tip to the terminal with wings
+  // sweeping backward along the path — the inner wing hugged the arc body
+  // and the head never read as an arrow (Thien's live feedback).
   seekBack: [
     { d: "M 3.4,9.0 C 4.1,13.0 9.0,14.3 11.6,11.2 C 14.2,8.1 12.0,3.5 8.0,3.5", o: 1 },
-    { d: "M 10.5,1.8 C 9.7,2.4 8.8,2.9 8.0,3.5 C 8.8,4.1 9.7,4.6 10.5,5.2", o: 1 },
-    { d: "M 8.0,3.5 C 8.0,3.5 8.0,3.5 8.0,3.5 C 8.0,3.5 8.0,3.5 8.0,3.5", o: 0 },
+    { d: "M 8.0,1.8 C 7.4,2.4 6.7,2.9 6.1,3.5 C 6.7,4.1 7.4,4.6 8.0,5.2", o: 1 },
+    { d: "M 6.1,3.5 C 6.1,3.5 6.1,3.5 6.1,3.5 C 6.1,3.5 6.1,3.5 6.1,3.5", o: 0 },
   ],
   // Exact horizontal mirror (x → 16−x) of seekBack.
   seekFwd: [
     { d: "M 12.6,9.0 C 11.9,13.0 7.0,14.3 4.4,11.2 C 1.8,8.1 4.0,3.5 8.0,3.5", o: 1 },
-    { d: "M 5.5,1.8 C 6.3,2.4 7.2,2.9 8.0,3.5 C 7.2,4.1 6.3,4.6 5.5,5.2", o: 1 },
-    { d: "M 8.0,3.5 C 8.0,3.5 8.0,3.5 8.0,3.5 C 8.0,3.5 8.0,3.5 8.0,3.5", o: 0 },
+    { d: "M 8.0,1.8 C 8.6,2.4 9.3,2.9 9.9,3.5 C 9.3,4.1 8.6,4.6 8.0,5.2", o: 1 },
+    { d: "M 9.9,3.5 C 9.9,3.5 9.9,3.5 9.9,3.5 C 9.9,3.5 9.9,3.5 9.9,3.5", o: 0 },
   ],
   // Size-ladder pair (v2 — the v1 pill/card/lyrics container pictograms read
   // as abstract shapes at 13px): the fullscreen-bracket idiom. expand = two

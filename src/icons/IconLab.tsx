@@ -169,7 +169,7 @@ export function IconLab() {
         <Section title="Play ↔ pause">
           <PlayPauseDemo />
         </Section>
-        <Section title="Seek tick — ±12° kick, clamped ±18° on mash">
+        <Section title="Seek spin — one revolution per press, accumulates on mash">
           <div className="flex items-center gap-1">
             <SeekDemo dir={-1} />
             <SeekDemo dir={1} />
