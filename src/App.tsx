@@ -481,7 +481,7 @@ function App() {
   const shownArt = artUrl !== null && artUrl !== brokenArtUrl ? artUrl : null;
   useArtAccent(shownArt);
   const lyrics = useLyrics(np);
-  // Assert the reduced-motion capture vote even before any halo mounts.
+  // Assert the reduced-motion capture vote even before any separator mounts.
   useEffect(() => initReactive(), []);
 
   const [mode, setMode] = useState<Mode>(() => {
@@ -552,7 +552,7 @@ function App() {
               <Art url={shownArt} size={26} radiusPx={6} />
               <p className="min-w-0 flex-1 truncate text-xs font-medium text-fg">
                 {np.title}
-                <Waveform />
+                <Waveform trailing={!np.artist} />
                 <span className="font-normal text-muted">{np.artist}</span>
               </p>
               <IconButton size="sm" label={playing ? "Pause" : "Play"} onClick={commands.playPause}>
@@ -596,7 +596,7 @@ function App() {
               </div>
               <p className="truncate text-xs text-muted">
                 {np.artist}
-                <Waveform />
+                <Waveform trailing={!np.album} />
                 {np.album}
               </p>
               <div className="mt-0.5">
@@ -615,7 +615,7 @@ function App() {
                 <p className="truncate text-[15px] font-medium text-fg">{np.title}</p>
                 <p className="truncate text-[13px] text-muted">
                   {np.artist}
-                  <Waveform />
+                  <Waveform trailing />
                 </p>
               </div>
               <PlayerBadge player={np.player} />
@@ -646,7 +646,7 @@ function App() {
               <p className="truncate text-sm font-medium text-fg">{np.title}</p>
               <p className="truncate text-xs text-muted">
                 {np.artist}
-                <Waveform />
+                <Waveform trailing={!np.album} />
                 {np.album}
               </p>
               {lyrics.status === "none" && (

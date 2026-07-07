@@ -18,7 +18,7 @@ const FFT_SIZE: usize = 2048;
 const EMIT_INTERVAL: Duration = Duration::from_millis(33);
 /// Band edges in Hz: bass, mid, high.
 const BANDS: [(f32, f32); 3] = [(30.0, 150.0), (150.0, 2000.0), (2000.0, 8000.0)];
-/// Log-spaced fine bins for the art-halo bars variant.
+/// Log-spaced fine bins for the now-playing waveform separator's bars.
 const SPECTRUM_BINS: usize = 16;
 const SPECTRUM_LO_HZ: f32 = 40.0;
 const SPECTRUM_HI_HZ: f32 = 8000.0;

@@ -23,9 +23,14 @@ const IDLE_EPS = 0.004;
 const WAKE_LEVEL = 0.02;
 const SLEEP_MS = 500;
 
-export function Waveform() {
+/** Wake state survives mode-switch remounts (the mode-keyed subtree tears
+ * the component down) so the separator doesn't re-bloom from the dot on
+ * every pill/card/expanded change. */
+let lastAlive = false;
+
+export function Waveform({ trailing }: { trailing?: boolean }) {
   const barsRef = useRef<Array<HTMLSpanElement | null>>([]);
-  const [alive, setAlive] = useState(false);
+  const [alive, setAlive] = useState(lastAlive);
 
   useEffect(() => {
     const envs = Array.from({ length: BARS }, () => new Envelope(40, 500));
@@ -74,6 +79,7 @@ export function Waveform() {
           window.clearTimeout(sleepTimer);
           sleepTimer = null;
         }
+        lastAlive = true;
         setAlive(true);
         start();
       } else {
@@ -82,6 +88,7 @@ export function Waveform() {
         if (sleepTimer === null) {
           sleepTimer = window.setTimeout(() => {
             sleepTimer = null;
+            lastAlive = false;
             setAlive(false);
           }, SLEEP_MS);
         }
@@ -97,25 +104,30 @@ export function Waveform() {
     };
   }, []);
 
+  // `trailing`: nothing follows this separator (lyrics view; empty album) —
+  // there is nothing to separate, so rest state renders NOTHING (no dangling
+  // dot, no sr-only dash) and the bars bloom in only while music plays.
   return (
     <span
-      className={`relative mx-1.5 inline-flex h-[11px] items-center align-middle [transition:width_220ms_var(--ease-out-tk)] ${
-        alive ? "w-[18px]" : "w-[5px]"
+      className={`relative inline-flex h-[11px] items-center align-middle [transition:width_220ms_var(--ease-out-tk),margin_220ms_var(--ease-out-tk)] ${
+        alive ? "mx-1.5 w-[18px]" : trailing ? "mx-0 w-0" : "mx-1.5 w-[5px]"
       }`}
     >
-      {/* AT always hears the separator, whatever shape it takes. */}
-      <span className="sr-only"> — </span>
+      {/* AT hears the separator only when it actually separates two things. */}
+      {!trailing && <span className="sr-only"> — </span>}
       {/* Resting state: a colorless middot — just a separator. */}
-      <span
-        aria-hidden
-        className={`absolute left-1/2 top-1/2 h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted [transition:opacity_220ms_var(--ease-out-tk)] ${
-          alive ? "opacity-0" : "opacity-100"
-        }`}
-      />
+      {!trailing && (
+        <span
+          aria-hidden
+          className={`absolute left-1/2 top-1/2 h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted [transition:opacity_220ms_var(--ease-out-tk)] ${
+            alive ? "opacity-0" : "opacity-100"
+          }`}
+        />
+      )}
       {/* Playing state: the dot blooms into the waveform. */}
       <span
         aria-hidden
-        className={`flex h-full w-full items-center justify-between [transition:opacity_220ms_var(--ease-out-tk)] ${
+        className={`flex h-full w-full items-center justify-between overflow-hidden [transition:opacity_220ms_var(--ease-out-tk)] ${
           alive ? "opacity-100" : "opacity-0"
         }`}
       >
