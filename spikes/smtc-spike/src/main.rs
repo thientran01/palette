@@ -206,6 +206,39 @@ fn main() -> windows::core::Result<()> {
             let after = s.GetTimelineProperties()?.Position()?.Duration;
             println!("after:  {}  (moved {:+.1}s)", fmt_ticks(after), (after - before) as f64 / TICKS_PER_SEC as f64);
         }
+        Some("art") => {
+            use windows::Storage::Streams::{Buffer, DataReader, InputStreamOptions};
+            let s = find_session(&m, &args[1]).expect("no session matches");
+            let props = s.TryGetMediaPropertiesAsync()?.get()?;
+            let thumb = props.Thumbnail()?;
+            let stream = thumb.OpenReadAsync()?.get()?;
+            let size = stream.Size()?;
+            let mime = stream.ContentType().map(|h| h.to_string()).unwrap_or_default();
+            const CHUNK: u32 = 262_144;
+            let mut bytes: Vec<u8> = Vec::with_capacity(size as usize);
+            let mut reads = 0;
+            while (bytes.len() as u64) < size {
+                let b = Buffer::Create(CHUNK)?;
+                let b = stream.ReadAsync(&b, CHUNK, InputStreamOptions::ReadAhead)?.get()?;
+                let len = b.Length()? as usize;
+                if len == 0 {
+                    break;
+                }
+                let r = DataReader::FromBuffer(&b)?;
+                let mut part = vec![0u8; len];
+                r.ReadBytes(&mut part)?;
+                bytes.extend_from_slice(&part);
+                reads += 1;
+            }
+            let head = bytes.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>();
+            let tail = bytes.iter().rev().take(2).map(|b| format!("{b:02x}")).collect::<Vec<_>>();
+            println!(
+                "mime={mime} declared={size}B read={}B in {reads} read(s) head={head} tail={}{}",
+                bytes.len(),
+                tail.get(1).cloned().unwrap_or_default(),
+                tail.first().cloned().unwrap_or_default(),
+            );
+        }
         Some("amappcmd") => {
             let s = find_session(&m, "applemusic").expect("no Apple Music session");
             let forward = args.get(1).map(String::as_str) != Some("back");
