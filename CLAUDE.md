@@ -18,6 +18,11 @@ src-tauri/src/
                 change events (SessionWatch) wake a 500ms heartbeat poll, so track/art/
                 status changes land in ~50ms while position staleness stays poll-bounded
                 (splits into media_core/ + adapters/ when M5 adds Spotify Web API)
+  dock.rs       corner docking: window lives in one of the 4 work-area corners (12px
+                margin, above the taskbar); free drag snaps to the nearest corner on
+                release (Moved-debounce + GetAsyncKeyState — no drag-end event exists);
+                mode resizes anchor to the docked corner via one SetWindowPos; corner
+                derived from the window-state-restored position, never stored
   lyrics.rs     LRCLIB get→search fallback, disk cache (bounded, app-data) + session miss set
   audio.rs      WASAPI loopback (cpal input stream on the output device) → FFT →
                 smoothed auto-gained band energies at ~30Hz; capture runs ONLY
