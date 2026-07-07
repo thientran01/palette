@@ -99,7 +99,9 @@ function useLyrics(np: NowPlaying | null): LyricsState {
  * instrumental break doesn't crawl. Line-level LRC has no word timing — this
  * is an even-pace approximation. */
 function sweepDurationMs(line: LyricLine, next: LyricLine | undefined): number {
-  const gap = (next ? next.t : line.t + 8000) - line.t;
+  // Floor of 1ms: duplicate/out-of-order timestamps would otherwise yield a
+  // 0 gap and a NaN sweep fraction (0/0), which drops the clip entirely.
+  const gap = Math.max((next ? next.t : line.t + 8000) - line.t, 1);
   return Math.min(gap, Math.max(1000, 70 * line.text.length + 600));
 }
 
@@ -143,6 +145,13 @@ function LyricsPanel({
   }, [idx, lines]);
 
   useEffect(() => () => window.clearTimeout(resumeTimer.current), []);
+
+  // Track change swaps `lines` — drop any in-progress browse so the new
+  // track doesn't render scrolled to the old track's arbitrary offset.
+  useEffect(() => {
+    setManualOffset(null);
+    window.clearTimeout(resumeTimer.current);
+  }, [lines]);
 
   const browsing = manualOffset !== null;
   const offset = manualOffset ?? autoOffset;
@@ -195,7 +204,7 @@ function LyricsPanel({
                     tabIndex: -1,
                   }
                 : {})}
-              className={`relative rounded-md px-3 py-1 text-left text-base leading-snug transition-colors duration-3 ease-out-tk ${
+              className={`relative rounded-md px-3 py-1 text-left text-base leading-normal transition-colors duration-3 ease-out-tk ${
                 current ? "font-medium text-muted" : "text-muted/80"
               } ${seekable ? "cursor-pointer hover:bg-fg/5" : ""}`}
             >
