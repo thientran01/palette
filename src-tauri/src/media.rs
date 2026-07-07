@@ -43,9 +43,43 @@ pub struct NowPlaying {
 /// too (url: None) so a bad thumbnail isn't re-fetched every poll cycle.
 pub struct ArtCache(pub Mutex<Option<ArtEntry>>);
 
+/// How long after a key change we keep distrusting the cached thumbnail.
+/// GSMTC updates title/artist before the player attaches the new thumbnail
+/// (worst on Apple Music), so the first read after a track change can capture
+/// the PREVIOUS track's image. Within this window every poll re-reads and
+/// fingerprints the stream; a byte change bumps `rev` so the emitted art_id
+/// changes and the frontend re-fetches.
+const ART_PROBE_WINDOW_MS: i64 = 10_000;
+
 pub struct ArtEntry {
     pub key: String,
+    /// Bumped when probing catches the thumbnail bytes changing under the same
+    /// key. Part of the emitted art_id (`"{key}:{rev}"`).
+    pub rev: u32,
     pub url: Option<String>,
+    /// Cheap content fingerprint (len + first/last 1KB). None = read failed.
+    pub fingerprint: Option<u64>,
+    /// When this key first appeared — anchors the probe window.
+    pub first_seen_ms: i64,
+    /// True once a rev bump was confirmed unchanged by the next probe —
+    /// probing stops early instead of running out the window.
+    pub settled: bool,
+}
+
+impl ArtEntry {
+    /// The id emitted as NowPlaying.art_id and matched by the media_art IPC.
+    pub fn id(&self) -> String {
+        format!("{}:{}", self.key, self.rev)
+    }
+}
+
+/// Resolve an emitted art_id (`"{key}:{rev}"`) to the cached data URL.
+pub fn art_url(cache: &ArtCache, art_id: &str) -> Option<String> {
+    let cache = lock_art(cache);
+    cache
+        .as_ref()
+        .filter(|e| e.id() == art_id)
+        .and_then(|e| e.url.clone())
 }
 
 fn lock_art(cache: &ArtCache) -> std::sync::MutexGuard<'_, Option<ArtEntry>> {
@@ -84,10 +118,22 @@ fn art_key(app_id: &str, title: &str, artist: &str) -> String {
     format!("{:x}", h.finish())
 }
 
-/// Read the session thumbnail into a data URL. Best-effort: any failure → None.
-/// ReadAsync may return FEWER bytes than requested (that was shipping truncated
-/// images that failed to decode) — loop until the stream is drained.
-fn read_art(session: &Session) -> Option<String> {
+/// Cheap content fingerprint for probe comparisons: length + first/last ~1KB.
+/// Deliberately NOT a full-image hash — probing runs every poll for a few
+/// seconds and must not re-encode or re-hash whole covers.
+fn art_fingerprint(bytes: &[u8]) -> u64 {
+    let mut h = DefaultHasher::new();
+    bytes.len().hash(&mut h);
+    let k = bytes.len().min(1024);
+    bytes[..k].hash(&mut h);
+    bytes[bytes.len() - k..].hash(&mut h);
+    h.finish()
+}
+
+/// Read the session thumbnail into raw bytes + mime. Best-effort: any failure
+/// → None. ReadAsync may return FEWER bytes than requested (that was shipping
+/// truncated images that failed to decode) — loop until the stream is drained.
+fn read_art_bytes(session: &Session) -> Option<(Vec<u8>, String)> {
     const CHUNK: u32 = 262_144;
     let props = session.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
     let thumb = props.Thumbnail().ok()?;
@@ -129,7 +175,11 @@ fn read_art(session: &Session) -> Option<String> {
         return None;
     }
     bytes.truncate(size as usize);
-    Some(format!("data:{};base64,{}", mime, B64.encode(bytes)))
+    Some((bytes, mime))
+}
+
+fn art_data_url(bytes: &[u8], mime: &str) -> String {
+    format!("data:{};base64,{}", mime, B64.encode(bytes))
 }
 
 /// Snapshot the current session into a NowPlaying payload, refreshing the art
@@ -187,21 +237,99 @@ pub fn snapshot(art_cache: &ArtCache) -> NowPlaying {
     let art_id = if has_thumb {
         let key = art_key(&app_id, &title, &artist);
         // Never hold the lock across the WinRT stream read — media_art (IPC)
-        // shares this mutex.
-        let cached_url_present: Option<bool> = {
+        // shares this mutex. Sample the cached state, drop the lock, then read.
+        let cached: Option<(u32, bool, Option<u64>, i64, bool)> = {
             let cache = lock_art(art_cache);
-            cache.as_ref().filter(|e| e.key == key).map(|e| e.url.is_some())
+            cache
+                .as_ref()
+                .filter(|e| e.key == key)
+                .map(|e| (e.rev, e.url.is_some(), e.fingerprint, e.first_seen_ms, e.settled))
         };
-        let url_present = match cached_url_present {
-            Some(present) => present,
-            None => {
-                let url = read_art(&session);
-                let present = url.is_some();
-                *lock_art(art_cache) = Some(ArtEntry { key: key.clone(), url });
-                present
+        match cached {
+            // Stable hit: past the probe window or confirmed settled.
+            Some((rev, present, _, first_seen, settled))
+                if settled || now_ms() - first_seen >= ART_PROBE_WINDOW_MS =>
+            {
+                present.then(|| format!("{key}:{rev}"))
             }
-        };
-        url_present.then_some(key)
+            // Probe window: the first read after a key change may have captured
+            // the PREVIOUS track's thumbnail — re-read and compare fingerprints.
+            Some((rev, present, fingerprint, _, _)) => {
+                match read_art_bytes(&session) {
+                    // Failed probe read = no information — keep the cached
+                    // entry (don't drop a good image on a transient failure)
+                    // and keep probing.
+                    None => present.then(|| format!("{key}:{rev}")),
+                    Some((bytes, mime)) => {
+                        let new_fp = art_fingerprint(&bytes);
+                        if fingerprint == Some(new_fp) {
+                            // Unchanged. A confirmed post-bump read means the
+                            // real art landed — settle so the remaining window
+                            // isn't re-read.
+                            if rev > 0 {
+                                let mut cache = lock_art(art_cache);
+                                if let Some(e) =
+                                    cache.as_mut().filter(|e| e.key == key && e.rev == rev)
+                                {
+                                    e.settled = true;
+                                }
+                            }
+                            present.then(|| format!("{key}:{rev}"))
+                        } else {
+                            // Bytes changed under the same key — the pinned
+                            // image was stale. Bump rev so the emitted art_id
+                            // changes and the frontend re-fetches. snapshot()
+                            // runs concurrently (poll thread + hotkey/command
+                            // emit_now), and an id must never be re-associated
+                            // with different bytes — the frontend latches an id
+                            // on first successful fetch. So only advance from
+                            // the exact state we sampled; if another snapshot
+                            // got there first, its entry wins and we emit that.
+                            let mut cache = lock_art(art_cache);
+                            match cache.as_mut() {
+                                Some(e) if e.key == key && e.rev == rev => {
+                                    e.rev = rev + 1;
+                                    e.url = Some(art_data_url(&bytes, &mime));
+                                    e.fingerprint = Some(new_fp);
+                                    e.settled = false;
+                                    Some(e.id())
+                                }
+                                Some(e) if e.key == key => e.url.is_some().then(|| e.id()),
+                                // Key moved on (track changed mid-read) — our
+                                // metadata is stale too; emit the sampled id
+                                // and let the next poll rebuild.
+                                _ => present.then(|| format!("{key}:{rev}")),
+                            }
+                        }
+                    }
+                }
+            }
+            // New key: first read, distrusted — the probe window starts now.
+            None => {
+                let bytes = read_art_bytes(&session);
+                let fingerprint = bytes.as_ref().map(|(b, _)| art_fingerprint(b));
+                let url = bytes.map(|(b, mime)| art_data_url(&b, &mime));
+                let present = url.is_some();
+                let mut cache = lock_art(art_cache);
+                match cache.as_ref() {
+                    // A concurrent snapshot raced us to this key — keep its
+                    // entry (overwriting could re-associate its already-emitted
+                    // id with our bytes) and emit what it stored.
+                    Some(e) if e.key == key => e.url.is_some().then(|| e.id()),
+                    _ => {
+                        *cache = Some(ArtEntry {
+                            key: key.clone(),
+                            rev: 0,
+                            url,
+                            fingerprint,
+                            first_seen_ms: now_ms(),
+                            settled: false,
+                        });
+                        present.then(|| format!("{key}:0"))
+                    }
+                }
+            }
+        }
     } else {
         None
     };

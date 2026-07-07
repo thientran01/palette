@@ -88,14 +88,11 @@ fn media_lyrics(
     lyrics::fetch(&dir, &artist, &title, &album, duration_ms)
 }
 
-/// Return the cached art data URL if it matches the requested id.
+/// Return the cached art data URL if it matches the requested id
+/// (`"{key}:{rev}"` — rev bumps when probing catches a stale first read).
 #[tauri::command]
 fn media_art(art_id: String, cache: State<ArtCache>) -> Option<String> {
-    let cache = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    cache
-        .as_ref()
-        .filter(|e| e.key == art_id)
-        .and_then(|e| e.url.clone())
+    media::art_url(&cache, &art_id)
 }
 
 fn emit_now(app: &AppHandle) -> media::NowPlaying {
