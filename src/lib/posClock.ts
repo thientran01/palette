@@ -76,8 +76,17 @@ export function now(): number {
   return Math.min(Math.max(raw, 0), durationMs || Infinity);
 }
 
-/** Anchor-change notifications (accepted payloads, seeks, track changes) — a
- * render nudge for consumers between their own ticks; fires at most ~1/s. */
+/** Whether the clock is advancing — consumers use this to idle their own
+ * timers/loops; an anchor notification fires on every play/pause flip. */
+export function isPlaying(): boolean {
+  return playing;
+}
+
+/** Anchor-change notifications (accepted payloads, seeks, pauses, track
+ * changes), fired synchronously after the anchor commits, at most ~1/s.
+ * Consumers re-derive everything from now()/isPlaying() on each call: the
+ * lyric scheduler re-arms its boundary timer, and paused progress surfaces
+ * use this as their ONLY repaint path (their rAF idles while frozen). */
 export function subscribe(cb: () => void): () => void {
   subs.add(cb);
   return () => {
