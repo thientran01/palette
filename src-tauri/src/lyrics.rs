@@ -14,8 +14,14 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 const UA: &str = "Pulse/0.1.0 (https://github.com/thientran01/pulse)";
-const TIMEOUT: Duration = Duration::from_secs(8);
+const TIMEOUT: Duration = Duration::from_secs(5);
 const DURATION_TOLERANCE_S: f64 = 4.0;
+const CACHE_MAX_FILES: usize = 500;
+
+/// Transport-level failure (offline, DNS, timeout) — distinct from a served
+/// 404. Callers bail early and must NOT record a miss: a Wi-Fi blip would
+/// otherwise suppress lyrics for the track until relaunch.
+struct Offline;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Lyrics {
@@ -66,18 +72,37 @@ fn key_for(artist: &str, title: &str, album: &str, duration_s: i64) -> String {
 
 /// Strip parentheticals and "feat." tails for the fallback search — Apple
 /// Music styles titles differently from LRCLIB's catalog (support matrix).
+/// A leading parenthetical is part of the name ("(G)I-DLE" tracks etc.) —
+/// only trailing ones are stripped.
 fn norm_title(title: &str) -> String {
     let mut s = title.to_string();
     if let Some(i) = s.find('(') {
-        s.truncate(i);
+        if i > 0 {
+            s.truncate(i);
+        }
     }
     if let Some(i) = s.to_lowercase().find("feat.") {
-        s.truncate(i);
+        if i > 0 {
+            s.truncate(i);
+        }
     }
     s.trim().to_string()
 }
 
-fn get_exact(artist: &str, title: &str, album: &str, duration_s: i64) -> Option<LrclibRecord> {
+fn classify(result: Result<ureq::Response, ureq::Error>) -> Result<Option<ureq::Response>, Offline> {
+    match result {
+        Ok(resp) => Ok(Some(resp)),
+        Err(ureq::Error::Status(_, _)) => Ok(None), // served error (404 etc) — try fallbacks
+        Err(_) => Err(Offline),
+    }
+}
+
+fn get_exact(
+    artist: &str,
+    title: &str,
+    album: &str,
+    duration_s: i64,
+) -> Result<Option<LrclibRecord>, Offline> {
     let mut req = ureq::get("https://lrclib.net/api/get")
         .set("User-Agent", UA)
         .timeout(TIMEOUT)
@@ -87,19 +112,24 @@ fn get_exact(artist: &str, title: &str, album: &str, duration_s: i64) -> Option<
     if !album.is_empty() {
         req = req.query("album_name", album);
     }
-    req.call().ok()?.into_json().ok()
+    Ok(classify(req.call())?.and_then(|r| r.into_json().ok()))
 }
 
-fn search(artist: &str, title: &str, duration_s: i64) -> Option<LrclibRecord> {
-    let records: Vec<LrclibRecord> = ureq::get("https://lrclib.net/api/search")
-        .set("User-Agent", UA)
-        .timeout(TIMEOUT)
-        .query("artist_name", artist)
-        .query("track_name", title)
-        .call()
-        .ok()?
-        .into_json()
-        .ok()?;
+fn search(artist: &str, title: &str, duration_s: i64) -> Result<Option<LrclibRecord>, Offline> {
+    let resp = match classify(
+        ureq::get("https://lrclib.net/api/search")
+            .set("User-Agent", UA)
+            .timeout(TIMEOUT)
+            .query("artist_name", artist)
+            .query("track_name", title)
+            .call(),
+    )? {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    let Ok(records) = resp.into_json::<Vec<LrclibRecord>>() else {
+        return Ok(None);
+    };
     let close = |r: &&LrclibRecord| {
         r.duration
             .map(|d| (d - duration_s as f64).abs() <= DURATION_TOLERANCE_S)
@@ -109,15 +139,38 @@ fn search(artist: &str, title: &str, duration_s: i64) -> Option<LrclibRecord> {
     let idx = records
         .iter()
         .position(|r| close(&r) && r.synced_lyrics.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false))
-        .or_else(|| records.iter().position(|r| close(&r)))?;
-    records.into_iter().nth(idx)
+        .or_else(|| records.iter().position(|r| close(&r)));
+    Ok(idx.and_then(|i| records.into_iter().nth(i)))
+}
+
+/// Keep the cache bounded: evict oldest files past CACHE_MAX_FILES.
+fn evict_old(cache_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(cache_dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let meta = e.metadata().ok()?;
+            Some((meta.modified().ok()?, e.path()))
+        })
+        .collect();
+    if files.len() <= CACHE_MAX_FILES {
+        return;
+    }
+    files.sort_by_key(|(t, _)| *t);
+    let excess = files.len().saturating_sub(CACHE_MAX_FILES);
+    for (_, path) in files.into_iter().take(excess) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_ms: i64) -> Lyrics {
     if artist.is_empty() && title.is_empty() {
         return Lyrics::default();
     }
-    let duration_s = duration_ms / 1000;
+    // Round (not truncate) — players report ms jitter around second boundaries.
+    let duration_s = (duration_ms + 500) / 1000;
     let key = key_for(artist, title, album, duration_s);
 
     let cache_file: PathBuf = cache_dir.join(format!("{key}.json"));
@@ -133,17 +186,24 @@ pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_
         }
     }
 
-    let record = get_exact(artist, title, album, duration_s)
-        .filter(|r| !r.is_empty_record())
-        .or_else(|| search(artist, title, duration_s))
-        .or_else(|| {
-            let norm = norm_title(title);
-            if norm.is_empty() || norm == title {
-                None
-            } else {
-                search(artist, &norm, duration_s)
-            }
-        });
+    // Any transport failure → bail WITHOUT recording a miss (offline ≠ no lyrics).
+    let lookup = || -> Result<Option<LrclibRecord>, Offline> {
+        if let Some(r) = get_exact(artist, title, album, duration_s)?.filter(|r| !r.is_empty_record()) {
+            return Ok(Some(r));
+        }
+        if let Some(r) = search(artist, title, duration_s)? {
+            return Ok(Some(r));
+        }
+        let norm = norm_title(title);
+        if norm.is_empty() || norm == title {
+            return Ok(None);
+        }
+        search(artist, &norm, duration_s)
+    };
+    let record = match lookup() {
+        Ok(r) => r,
+        Err(Offline) => return Lyrics::default(),
+    };
 
     let lyrics = record.map(LrclibRecord::into_lyrics).unwrap_or_default();
     if lyrics.is_empty() {
@@ -151,9 +211,15 @@ pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key);
-    } else if std::fs::create_dir_all(cache_dir).is_ok() {
-        if let Ok(json) = serde_json::to_string(&lyrics) {
-            let _ = std::fs::write(&cache_file, json);
+    } else {
+        match std::fs::create_dir_all(cache_dir) {
+            Ok(()) => {
+                if let Ok(json) = serde_json::to_string(&lyrics) {
+                    let _ = std::fs::write(&cache_file, json);
+                }
+                evict_old(cache_dir);
+            }
+            Err(e) => eprintln!("lyrics cache dir unavailable ({e}) — running uncached"),
         }
     }
     lyrics

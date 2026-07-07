@@ -81,7 +81,9 @@ function useLyrics(np: NowPlaying | null): LyricsState {
     let alive = true;
     void commands.lyrics(np.artist, np.title, np.album, np.duration_ms).then((l) => {
       if (!alive || lastKey.current !== key) return;
-      const lines = l.synced ? parseLrc(l.synced) : [];
+      // Cap far beyond any real song (~100 lines) — a pathological LRC file
+      // shouldn't turn into thousands of DOM nodes.
+      const lines = l.synced ? parseLrc(l.synced).slice(0, 600) : [];
       setState(lines.length > 0 ? { status: "synced", lines } : { status: "none" });
     });
     return () => {
@@ -133,7 +135,15 @@ function LyricsPanel({
             <Tag
               key={`${line.t}-${i}`}
               {...(seekable
-                ? { type: "button" as const, onClick: () => commands.seekAbs(line.t), "aria-label": `Seek to ${line.text}` }
+                ? {
+                    type: "button" as const,
+                    onClick: () => commands.seekAbs(line.t),
+                    "aria-label": `Seek to ${line.text}`,
+                    // Out of the tab order — dozens of lines would otherwise sit
+                    // between the header and transport; keyboard seek lives on
+                    // the progress slider.
+                    tabIndex: -1,
+                  }
                 : {})}
               className={`relative rounded-md px-3 py-0.5 text-left text-sm leading-snug transition-colors duration-3 ease-out-tk ${
                 current ? "font-medium text-fg" : "text-muted/80"
@@ -151,9 +161,10 @@ function LyricsPanel({
           );
         })}
       </div>
-      {/* Edge fades so lines dissolve instead of clipping. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-6 bg-[linear-gradient(rgb(var(--surface)/0.95),transparent)]" />
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-[linear-gradient(transparent,rgb(var(--surface)/0.95))]" />
+      {/* Edge fades so lines dissolve instead of clipping (tall enough to
+          cover a wrapped second line on CJK tracks). */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-8 bg-[linear-gradient(rgb(var(--surface)/0.95),transparent)]" />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-[linear-gradient(transparent,rgb(var(--surface)/0.95))]" />
     </div>
   );
 }
@@ -422,6 +433,11 @@ function App() {
     animate: { opacity: 1, scale: 1 },
     transition: { duration: reducedMotion ? 0 : DUR[3] / 1000, ease: [...EASE.out] as [number, number, number, number] },
   };
+  const contentFade = {
+    initial: reducedMotion ? {} : { opacity: 0 },
+    animate: { opacity: 1 },
+    transition: { duration: reducedMotion ? 0 : DUR[3] / 1000, ease: [...EASE.out] as [number, number, number, number] },
+  };
 
   const nothing = !np || np.player === "none";
   const playing = np?.status === "playing";
@@ -512,7 +528,9 @@ function App() {
             </div>
           </div>
         ) : lyrics.status === "synced" ? (
-          <div className="flex h-full flex-col gap-2 px-3 pb-2 pt-3">
+          // Keyed fade so the big-art→lyrics swap dissolves instead of snapping
+          // when a fetch resolves mid-view.
+          <motion.div key="lyrics-view" {...contentFade} className="flex h-full flex-col gap-2 px-3 pb-2 pt-3">
             <div className="flex items-center gap-2.5">
               <Art url={shownArt} sizeClass="h-[44px] w-[44px] rounded-md" />
               <div className="min-w-0 flex-1">
@@ -531,9 +549,13 @@ function App() {
               <Transport np={np} seekable={seekable} playing={playing} />
             </div>
             <ProgressBar np={np} position={position} />
-          </div>
+          </motion.div>
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-4 pb-2 pt-4">
+          <motion.div
+            key="art-view"
+            {...contentFade}
+            className="flex h-full flex-col items-center justify-center gap-3 px-4 pb-2 pt-4"
+          >
             <div className="absolute right-2 top-2 flex items-center gap-1">
               <span className="text-[10px] uppercase tracking-wider text-muted">{PLAYER_NAMES[np.player]}</span>
               <IconButton size="sm" label="Collapse to card" onClick={() => setMode("card")}>
@@ -548,14 +570,14 @@ function App() {
                 {np.album ? ` — ${np.album}` : ""}
               </p>
               {lyrics.status === "none" && (
-                <p className="mt-0.5 text-[10px] text-muted/70">No synced lyrics</p>
+                <p className="mt-0.5 text-[10px] text-muted">No synced lyrics</p>
               )}
             </div>
             <Transport np={np} seekable={seekable} playing={playing} />
             <div className="self-stretch">
               <ProgressBar np={np} position={position} />
             </div>
-          </div>
+          </motion.div>
         )}
       </motion.div>
       {/* Broken-art detector — OUTSIDE the mode-keyed subtree so the data URL
