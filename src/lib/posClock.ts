@@ -76,6 +76,12 @@ export function now(): number {
   return Math.min(Math.max(raw, 0), durationMs || Infinity);
 }
 
+/** Whether the clock is advancing — consumers use this to idle their own
+ * timers/loops; an anchor notification fires on every play/pause flip. */
+export function isPlaying(): boolean {
+  return playing;
+}
+
 /** Anchor-change notifications (accepted payloads, seeks, track changes) — a
  * render nudge for consumers between their own ticks; fires at most ~1/s. */
 export function subscribe(cb: () => void): () => void {
