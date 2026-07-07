@@ -50,7 +50,8 @@ export function Waveform() {
         const e = envs[i].step(target, dt);
         peak = Math.max(peak, e);
         const el = barsRef.current[i];
-        if (el) el.style.transform = `scaleY(${(REST + e * (1 - REST)).toFixed(3)})`;
+        // Concave shaping: moderate energy already reaches near-full height.
+        if (el) el.style.transform = `scaleY(${(REST + Math.pow(e, 0.6) * (1 - REST)).toFixed(3)})`;
       }
       // Idle-stop once decayed; the next band event restarts the loop.
       if (peak < IDLE_EPS && (b === null || b.level <= 0.001)) {
@@ -124,7 +125,7 @@ export function Waveform() {
             ref={(el) => {
               barsRef.current[i] = el;
             }}
-            className="h-full w-[2px] origin-center rounded-full bg-accent will-change-transform"
+            className="h-[9px] w-[2px] origin-center rounded-full bg-accent will-change-transform"
             style={{ transform: `scaleY(${REST})` }}
           />
         ))}
