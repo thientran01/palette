@@ -1,15 +1,19 @@
 /*
  * Audio-reactive halo behind the album art — the app's only reactive accent
- * surface. One tiny canvas at half-resolution backing store (the bilinear
- * upscale is the softener — no filter passes), redrawn at ~30fps from
- * envelope-smoothed band energies. The art itself never moves; only light does.
+ * surface. Apple-waveform-style lobes: plump round-capped capsules emanate
+ * from the cover's edges, each bouncing on its own spectrum bin. One tiny
+ * canvas at half-resolution backing store (the bilinear upscale is the
+ * softener — no filter passes), redrawn at ~30fps from envelope-smoothed
+ * band energies. The art itself never moves; only light does.
  */
 import { useEffect, useRef } from "react";
 import { SPECTRUM_BINS, type AudioBands } from "./lib/backend";
 import { Envelope, expressive, subscribeBands } from "./lib/reactive";
 
-export type GlowVariant = "bars" | "blob" | "rings";
-export const GLOW_VARIANTS: readonly GlowVariant[] = ["bars", "blob", "rings"];
+export type GlowPlacement = "around" | "bottom" | "sides" | "topbottom";
+export const GLOW_PLACEMENTS: readonly GlowPlacement[] = ["around", "bottom", "sides", "topbottom"];
+export const LOBES_MIN = 2;
+export const LOBES_MAX = 10;
 
 // Keep in sync with --accent in index.css — only hit if the computed read fails.
 const FALLBACK_ACCENT = "232 122 90";
@@ -21,41 +25,73 @@ interface Scene {
   c: number; // canvas center, css px
   half: number; // art half-size
   radius: number; // art corner radius
+  pad: number; // canvas padding beyond the art
   s: number; // size scale (1 = 72px card art)
   rgb: string;
-  time: number; // seconds, for slow drift
-  bass: number;
-  mid: number;
-  high: number;
+  level: number;
   spec: number[];
 }
 
-/** Distance from art center to its (square) boundary along (dx, dy). */
-function boundaryDist(half: number, dx: number, dy: number): number {
-  return half / Math.max(Math.abs(dx), Math.abs(dy));
+/** Along-edge axis (ax, ay), outward normal (ox, oy), and a spectrum shift so
+ * the bottom edge skews bassier than the top. */
+interface Edge {
+  ax: number;
+  ay: number;
+  ox: number;
+  oy: number;
+  binShift: number;
 }
 
-/** Radiating EQ petals: 16 bins, bass at the bottom, highs at top, mirrored L/R. */
-function drawBars({ ctx, c, half, s, rgb, spec }: Scene): void {
+const BOTTOM: Edge = { ax: 1, ay: 0, ox: 0, oy: 1, binShift: 0 };
+const TOP: Edge = { ax: 1, ay: 0, ox: 0, oy: -1, binShift: 4 };
+const LEFT: Edge = { ax: 0, ay: 1, ox: -1, oy: 0, binShift: 2 };
+const RIGHT: Edge = { ax: 0, ay: 1, ox: 1, oy: 0, binShift: 2 };
+
+const EDGES: Record<GlowPlacement, Edge[]> = {
+  around: [BOTTOM, TOP, LEFT, RIGHT],
+  bottom: [BOTTOM],
+  sides: [LEFT, RIGHT],
+  topbottom: [TOP, BOTTOM],
+};
+
+/** Soft-edged capsules perpendicular to each edge, tallest motion in the
+ * center (center lobes ride the lowest bins — the classic Apple silhouette). */
+function drawLobes(sc: Scene, placement: GlowPlacement, count: number): void {
+  const { ctx, c, half, radius, pad, s, rgb, spec } = sc;
+  const usable = half * 2 - 2 * (radius + 2); // stay on the flat part of the edge
+  const w = Math.min(12 * s, Math.max(4 * s, (usable / count) * 0.55));
+  const maxLen = pad - 4;
   ctx.lineCap = "round";
-  for (let i = 0; i < SPECTRUM_BINS; i++) {
-    // Right-side angle sweeping bottom → top (canvas y grows downward).
-    const theta = Math.PI / 2 - ((i + 0.5) * Math.PI) / SPECTRUM_BINS;
-    const e = spec[i];
-    const len = (4 + e * 16) * s;
-    for (const mirror of [1, -1]) {
-      const dx = Math.cos(theta) * mirror;
-      const dy = Math.sin(theta);
-      const base = boundaryDist(half, dx, dy) + 2 * s;
-      const bx = c + dx * base;
-      const by = c + dy * base;
-      const tx = bx + dx * len;
-      const ty = by + dy * len;
-      const g = ctx.createLinearGradient(bx, by, tx, ty);
-      g.addColorStop(0, `rgb(${rgb} / ${(0.55 * (0.35 + e * 0.65)).toFixed(3)})`);
-      g.addColorStop(1, `rgb(${rgb} / 0)`);
-      ctx.strokeStyle = g;
-      ctx.lineWidth = 7 * s;
+  // k-th closest lobe to the edge's center gets the k-th lowest bin; the
+  // equidistant mirrored pair lands on adjacent bins so it never moves in
+  // robotic lockstep.
+  const order = Array.from({ length: count }, (_, j) => j).sort(
+    (a, b) => Math.abs(a - (count - 1) / 2) - Math.abs(b - (count - 1) / 2),
+  );
+  for (const edge of EDGES[placement]) {
+    for (let k = 0; k < count; k++) {
+      const j = order[k];
+      const bin = Math.min(
+        SPECTRUM_BINS - 1,
+        Math.round((k * 11) / Math.max(1, count - 1)) + edge.binShift,
+      );
+      const e = spec[bin];
+      const t = -usable / 2 + ((j + 0.5) * usable) / count;
+      const len = Math.min(maxLen, (3 + e * 18) * s);
+      // Base tucks 2px under the art so the near cap is hidden behind it.
+      const bx = c + edge.ax * t + edge.ox * (half - 2);
+      const by = c + edge.ay * t + edge.oy * (half - 2);
+      const tx = bx + edge.ox * len;
+      const ty = by + edge.oy * len;
+      // Gentle glow falloff behind, then the capsule body.
+      ctx.strokeStyle = `rgb(${rgb} / ${(0.12 * (0.3 + e * 0.7)).toFixed(3)})`;
+      ctx.lineWidth = w * 2.1;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      ctx.strokeStyle = `rgb(${rgb} / ${(0.6 * (0.3 + e * 0.7)).toFixed(3)})`;
+      ctx.lineWidth = w;
       ctx.beginPath();
       ctx.moveTo(bx, by);
       ctx.lineTo(tx, ty);
@@ -64,80 +100,27 @@ function drawBars({ ctx, c, half, s, rgb, spec }: Scene): void {
   }
 }
 
-/** Organic contour: soft orbs along the perimeter melt into an undulating
- * glow — bass swells the bottom, mids the sides, highs the top. */
-function drawBlob({ ctx, c, half, s, rgb, time, bass, mid, high }: Scene): void {
-  const ORBS = 12;
-  for (let j = 0; j < ORBS; j++) {
-    const theta = (j / ORBS) * Math.PI * 2 + 0.07 * Math.sin(time * 0.5 + j * 1.7);
-    const dx = Math.cos(theta);
-    const dy = Math.sin(theta);
-    const wBass = Math.max(0, dy); // bottom (y down)
-    const wHigh = Math.max(0, -dy); // top
-    const wMid = 1 - Math.abs(dy); // sides
-    const e = bass * wBass + mid * wMid + high * wHigh;
-    // Slow drift term keeps the contour alive even on held notes.
-    const r = (9 + e * 17 + 2 * Math.sin(theta * 3 + time * 0.9)) * s;
-    if (r <= 0.5) continue;
-    const ox = c + dx * (boundaryDist(half, dx, dy) + 1);
-    const oy = c + dy * (boundaryDist(half, dx, dy) + 1);
-    const g = ctx.createRadialGradient(ox, oy, 0, ox, oy, r);
-    g.addColorStop(0, `rgb(${rgb} / ${(0.4 * (0.25 + e * 0.75)).toFixed(3)})`);
-    g.addColorStop(1, `rgb(${rgb} / 0)`);
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(ox, oy, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-/** Concentric breath: three rounded-rect annuli hugging the art — bass drives
- * the inner ring, mids the middle, highs an outer shimmer. */
-function drawRings({ ctx, c, half, radius, s, rgb, bass, mid, high }: Scene): void {
-  const rings: Array<[number, number, number]> = [
-    [(4 + bass * 6) * s, 10 * s, 0.55 * bass],
-    [(11 + mid * 5) * s, 12 * s, 0.35 * mid],
-    [(17 + high * 5) * s, 10 * s, 0.28 * high],
-  ];
-  for (const [d, th, alpha] of rings) {
-    if (alpha < 0.01) continue;
-    // Layered strokes fake a gaussian profile without a filter pass.
-    for (const [wf, af] of [
-      [1, 0.5],
-      [1.9, 0.24],
-      [3, 0.1],
-    ] as const) {
-      ctx.strokeStyle = `rgb(${rgb} / ${(alpha * af).toFixed(3)})`;
-      ctx.lineWidth = th * wf;
-      ctx.beginPath();
-      ctx.roundRect(c - half - d, c - half - d, (half + d) * 2, (half + d) * 2, radius + d);
-      ctx.stroke();
-    }
-  }
-}
-
-const DRAW: Record<GlowVariant, (sc: Scene) => void> = {
-  bars: drawBars,
-  blob: drawBlob,
-  rings: drawRings,
-};
-
 export function ArtGlow({
   artSize,
   pad,
   radius,
-  variant,
+  placement,
+  lobes,
 }: {
   artSize: number;
   pad: number;
-  /** Art corner radius in px — the halo hugs the rounded-rect shape. */
+  /** Art corner radius in px — lobes keep off the rounded corners. */
   radius: number;
-  variant: GlowVariant;
+  placement: GlowPlacement;
+  /** Capsules per edge. */
+  lobes: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  // Read through a ref so a variant switch doesn't tear down the envelopes.
-  const variantRef = useRef(variant);
-  variantRef.current = variant;
+  // Read through refs so tuning doesn't tear down the envelopes.
+  const placementRef = useRef(placement);
+  placementRef.current = placement;
+  const lobesRef = useRef(lobes);
+  lobesRef.current = lobes;
 
   useEffect(() => {
     // No reduced-motion gate here: under reduce, reactive.ts delivers no
@@ -152,9 +135,6 @@ export function ArtGlow({
     const c = css / 2;
     const s = artSize >= 120 ? 1.4 : 1;
 
-    const bassEnv = new Envelope(35, 450);
-    const midEnv = new Envelope(45, 600);
-    const highEnv = new Envelope(25, 700);
     const levelEnv = new Envelope(45, 550);
     const specEnvs = Array.from({ length: SPECTRUM_BINS }, () => new Envelope(40, 500));
 
@@ -162,7 +142,6 @@ export function ArtGlow({
     let raf = 0;
     let running = false;
     let last = 0;
-    let time = 0;
     let dprUsed = 0;
 
     const fit = () => {
@@ -181,7 +160,6 @@ export function ArtGlow({
       if (now - last < 30) return; // ~30fps is plenty for light
       const dt = Math.min(now - last, 100);
       last = now;
-      time += dt / 1000;
       fit();
 
       const b = latest;
@@ -194,9 +172,6 @@ export function ArtGlow({
         });
       }
 
-      const bass = bassEnv.step(b?.bass ?? 0, dt);
-      const mid = midEnv.step(b?.mid ?? 0, dt);
-      const high = highEnv.step(b?.high ?? 0, dt);
       const level = levelEnv.step(b?.level ?? 0, dt);
       const specNow = specEnvs.map((env, i) => env.step(spec?.[i] ?? 0, dt));
 
@@ -206,12 +181,12 @@ export function ArtGlow({
         const rgb =
           getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || FALLBACK_ACCENT;
         ctx.globalAlpha = alpha;
-        DRAW[variantRef.current]({ ctx, c, half, radius, s, rgb, time, bass, mid, high, spec: specNow });
+        drawLobes({ ctx, c, half, radius, pad, s, rgb, level, spec: specNow }, placementRef.current, lobesRef.current);
         ctx.globalAlpha = 1;
       }
 
       // Idle-stop once fully decayed; the next band event restarts the loop.
-      const peak = Math.max(bass, mid, high, level, ...specNow);
+      const peak = Math.max(level, ...specNow);
       if (peak < IDLE_EPS && (b === null || b.level <= 0.001)) {
         running = false;
         cancelAnimationFrame(raf);
