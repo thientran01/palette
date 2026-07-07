@@ -1,11 +1,12 @@
 /*
- * Apple Music-style now-playing waveform: five tiny accent capsules that
- * bounce with the live spectrum and settle to resting dots when playback
- * stops. Sits inline where the em dash used to separate artist and album —
- * the app's ONLY audio-reactive surface. DOM spans + scaleY transforms only
- * (compositor-friendly), driven at ~30fps from envelope-smoothed bins.
+ * The living separator: at rest it's a colorless middot between artist and
+ * album — a plain typographic separator. When music plays it blooms into
+ * five Apple-style accent capsules bouncing on live spectrum bins, and
+ * settles back to the dot on pause. The app's ONLY audio-reactive surface.
+ * State morphs use the house EASE token; per-frame motion is DOM spans +
+ * scaleY transforms only (compositor-friendly) at ~30fps.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { type AudioBands } from "./lib/backend";
 import { Envelope, subscribeBands } from "./lib/reactive";
 
@@ -14,13 +15,17 @@ const BARS = 5;
  * tall-middle silhouette); neighbors sit on staggered mids/highs so the
  * bars never bounce in lockstep. */
 const BAR_BINS = [9, 4, 1, 6, 11];
-/** Resting-dot height as a fraction of the full bar. */
-const REST = 0.18;
+/** Minimum bar height while alive, as a fraction of the full bar. */
+const REST = 0.25;
 /** Stop animating once every envelope has decayed below this. */
 const IDLE_EPS = 0.004;
+/** Level above which the separator wakes; falls asleep after quiet holds. */
+const WAKE_LEVEL = 0.02;
+const SLEEP_MS = 500;
 
 export function Waveform() {
   const barsRef = useRef<Array<HTMLSpanElement | null>>([]);
+  const [alive, setAlive] = useState(false);
 
   useEffect(() => {
     const envs = Array.from({ length: BARS }, () => new Envelope(40, 500));
@@ -28,6 +33,7 @@ export function Waveform() {
     let raf = 0;
     let running = false;
     let last = 0;
+    let sleepTimer: number | null = null;
 
     const frame = (now: number) => {
       raf = requestAnimationFrame(frame);
@@ -46,7 +52,7 @@ export function Waveform() {
         const el = barsRef.current[i];
         if (el) el.style.transform = `scaleY(${(REST + e * (1 - REST)).toFixed(3)})`;
       }
-      // Idle-stop on the resting dots; the next band event restarts the loop.
+      // Idle-stop once decayed; the next band event restarts the loop.
       if (peak < IDLE_EPS && (b === null || b.level <= 0.001)) {
         running = false;
         cancelAnimationFrame(raf);
@@ -62,31 +68,67 @@ export function Waveform() {
 
     const unsub = subscribeBands((b) => {
       latest = b;
-      if (b.level > 0.001) start();
+      if (b.level > WAKE_LEVEL) {
+        if (sleepTimer !== null) {
+          window.clearTimeout(sleepTimer);
+          sleepTimer = null;
+        }
+        setAlive(true);
+        start();
+      } else {
+        // Quiet: let the bars decay, and fall back to the dot if it holds.
+        // Pause emits a single zero payload, so this must be wall-clock.
+        if (sleepTimer === null) {
+          sleepTimer = window.setTimeout(() => {
+            sleepTimer = null;
+            setAlive(false);
+          }, SLEEP_MS);
+        }
+        if (b.level > 0.001) start();
+      }
     });
 
     return () => {
       unsub();
+      if (sleepTimer !== null) window.clearTimeout(sleepTimer);
       running = false;
       cancelAnimationFrame(raf);
     };
   }, []);
 
   return (
-    <span aria-hidden={false} className="mx-1.5 inline-flex h-[11px] items-center gap-[2px] align-middle">
-      {/* AT still hears the separator the icon replaced. */}
+    <span
+      className={`relative mx-1.5 inline-flex h-[11px] items-center align-middle [transition:width_220ms_var(--ease-out-tk)] ${
+        alive ? "w-[18px]" : "w-[5px]"
+      }`}
+    >
+      {/* AT always hears the separator, whatever shape it takes. */}
       <span className="sr-only"> — </span>
-      {Array.from({ length: BARS }, (_, i) => (
-        <span
-          key={i}
-          ref={(el) => {
-            barsRef.current[i] = el;
-          }}
-          aria-hidden
-          className="h-full w-[2px] origin-center rounded-full bg-accent will-change-transform"
-          style={{ transform: `scaleY(${REST})` }}
-        />
-      ))}
+      {/* Resting state: a colorless middot — just a separator. */}
+      <span
+        aria-hidden
+        className={`absolute left-1/2 top-1/2 h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-muted [transition:opacity_220ms_var(--ease-out-tk)] ${
+          alive ? "opacity-0" : "opacity-100"
+        }`}
+      />
+      {/* Playing state: the dot blooms into the waveform. */}
+      <span
+        aria-hidden
+        className={`flex h-full w-full items-center justify-between [transition:opacity_220ms_var(--ease-out-tk)] ${
+          alive ? "opacity-100" : "opacity-0"
+        }`}
+      >
+        {Array.from({ length: BARS }, (_, i) => (
+          <span
+            key={i}
+            ref={(el) => {
+              barsRef.current[i] = el;
+            }}
+            className="h-full w-[2px] origin-center rounded-full bg-accent will-change-transform"
+            style={{ transform: `scaleY(${REST})` }}
+          />
+        ))}
+      </span>
     </span>
   );
 }
