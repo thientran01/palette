@@ -14,5 +14,6 @@ export const EASE_CSS = {
   hover: "ease",
 } as const;
 
-/** Durations in ms — everything under 300ms. */
-export const DUR = { 1: 90, 2: 140, 3: 200, 4: 220 } as const;
+/** Durations in ms — everything under 300ms. 5 exists for the seek spin:
+ * a full revolution needs more room than a state morph. */
+export const DUR = { 1: 90, 2: 140, 3: 200, 4: 220, 5: 260 } as const;

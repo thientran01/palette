@@ -5,8 +5,9 @@ import { DUR, EASE } from "../lib/tokens";
 const OUT = [...EASE.out] as [number, number, number, number];
 
 /** Seek press feedback: the glyph is a rotation arrow, so each press spins it
- * one FULL revolution in the seek direction (220ms EASE.out — flick-a-dial;
- * a ±12° kick read as a nervous twitch, not a seek). A revolution ends at
+ * one FULL revolution in the seek direction (260ms EASE.out — flick-a-dial;
+ * a ±12° kick read as a nervous twitch, not a seek; 220ms spun too fast,
+ * per live feedback). A revolution ends at
  * rest orientation, so there is no settle phase; the rotation is snapped
  * back to 0 invisibly afterwards. Mashing accumulates turns mid-flight —
  * repeated seeks read as the dial whirring. The glyph carries no numeral:
@@ -22,7 +23,7 @@ export function useSeekTick(dir: -1 | 1) {
     if (reduced || !scope.current) return;
     const id = ++seq.current;
     turns.current += dir * 360;
-    await animate(scope.current, { rotate: turns.current }, { duration: DUR[4] / 1000, ease: OUT });
+    await animate(scope.current, { rotate: turns.current }, { duration: DUR[5] / 1000, ease: OUT });
     if (id !== seq.current) return; // a newer press extended the spin
     // N·360 ≡ 0 — normalize instantly (visually identical) so the value
     // can't grow without bound across a session.
