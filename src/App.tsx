@@ -518,20 +518,18 @@ function App() {
       if (e.key !== "g" || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
       const target = e.target as HTMLElement;
       if (target.closest('input, textarea, [role="slider"]')) return;
-      setGlowVariant((v) => {
-        const next = GLOW_VARIANTS[(GLOW_VARIANTS.indexOf(v) + 1) % GLOW_VARIANTS.length];
-        try {
-          localStorage.setItem("pulse.glowVariant", next);
-        } catch {
-          // non-fatal: variant resets on next launch
-        }
-        setVariantToast(next);
-        return next;
-      });
+      const next = GLOW_VARIANTS[(GLOW_VARIANTS.indexOf(glowVariant) + 1) % GLOW_VARIANTS.length];
+      setGlowVariant(next);
+      setVariantToast(next);
+      try {
+        localStorage.setItem("pulse.glowVariant", next);
+      } catch {
+        // non-fatal: variant resets on next launch
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [glowVariant]);
   useEffect(() => {
     if (!variantToast) return;
     const id = window.setTimeout(() => setVariantToast(null), 1200);

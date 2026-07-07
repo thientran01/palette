@@ -32,6 +32,7 @@ Design rule: chrome stays neutral (house semantic tokens); the album-art palette
 - `Ctrl+Alt+←/→` seek ∓10s (current session; the hotkey always fires the SMTC call — Apple Music silently ignores it, only the UI buttons are capability-gated)
 - `Ctrl+Alt+N/P` next/previous track
 - `Ctrl+Alt+M` show/hide the widget
+- `g` (in-widget, not global) cycles the art-halo glow variant bars → blob → rings — hidden dev setting, persisted as `pulse.glowVariant` in localStorage
 
 Commands route to the OS "current" media session, which Windows re-points to
 whichever app played most recently (pause AM while Spotify plays → next command

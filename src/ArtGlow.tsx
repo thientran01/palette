@@ -11,6 +11,7 @@ import { Envelope, expressive, subscribeBands } from "./lib/reactive";
 export type GlowVariant = "bars" | "blob" | "rings";
 export const GLOW_VARIANTS: readonly GlowVariant[] = ["bars", "blob", "rings"];
 
+// Keep in sync with --accent in index.css — only hit if the computed read fails.
 const FALLBACK_ACCENT = "232 122 90";
 /** Stop drawing once every envelope has decayed below this. */
 const IDLE_EPS = 0.004;

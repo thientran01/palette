@@ -112,15 +112,14 @@ fn open_loopback(
     Some((stream, sample_rate))
 }
 
-/// RMS energy of one frequency range. Narrow log bins may collapse to a
-/// single FFT bin at the low end — that's fine (`hi_bin == lo_bin`).
+/// RMS energy of one frequency range. At high sample rates (96/192kHz) the
+/// narrow low log bins fall below the FFT's resolution — clamping `hi_bin`
+/// up to `lo_bin` merges them into the nearest real bin (neighbors read the
+/// same energy) instead of leaving them permanently dead-zero.
 fn range_energy(spectrum: &[Complex<f32>], sample_rate: f32, lo_hz: f32, hi_hz: f32) -> f32 {
     let bin_hz = sample_rate / FFT_SIZE as f32;
-    let lo_bin = ((lo_hz / bin_hz) as usize).max(1);
-    let hi_bin = ((hi_hz / bin_hz) as usize).min(FFT_SIZE / 2 - 1);
-    if hi_bin < lo_bin {
-        return 0.0;
-    }
+    let lo_bin = ((lo_hz / bin_hz) as usize).clamp(1, FFT_SIZE / 2 - 1);
+    let hi_bin = ((hi_hz / bin_hz) as usize).clamp(lo_bin, FFT_SIZE / 2 - 1);
     let sum: f32 = spectrum[lo_bin..=hi_bin].iter().map(|c| c.norm_sqr()).sum();
     (sum / (hi_bin - lo_bin + 1) as f32).sqrt()
 }
