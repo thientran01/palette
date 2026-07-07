@@ -254,7 +254,7 @@ pub fn snapshot(art_cache: &ArtCache) -> NowPlaying {
             }
             // Probe window: the first read after a key change may have captured
             // the PREVIOUS track's thumbnail — re-read and compare fingerprints.
-            Some((rev, present, fingerprint, first_seen, _)) => {
+            Some((rev, present, fingerprint, _, _)) => {
                 match read_art_bytes(&session) {
                     // Failed probe read = no information — keep the cached
                     // entry (don't drop a good image on a transient failure)
@@ -278,17 +278,28 @@ pub fn snapshot(art_cache: &ArtCache) -> NowPlaying {
                         } else {
                             // Bytes changed under the same key — the pinned
                             // image was stale. Bump rev so the emitted art_id
-                            // changes and the frontend re-fetches.
-                            let rev = rev + 1;
-                            *lock_art(art_cache) = Some(ArtEntry {
-                                key: key.clone(),
-                                rev,
-                                url: Some(art_data_url(&bytes, &mime)),
-                                fingerprint: Some(new_fp),
-                                first_seen_ms: first_seen,
-                                settled: false,
-                            });
-                            Some(format!("{key}:{rev}"))
+                            // changes and the frontend re-fetches. snapshot()
+                            // runs concurrently (poll thread + hotkey/command
+                            // emit_now), and an id must never be re-associated
+                            // with different bytes — the frontend latches an id
+                            // on first successful fetch. So only advance from
+                            // the exact state we sampled; if another snapshot
+                            // got there first, its entry wins and we emit that.
+                            let mut cache = lock_art(art_cache);
+                            match cache.as_mut() {
+                                Some(e) if e.key == key && e.rev == rev => {
+                                    e.rev = rev + 1;
+                                    e.url = Some(art_data_url(&bytes, &mime));
+                                    e.fingerprint = Some(new_fp);
+                                    e.settled = false;
+                                    Some(e.id())
+                                }
+                                Some(e) if e.key == key => e.url.is_some().then(|| e.id()),
+                                // Key moved on (track changed mid-read) — our
+                                // metadata is stale too; emit the sampled id
+                                // and let the next poll rebuild.
+                                _ => present.then(|| format!("{key}:{rev}")),
+                            }
                         }
                     }
                 }
@@ -299,15 +310,24 @@ pub fn snapshot(art_cache: &ArtCache) -> NowPlaying {
                 let fingerprint = bytes.as_ref().map(|(b, _)| art_fingerprint(b));
                 let url = bytes.map(|(b, mime)| art_data_url(&b, &mime));
                 let present = url.is_some();
-                *lock_art(art_cache) = Some(ArtEntry {
-                    key: key.clone(),
-                    rev: 0,
-                    url,
-                    fingerprint,
-                    first_seen_ms: now_ms(),
-                    settled: false,
-                });
-                present.then(|| format!("{key}:0"))
+                let mut cache = lock_art(art_cache);
+                match cache.as_ref() {
+                    // A concurrent snapshot raced us to this key — keep its
+                    // entry (overwriting could re-associate its already-emitted
+                    // id with our bytes) and emit what it stored.
+                    Some(e) if e.key == key => e.url.is_some().then(|| e.id()),
+                    _ => {
+                        *cache = Some(ArtEntry {
+                            key: key.clone(),
+                            rev: 0,
+                            url,
+                            fingerprint,
+                            first_seen_ms: now_ms(),
+                            settled: false,
+                        });
+                        present.then(|| format!("{key}:0"))
+                    }
+                }
             }
         }
     } else {
