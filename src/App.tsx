@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { commands, onNowPlaying } from "./lib/backend";
+import { commands, onAudioBands, onNowPlaying } from "./lib/backend";
 import { currentLineIndex, parseLrc, type LyricLine } from "./lib/lrc";
 import { extractAccent } from "./lib/palette";
 import { DUR, EASE } from "./lib/tokens";
@@ -239,6 +239,26 @@ function LyricsPanel({
   );
 }
 
+/**
+ * Audio-reactive layer: writes straight to DOM refs at ~30Hz (no React
+ * re-render). Compositor-friendly only — opacity on the glow layer,
+ * transform on the art. Skipped entirely under reduced motion; the backend
+ * already zeroes and suspends capture when hidden or paused.
+ */
+function useAudioReactive(
+  glowRef: React.RefObject<HTMLDivElement | null>,
+  artRef: React.RefObject<HTMLDivElement | null>,
+): void {
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    return onAudioBands((b) => {
+      if (glowRef.current) glowRef.current.style.opacity = (0.2 + b.level * 0.8).toFixed(3);
+      if (artRef.current) artRef.current.style.transform = `scale(${(1 + b.bass * 0.02).toFixed(4)})`;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+}
+
 /** Retint the accent layer from the current cover; house accent when absent. */
 function useArtAccent(artUrl: string | null): void {
   useEffect(() => {
@@ -459,11 +479,34 @@ function ProgressBar({ np, position }: { np: NowPlaying; position: number }) {
   );
 }
 
-function Art({ url, sizeClass, glow }: { url: string | null; sizeClass: string; glow?: boolean }) {
+function Art({
+  url,
+  sizeClass,
+  glow,
+  pulseRef,
+}: {
+  url: string | null;
+  sizeClass: string;
+  glow?: boolean;
+  pulseRef?: React.RefObject<HTMLDivElement | null>;
+}) {
+  // One combined transition value — stacking transition utilities with an
+  // arbitrary [transition:...] resolves by stylesheet order, not class order.
+  const transition =
+    pulseRef && glow
+      ? "[transition:transform_100ms_linear,box-shadow_220ms_var(--ease-out-tk)]"
+      : pulseRef
+        ? "[transition:transform_100ms_linear]"
+        : glow
+          ? "[transition:box-shadow_220ms_var(--ease-out-tk)]"
+          : "";
   return (
     <div
-      className={`grid shrink-0 place-items-center overflow-hidden rounded-lg bg-surface-2 text-muted ${sizeClass} ${
-        glow ? "shadow-[0_8px_48px_-10px_rgb(var(--accent)/0.55)] transition-shadow duration-4 ease-out-tk" : ""
+      ref={pulseRef}
+      className={`grid shrink-0 place-items-center overflow-hidden rounded-lg bg-surface-2 text-muted ${
+        pulseRef ? "will-change-transform" : ""
+      } ${transition} ${sizeClass} ${
+        glow ? "shadow-[0_8px_48px_-10px_rgb(var(--accent)/0.55)]" : ""
       }`}
     >
       {url ? <img src={url} alt="" className="h-full w-full object-cover" draggable={false} /> : icons.note}
@@ -512,6 +555,9 @@ function App() {
   const shownArt = artUrl !== null && artUrl !== brokenArtUrl ? artUrl : null;
   useArtAccent(shownArt);
   const lyrics = useLyrics(np);
+  const glowRef = useRef<HTMLDivElement>(null);
+  const artPulseRef = useRef<HTMLDivElement>(null);
+  useAudioReactive(glowRef, artPulseRef);
 
   const [mode, setMode] = useState<Mode>(() => {
     try {
@@ -567,6 +613,13 @@ function App() {
         {...morph}
         className="relative flex h-full flex-col overflow-hidden rounded-xl border border-border/10 bg-surface/95 shadow-[0_0_36px_-12px_rgb(var(--accent)/0.4)] transition-shadow duration-4 ease-out-tk"
       >
+        {/* Audio-reactive ambient glow (M4): inset so it can't clip at the
+            window edge; opacity driven directly at ~30Hz by useAudioReactive. */}
+        <div
+          ref={glowRef}
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-10 rounded-xl opacity-0 shadow-[inset_0_0_32px_-8px_rgb(var(--accent)/0.5)] will-change-[opacity] [transition:opacity_100ms_linear]"
+        />
         {nothing ? (
           <div className="flex h-full w-full items-center justify-center gap-2 text-muted">
             {icons.note}
@@ -605,7 +658,7 @@ function App() {
           </>
         ) : mode === "card" ? (
           <div className="flex h-full items-center gap-3 px-3">
-            <Art url={shownArt} sizeClass="h-[72px] w-[72px]" />
+            <Art url={shownArt} sizeClass="h-[72px] w-[72px]" pulseRef={artPulseRef} />
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <div className="flex items-center gap-1">
                 <p className="min-w-0 flex-1 truncate text-[15px] font-medium text-fg">{np.title}</p>
@@ -662,7 +715,7 @@ function App() {
                 {icons.chevronDown}
               </IconButton>
             </div>
-            <Art url={shownArt} sizeClass="h-[190px] w-[190px] rounded-xl" glow />
+            <Art url={shownArt} sizeClass="h-[190px] w-[190px] rounded-xl" glow pulseRef={artPulseRef} />
             <div className="min-w-0 self-stretch text-center">
               <p className="truncate text-sm font-medium text-fg">{np.title}</p>
               <p className="truncate text-xs text-muted">

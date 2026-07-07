@@ -1,7 +1,10 @@
+mod audio;
 mod lyrics;
 mod media;
 
 use media::ArtCache;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
@@ -86,10 +89,11 @@ fn media_art(art_id: String, cache: State<ArtCache>) -> Option<String> {
         .and_then(|e| e.url.clone())
 }
 
-fn emit_now(app: &AppHandle) {
+fn emit_now(app: &AppHandle) -> media::NowPlaying {
     let cache = app.state::<ArtCache>();
     let payload = media::snapshot(&cache);
-    let _ = app.emit("now-playing", payload);
+    let _ = app.emit("now-playing", payload.clone());
+    payload
 }
 
 fn toggle_widget(app: &AppHandle) {
@@ -190,6 +194,11 @@ pub fn run() {
                 }
             }
 
+            // Audio-reactive capture switch: on ONLY while visible AND playing
+            // (plan M4 — a hidden or paused widget does zero audio work).
+            let audio_switch = Arc::new(AtomicBool::new(false));
+            audio::spawn(app.handle().clone(), audio_switch.clone());
+
             // Media poll loop → "now-playing" events. Skips all work while the
             // widget is hidden (toggle_widget emits fresh state on show).
             let handle = app.handle().clone();
@@ -198,9 +207,12 @@ pub fn run() {
                     .get_webview_window("main")
                     .and_then(|w| w.is_visible().ok())
                     .unwrap_or(true);
-                if visible {
-                    emit_now(&handle);
-                }
+                let playing = if visible {
+                    emit_now(&handle).status == "playing"
+                } else {
+                    false
+                };
+                audio_switch.store(visible && playing, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
             });
             Ok(())
