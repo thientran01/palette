@@ -105,8 +105,12 @@ async fn media_lyrics(
         lyrics::fetch(&dir, &artist, &title, &album, duration_ms)
     })
     .await
-    // Join error = the fetch panicked; degrade to a miss, not a dead IPC call.
-    .unwrap_or_default()
+    // Join error = the fetch panicked; degrade to a miss, not a dead IPC
+    // call — but say so, or a release build swallows the panic invisibly.
+    .unwrap_or_else(|e| {
+        eprintln!("lyrics fetch panicked: {e}");
+        lyrics::Lyrics::default()
+    })
 }
 
 /// Return the cached art data URL if it matches the requested id
