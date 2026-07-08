@@ -201,7 +201,14 @@ pub fn run() {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
                 let _ = win.set_focus();
-                emit_now(app);
+                // This callback runs in a WndProc on the main/STA thread
+                // (SendMessageW from the second process) — emit_now touches
+                // GSMTC, which must never block there (see the async-command
+                // note above). Defer it to the async pool like the commands.
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    emit_now(&app);
+                });
             }
         }))
         .plugin(tauri_plugin_autostart::init(
