@@ -1028,33 +1028,32 @@ function App() {
             <Hairline np={np} />
           </>
         ) : mode === "card" ? (
-          <div className="relative flex h-full flex-col gap-0.5 px-3 pb-1.5 pt-3">
-            {/* One shared centerline: transport and progress are full-width
-                rows, so both center on the card itself. The art is seated
-                absolutely at the padding corner — its top on the title row's
-                top edge, its bottom flush with the transport row (80 = title
-                row 28 + artist 16 + transport 32 + two 2px gaps); the text
-                rows clear it with pl-[92px] (80 + the 12px gutter). */}
-            <div className="absolute left-3 top-3">
-              <Art url={shownArt} size={80} radiusPx={8} />
+          <div className="flex h-full gap-3 px-3 pb-1.5 pt-3">
+            {/* Two columns: the art anchors the left; EVERYTHING else lives in
+                the right column, so transport and progress share that column's
+                centerline. The art's fixed 80px equals title row 28 + artist
+                16 + transport 32 + two 2px gaps — top flush with the title,
+                bottom flush with the transport row. */}
+            <Art url={shownArt} size={80} radiusPx={8} />
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <div className="flex h-7 items-center gap-1">
+                <p className="min-w-0 flex-1 truncate text-[15px] font-medium text-fg">{np.title}</p>
+                {/* Windows routes commands to the OS "current" session, which
+                    hops between apps — always show which app this card controls. */}
+                <PlayerBadge player={np.player} />
+                <ModeButton to="contract" label="Collapse to pill" slot="mode-secondary" onClick={() => setMode("pill")} />
+                <ModeButton to="mic" label="Show lyrics" slot="mode-primary" onClick={() => setMode("expanded")} />
+              </div>
+              <p className="truncate text-xs leading-4 text-muted">
+                {np.artist}
+                <Waveform trailing={!np.album} />
+                {np.album}
+              </p>
+              <div className="flex justify-center">
+                <Transport np={np} seekable={seekable} playing={playing} />
+              </div>
+              <ProgressBar np={np} />
             </div>
-            <div className="flex h-7 items-center gap-1 pl-[92px]">
-              <p className="min-w-0 flex-1 truncate text-[15px] font-medium text-fg">{np.title}</p>
-              {/* Windows routes commands to the OS "current" session, which
-                  hops between apps — always show which app this card controls. */}
-              <PlayerBadge player={np.player} />
-              <ModeButton to="contract" label="Collapse to pill" slot="mode-secondary" onClick={() => setMode("pill")} />
-              <ModeButton to="mic" label="Show lyrics" slot="mode-primary" onClick={() => setMode("expanded")} />
-            </div>
-            <p className="truncate pl-[92px] text-xs leading-4 text-muted">
-              {np.artist}
-              <Waveform trailing={!np.album} />
-              {np.album}
-            </p>
-            <div className="flex justify-center">
-              <Transport np={np} seekable={seekable} playing={playing} />
-            </div>
-            <ProgressBar np={np} />
           </div>
         ) : (
           <ExpandedView
