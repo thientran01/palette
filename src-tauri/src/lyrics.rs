@@ -14,7 +14,11 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 const UA: &str = "Pulse/0.1.0 (https://github.com/thientran01/pulse)";
-const TIMEOUT: Duration = Duration::from_secs(5);
+// LRCLIB normally answers in <1s but degrades to 7-9s first-byte under load
+// (measured 2026-07-07) — a 5s timeout lost every race on a cold cache. The
+// fetch runs off the main thread and the UI shows the big-art fallback while
+// waiting, so a generous timeout costs nothing visible.
+const TIMEOUT: Duration = Duration::from_secs(15);
 const DURATION_TOLERANCE_S: f64 = 4.0;
 const CACHE_MAX_FILES: usize = 500;
 

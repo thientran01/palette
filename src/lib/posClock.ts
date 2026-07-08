@@ -5,8 +5,9 @@
  * pairs and never projects (see media.rs). This kernel turns those pairs into
  * the one display clock, and that clock is MONOTONIC per track while playing:
  * Apple Music floors its pushed positions to whole seconds (~1/s cadence), so
- * a fresh pair can project up to ~1s BEHIND the previous one — passing that
- * through is what flashed the lyric highlight backwards. Small backward
+ * a fresh pair can project BEHIND the previous one — ~1s from quantization
+ * alone, ~1.5s measured live once stamp/delivery lag stacks on top — and
+ * passing that through is what flashed the lyric highlight backwards. Small backward
  * deltas are quantization jitter and are held; only genuine discontinuities
  * (seeks, restarts, track changes) may move the clock backwards.
  *
@@ -17,10 +18,17 @@
 import type { NowPlaying } from "../types";
 
 /** Backward deltas smaller than this are jitter, not deliberate movement —
- * sized per player from docs/smtc-support-matrix.md (Apple Music: 1s floor
- * quantization pushed ~1/s; Spotify: ms-precise). */
+ * sized per player. Apple Music: 1s floor quantization plus stamp/delivery
+ * lag; a live capture (2,265 payloads, 2026-07-07) showed the real backward
+ * tail reaching ~1.5s, so the band carries headroom above it — nothing
+ * legitimate lives under 2s on AM (no programmatic seek; manual scrubs are
+ * larger). Spotify is ms-precise. The paused-scrub branch shares this band
+ * by construction, not just by reuse: the pause freeze can legitimately sit
+ * up to a band above the player's report, so a sub-band paused backward move
+ * is indistinguishable from that excess. (AM's 2000 coincidentally equals
+ * SEEK_CONFIRM_MS — independent values, do not consolidate.) */
 const JITTER_BAND_MS: Record<NowPlaying["player"], number> = {
-  apple_music: 1200,
+  apple_music: 2000,
   spotify: 400,
   other: 800,
   none: 800,

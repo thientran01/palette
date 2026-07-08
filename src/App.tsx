@@ -345,7 +345,10 @@ function PlayerBadge({ player }: { player: NowPlaying["player"] }) {
       role="img"
       aria-label={`Controlling ${PLAYER_NAMES[player]}`}
       title={PLAYER_NAMES[player]}
-      className="grid shrink-0 place-items-center text-muted"
+      // Same 28px cell as an sm IconButton: the neighboring buttons' glyphs
+      // sit well inside their hit areas, so a bare icon here reads as a
+      // smaller gap even though the flex gap is uniform.
+      className="grid h-7 w-7 shrink-0 place-items-center text-muted"
     >
       <PlayerMark player={player} />
     </motion.span>
