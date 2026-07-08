@@ -17,10 +17,13 @@
 import type { NowPlaying } from "../types";
 
 /** Backward deltas smaller than this are jitter, not deliberate movement —
- * sized per player from docs/smtc-support-matrix.md (Apple Music: 1s floor
- * quantization pushed ~1/s; Spotify: ms-precise). */
+ * sized per player. Apple Music: 1s floor quantization plus stamp/delivery
+ * lag; a live capture (2,265 payloads, 2026-07-07) showed the real backward
+ * tail reaching ~1.5s, so the band carries headroom above it — nothing
+ * legitimate lives under 2s on AM (no programmatic seek; manual scrubs are
+ * larger). Spotify is ms-precise. */
 const JITTER_BAND_MS: Record<NowPlaying["player"], number> = {
-  apple_music: 1200,
+  apple_music: 2000,
   spotify: 400,
   other: 800,
   none: 800,
