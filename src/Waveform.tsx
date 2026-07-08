@@ -35,10 +35,11 @@ const SLEEP_MS = 500;
  * middot are pixel-identical at that moment — and the color drain fires.
  */
 type Phase = "alive" | "dots" | "three" | "one" | "rest";
-/** Bars → dots retraction. */
-const DOTS_MS = 220;
+/** Bars → dots retraction; also the survivor's grow-to-middot beat, which
+ * must run its full height/width transition before the rest handoff. */
+const DOTS_MS = 220; // DUR[4]
 /** Each vanishing pair. */
-const DROP_MS = 160;
+const DROP_MS = 140; // DUR[2]
 
 /** Wake state survives mode-switch remounts (the mode-keyed subtree tears
  * the component down) so the separator doesn't re-bloom from the dot on
@@ -49,13 +50,13 @@ let lastAlive = false;
  * transitioned while alive — the rAF loop owns it per frame. */
 function barClass(phase: Phase, i: number): string {
   if (phase === "alive")
-    return "h-[9px] w-[2px] [transition:height_220ms_var(--ease-out-tk),width_220ms_var(--ease-out-tk),opacity_160ms_var(--ease-out-tk)]";
+    return "h-[9px] w-[2px] [transition:height_220ms_var(--ease-out-tk),width_220ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk)]";
   const mid = i === 2;
   const dropped = phase === "three" ? i === 0 || i === 4 : phase !== "dots" && !mid;
   // The survivor grows to the middot's 3px once it's alone, so the final
   // layer handoff is pixel-perfect.
   const size = mid && (phase === "one" || phase === "rest") ? "h-[3px] w-[3px]" : "h-[2px] w-[2px]";
-  return `${size} ${dropped ? "opacity-0" : "opacity-100"} [transition:height_220ms_var(--ease-out-tk),width_220ms_var(--ease-out-tk),transform_220ms_var(--ease-out-tk),opacity_160ms_var(--ease-out-tk)]`;
+  return `${size} ${dropped ? "opacity-0" : "opacity-100"} [transition:height_220ms_var(--ease-out-tk),width_220ms_var(--ease-out-tk),transform_220ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk)]`;
 }
 
 export function Waveform({ trailing }: { trailing?: boolean }) {
@@ -135,10 +136,18 @@ export function Waveform({ trailing }: { trailing?: boolean }) {
           sleepTimer = window.setTimeout(() => {
             sleepTimer = null;
             lastAlive = false;
+            // Reduced motion: one state change, not four discrete snaps —
+            // the global CSS guard zeroes transitions but not these timers.
+            if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+              setPhase("rest");
+              return;
+            }
             setPhase("dots");
             seqTimers.push(window.setTimeout(() => setPhase("three"), DOTS_MS));
             seqTimers.push(window.setTimeout(() => setPhase("one"), DOTS_MS + DROP_MS));
-            seqTimers.push(window.setTimeout(() => setPhase("rest"), DOTS_MS + DROP_MS * 2));
+            // The "one" beat runs the survivor's full 220ms grow before the
+            // rest handoff — cutting it short would pop the swap.
+            seqTimers.push(window.setTimeout(() => setPhase("rest"), DOTS_MS + DROP_MS + DOTS_MS));
           }, SLEEP_MS);
         }
         if (b.level > 0.001) start();
@@ -147,7 +156,14 @@ export function Waveform({ trailing }: { trailing?: boolean }) {
 
     return () => {
       unsub();
-      if (sleepTimer !== null) window.clearTimeout(sleepTimer);
+      // A pending sleep timer means quiet was already in progress; count it
+      // as settled so a mode-switch remount doesn't strand the next instance
+      // in "alive" with no band event ever coming to collapse it (the
+      // backend goes silent after pause's single zero payload).
+      if (sleepTimer !== null) {
+        window.clearTimeout(sleepTimer);
+        lastAlive = false;
+      }
       clearSeq();
       running = false;
       cancelAnimationFrame(raf);
