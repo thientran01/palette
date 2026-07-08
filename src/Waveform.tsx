@@ -33,17 +33,24 @@ const SLEEP_MS = 500;
  * grows to resting size ("one"), then the bars layer hands off to the
  * resting middot ("rest") — an invisible swap, since the middle dot and the
  * middot are pixel-identical at that moment — and the color drain fires.
+ *
+ * The bloom walks the SAME ladder in reverse (rest → one → three → dots →
+ * alive) on faster beats: the middot warms to accent as the survivor takes
+ * over (color arrives first, mirroring color-leaves-last on settle), pairs
+ * fade in from the inside out, and the dots grow into bars.
  */
 type Phase = "alive" | "dots" | "three" | "one" | "rest";
 /** Bars → dots retraction; also the survivor's grow-to-middot beat, which
- * must run its full height/width transition before the rest handoff.
- * The settle deliberately runs a rung slower than the 220ms bloom — it's
- * meant to be watched; the bloom is meant to get out of the way. */
+ * must run its full height/width transition before the rest handoff. */
 const DOTS_MS = 260; // DUR[5]
 /** Beat spacing between vanishing pairs. Their fades run 260ms (DUR[5]) on
  * this 200ms beat, so the outer pair is still dissolving when the inner
  * pair starts — a cascade, not discrete steps. */
 const DROP_MS = 200; // DUR[3]
+/** Beat spacing for the reverse (bloom) ladder — deliberately quicker than
+ * the settle's beats: the settle is watched, the bloom gets out of the way
+ * so the bars are riding the music as soon as possible. */
+const BLOOM_MS = 140; // DUR[2]
 
 /** Wake state survives mode-switch remounts (the mode-keyed subtree tears
  * the component down) so the separator doesn't re-bloom from the dot on
@@ -120,6 +127,11 @@ export function Waveform({ trailing }: { trailing?: boolean }) {
       raf = requestAnimationFrame(frame);
     };
 
+    // Distinguishes a running bloom ladder from a settle ladder — the phase
+    // names alone are ambiguous, and loud payloads arrive at ~30Hz while the
+    // bloom plays; they must not clear or restart it.
+    let blooming = false;
+
     const unsub = subscribeBands((b) => {
       latest = b;
       if (b.level > WAKE_LEVEL) {
@@ -127,10 +139,36 @@ export function Waveform({ trailing }: { trailing?: boolean }) {
           window.clearTimeout(sleepTimer);
           sleepTimer = null;
         }
-        clearSeq();
         lastAlive = true;
-        setPhase("alive");
-        start();
+        if (blooming) {
+          // Reverse ladder in flight — let it finish into "alive".
+        } else if (
+          phaseRef.current === "rest" &&
+          !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+          // Bloom from rest: walk the settle ladder backward. "one" first —
+          // the muted middot crossfades out under the accent survivor
+          // (identical geometry, so it reads as the dot catching the color).
+          blooming = true;
+          setPhase("one");
+          seqTimers.push(window.setTimeout(() => setPhase("three"), BLOOM_MS));
+          seqTimers.push(window.setTimeout(() => setPhase("dots"), BLOOM_MS * 2));
+          seqTimers.push(
+            window.setTimeout(() => {
+              blooming = false;
+              setPhase("alive");
+              start();
+            }, BLOOM_MS * 3),
+          );
+        } else if (phaseRef.current !== "alive") {
+          // Wake mid-settle (or reduced motion at rest): snap straight back —
+          // an interrupted collapse recovers fast, it doesn't re-choreograph.
+          clearSeq();
+          setPhase("alive");
+          start();
+        } else {
+          start();
+        }
       } else {
         // Quiet: let the bars decay, and fall back to the dot if it holds.
         // Pause emits a single zero payload, so this must be wall-clock.
