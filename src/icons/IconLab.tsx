@@ -107,49 +107,54 @@ function SeekDemo({ dir }: { dir: -1 | 1 }) {
   );
 }
 
-/** Mock of App's mode ladder: same key={mode} remount, same layoutId slots,
- * same destination-named buttons — verifies the glide + cross-remount glyph
- * morph without a Tauri window. */
+/** Mock of App's anchored ModeCluster: the seats live OUTSIDE the resizing
+ * box and never move — hidden buttons keep their seat (opacity-0, inert) so
+ * the survivors never slide, and the up seat folds expand↔mic in place. The
+ * box grows out of its top-right corner like a top-right-docked window. */
 function ModeDemo() {
   const [mode, setMode] = useState<"pill" | "card" | "expanded">("card");
   const reduced = useReducedMotion() ?? false;
-  const layoutT = {
-    layout: { duration: reduced ? 0 : DUR[3] / 1000, ease: INOUT },
-    // Keep whileTap's scale on the tokens, not motion's default spring.
-    scale: { duration: reduced ? 0 : DUR[1] / 1000, ease: [...EASE.out] as [number, number, number, number] },
-  };
-  const btn = (to: MorphName, slot: string, onClick: () => void, label: string) => (
-    <motion.button
-      key={slot}
+  const btn = (to: MorphName, hidden: boolean, onClick: () => void, label: string) => (
+    <button
       type="button"
-      layoutId={slot}
-      transition={layoutT}
-      whileTap={{ scale: reduced ? 1 : 0.95 }}
       onClick={onClick}
       aria-label={label}
       title={label}
-      className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors duration-2 ease-out-tk hover:bg-fg/10 hover:text-fg"
+      aria-hidden={hidden || undefined}
+      tabIndex={hidden ? -1 : undefined}
+      className={`grid h-7 w-7 place-items-center rounded-md text-muted transition duration-2 ease-out-tk hover:bg-fg/10 hover:text-fg active:scale-95 ${
+        hidden ? "pointer-events-none opacity-0" : "pointer-events-auto"
+      }`}
     >
-      <MorphIcon name={to} size={13} slot={slot} dur={DUR[3]} ease={EASE.inOut} />
-    </motion.button>
+      <MorphIcon name={to} size={13} dur={DUR[3]} ease={EASE.inOut} />
+    </button>
   );
   const size = { pill: [300, 48], card: [380, 124], expanded: [380, 240] }[mode];
   return (
-    <motion.div
-      key={mode}
-      animate={{ width: size[0], height: size[1] }}
-      initial={false}
-      transition={{ duration: reduced ? 0 : DUR[3] / 1000, ease: INOUT }}
-      className="flex flex-col rounded-xl border border-border/10 bg-surface-2 p-2"
-    >
-      <div className="flex items-center justify-end gap-1">
-        <span className="mr-auto pl-1 text-xs text-muted">{mode}</span>
-        {mode === "pill" && btn("expand", "mode-secondary", () => setMode("card"), "Expand to card")}
-        {mode === "card" && btn("contract", "mode-secondary", () => setMode("pill"), "Collapse to pill")}
-        {mode === "card" && btn("mic", "mode-primary", () => setMode("expanded"), "Show lyrics")}
-        {mode === "expanded" && btn("contract", "mode-primary", () => setMode("card"), "Back to card")}
+    <div className="relative h-[240px]">
+      <motion.div
+        animate={{ width: size[0], height: size[1] }}
+        initial={false}
+        transition={{ duration: reduced ? 0 : DUR[3] / 1000, ease: INOUT }}
+        className="absolute right-0 top-0 rounded-xl border border-border/10 bg-surface-2"
+      >
+        <span className="absolute left-3 top-3 text-xs text-muted">{mode}</span>
+      </motion.div>
+      <div className="pointer-events-none absolute right-1 top-2.5 z-10 flex items-center gap-1">
+        {btn(
+          "contract",
+          mode === "pill",
+          () => setMode(mode === "expanded" ? "card" : "pill"),
+          mode === "expanded" ? "Collapse to card" : "Collapse to pill",
+        )}
+        {btn(
+          mode === "pill" ? "expand" : "mic",
+          mode === "expanded",
+          () => setMode(mode === "pill" ? "card" : "expanded"),
+          mode === "pill" ? "Expand to card" : "Show lyrics",
+        )}
       </div>
-    </motion.div>
+    </div>
   );
 }
 
@@ -175,7 +180,7 @@ export function IconLab() {
             <SeekDemo dir={1} />
           </div>
         </Section>
-        <Section title="Mode ladder — destination-named buttons, layoutId glide + slot morph">
+        <Section title="Mode ladder — anchored seats, glyphs morph in place">
           <ModeDemo />
         </Section>
         <Section title="At size">

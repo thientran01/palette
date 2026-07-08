@@ -446,47 +446,82 @@ function PlayerBadge({ player }: { player: NowPlaying["player"] }) {
 
 /** Mode switch buttons: expand/contract corner brackets for the size ladder,
  * a mic for the lyrics view — action verbs, not container pictograms (v1's
- * pill/card/lyrics glyphs read as abstract shapes at 13px). Two stable slots
- * pair layoutId (button glides across the mode remount) with MorphIcon's
- * registry (the glyph morphs from whatever the slot last showed — expand
- * folds into contract as the window grows). Clocked to dock.rs's 200ms
- * EASE.inOut window resize so window, glide, and glyph move as one gesture. */
+ * pill/card/lyrics glyphs read as abstract shapes at 13px). Buttons live in
+ * ModeCluster's fixed seats and never unmount: an absent action hides in
+ * place (opacity-0, inert) so its neighbors never slide, and the glyph morph
+ * plays on a stationary stage. Icon morphs stay clocked to dock.rs's 200ms
+ * EASE.inOut window resize so window and glyph move as one gesture. */
 function ModeButton({
   to,
   label,
-  slot,
+  hidden,
   onClick,
 }: {
   to: "expand" | "contract" | "mic";
   label: string;
-  slot: "mode-primary" | "mode-secondary";
+  hidden?: boolean;
   onClick: () => void;
 }) {
-  const reducedMotion = useReducedMotion();
   return (
-    <motion.button
+    <button
       type="button"
-      layoutId={slot}
-      transition={{
-        layout: {
-          duration: reducedMotion ? 0 : DUR[3] / 1000,
-          ease: [...EASE.inOut] as [number, number, number, number],
-        },
-        // Without this, whileTap's scale runs on motion's default spring —
-        // press feedback must ride the tokens like every other button.
-        scale: {
-          duration: reducedMotion ? 0 : DUR[1] / 1000,
-          ease: [...EASE.out] as [number, number, number, number],
-        },
-      }}
-      whileTap={{ scale: reducedMotion ? 1 : 0.95 }}
       aria-label={label}
       title={label}
+      aria-hidden={hidden || undefined}
+      tabIndex={hidden ? -1 : undefined}
       onClick={onClick}
-      className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors duration-2 ease-out-tk hover:bg-fg/10 hover:text-fg"
+      className={`grid h-7 w-7 place-items-center rounded-md text-muted transition duration-2 ease-out-tk hover:bg-fg/10 hover:text-fg active:scale-95 ${
+        hidden ? "pointer-events-none opacity-0" : "pointer-events-auto"
+      }`}
     >
-      <MorphIcon name={to} size={13} slot={slot} dur={DUR[3]} ease={EASE.inOut} />
-    </motion.button>
+      <MorphIcon name={to} size={13} dur={DUR[3]} ease={EASE.inOut} />
+    </button>
+  );
+}
+
+/** The mode ladder's one seat map — hoisted OUT of the mode-keyed remount
+ * (the expanded view's "chrome holds still" rule, applied across modes) and
+ * pinned at the window's top-right corner, identical insets in every mode.
+ * The cursor never chases the buttons, and with no layoutId glide the 13px
+ * glyph morph finally reads (it used to fly across the remount mid-morph).
+ * Seat semantics are fixed: the outer seat goes UP the ladder (expand in
+ * pill, mic in card — one persistent button, so pill→card folds expand→mic
+ * in place), the inner seat goes DOWN (contract — never morphs, never
+ * moves between card and expanded; only its target retags). The window
+ * resize still translates the corner when docked anywhere but top-right —
+ * dock.rs grows out of the docked corner — but the seats hold within it. */
+function ModeCluster({
+  np,
+  mode,
+  setMode,
+}: {
+  np: NowPlaying;
+  mode: Mode;
+  setMode: (m: Mode) => void;
+}) {
+  return (
+    // pointer-events-none on the frame: hidden cells overhang the pill's
+    // play/pause — clicks and drags must fall through to what's beneath.
+    <div className="pointer-events-none absolute right-2.5 top-2.5 z-10 flex items-center gap-1">
+      <span
+        aria-hidden={mode === "pill" || undefined}
+        className={`transition-opacity duration-2 ease-out-tk ${mode === "pill" ? "opacity-0" : ""}`}
+      >
+        <PlayerBadge player={np.player} />
+      </span>
+      <ModeButton
+        to="contract"
+        label={mode === "expanded" ? "Collapse to card" : "Collapse to pill"}
+        hidden={mode === "pill"}
+        onClick={() => setMode(mode === "expanded" ? "card" : "pill")}
+      />
+      <ModeButton
+        to={mode === "pill" ? "expand" : "mic"}
+        label={mode === "pill" ? "Expand to card" : "Show lyrics"}
+        hidden={mode === "expanded"}
+        onClick={() => setMode(mode === "pill" ? "card" : "expanded")}
+      />
+    </div>
   );
 }
 
@@ -776,9 +811,10 @@ const EXIT_LEAD_MS = 40;
 
 /**
  * Expanded mode: big-art fallback while lyrics fetch, karaoke view once they
- * land. Transport, progress, badge and the collapse button are HOISTED out of
- * the swap — chrome holds perfectly still (and the rAF-driven progress fill
- * never remounts mid-write); only the content region crossfades. The arrival
+ * land. Transport and progress are HOISTED out of the swap — chrome holds
+ * perfectly still (and the rAF-driven progress fill never remounts
+ * mid-write); only the content region crossfades. (The badge and mode
+ * buttons hoisted further, into App's ModeCluster.) The arrival
  * is choreographed (art exhales with the house blur, rows cascade outward
  * from the current line, the accent marker ignites last); the reverse — a
  * track change — exits fast and plain: continuity is earned by content
@@ -790,14 +826,12 @@ function ExpandedView({
   lyrics,
   seekable,
   playing,
-  onCollapse,
 }: {
   np: NowPlaying;
   artUrl: string | null;
   lyrics: LyricsState;
   seekable: boolean;
   playing: boolean;
-  onCollapse: () => void;
 }) {
   const reducedMotion = useReducedMotion();
   // Key-stamped gate: never render the new track's header over the old
@@ -843,13 +877,6 @@ function ExpandedView({
 
   return (
     <div className="relative flex h-full flex-col gap-2 px-3 pb-2 pt-3">
-      {/* Pinned chrome — identical seat in both states, so it never moves.
-          top-5 centers the 28px buttons on the lyrics header's 44px art row
-          (pt-3 + (44-28)/2), where they used to live inline. */}
-      <div className="absolute right-2 top-5 z-10 flex items-center gap-1">
-        <PlayerBadge player={np.player} />
-        <ModeButton to="contract" label="Collapse to card" slot="mode-primary" onClick={onCollapse} />
-      </div>
       <div className="relative min-h-0 flex-1">
         <AnimatePresence initial={false}>
           {lyricsLive ? (
@@ -865,7 +892,8 @@ function ExpandedView({
               exit={{ opacity: 0, pointerEvents: "none", transition: exitFast }}
               className="absolute inset-0 flex flex-col gap-2"
             >
-              <div className="flex items-center gap-2.5 pr-16">
+              {/* pr clears App's pinned ModeCluster (3 cells + gaps). */}
+              <div className="flex items-center gap-2.5 pr-22">
                 <Art url={artUrl} size={44} radiusPx={6} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[15px] font-medium text-fg">{np.title}</p>
@@ -998,7 +1026,7 @@ function App() {
   };
 
   return (
-    <div className="h-screen p-1.5" onMouseDown={onDragStart}>
+    <div className="relative h-screen p-1.5" onMouseDown={onDragStart}>
       <motion.div
         key={mode}
         {...morph}
@@ -1014,7 +1042,8 @@ function App() {
           </div>
         ) : mode === "pill" ? (
           <>
-            <div className="flex h-full items-center gap-2 pl-1.5 pr-1">
+            {/* pr clears the ModeCluster's one visible pill seat. */}
+            <div className="flex h-full items-center gap-2 pl-1.5 pr-10">
               <Art url={shownArt} size={26} radiusPx={6} />
               <p className="min-w-0 flex-1 truncate text-xs font-medium text-fg">
                 {np.title}
@@ -1022,7 +1051,6 @@ function App() {
                 <span className="font-normal text-muted">{np.artist}</span>
               </p>
               <PlayPauseButton size="sm" iconSize={16} playing={playing} />
-              <ModeButton to="expand" label="Expand to card" slot="mode-secondary" onClick={() => setMode("card")} />
             </div>
             {/* Non-interactive progress hairline — still announced to AT. */}
             <Hairline np={np} />
@@ -1031,14 +1059,8 @@ function App() {
           <div className="flex h-full items-center gap-3 px-3">
             <Art url={shownArt} size={72} radiusPx={8} />
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <div className="flex items-center gap-1">
-                <p className="min-w-0 flex-1 truncate text-[15px] font-medium text-fg">{np.title}</p>
-                {/* Windows routes commands to the OS "current" session, which
-                    hops between apps — always show which app this card controls. */}
-                <PlayerBadge player={np.player} />
-                <ModeButton to="contract" label="Collapse to pill" slot="mode-secondary" onClick={() => setMode("pill")} />
-                <ModeButton to="mic" label="Show lyrics" slot="mode-primary" onClick={() => setMode("expanded")} />
-              </div>
+              {/* pr clears App's pinned ModeCluster (badge + 2 seats). */}
+              <p className="truncate pr-22 text-[15px] font-medium text-fg">{np.title}</p>
               <p className="truncate text-xs text-muted">
                 {np.artist}
                 <Waveform trailing={!np.album} />
@@ -1057,10 +1079,14 @@ function App() {
             lyrics={lyrics}
             seekable={seekable}
             playing={playing}
-            onCollapse={() => setMode("card")}
           />
         )}
       </motion.div>
+      {/* Cross-mode chrome — pinned over the card, outside the mode-keyed
+          remount, so the seats hold still while everything else morphs.
+          (Also shows which app the widget controls: Windows re-points
+          commands to whichever session played most recently.) */}
+      {np && np.player !== "none" && <ModeCluster np={np} mode={mode} setMode={setMode} />}
       {/* Broken-art detector — OUTSIDE the mode-keyed subtree so the data URL
           isn't re-decoded on every mode switch, only per track. */}
       {artUrl && artUrl !== brokenArtUrl && (

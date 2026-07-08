@@ -1,40 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { DUR, EASE } from "../lib/tokens";
 import { ICONS, STROKE_WIDTH, type MorphName } from "./geometry";
-
-/** Last glyph rendered into each named slot. Module-level because App keys
- * the whole mode subtree by mode — a freshly mounted mode button has no
- * in-tree memory of the glyph the outgoing button showed, so it reads its
- * FROM state here and morphs instead of popping. */
-const lastGlyph = new Map<string, MorphName>();
 
 const OUT = [...EASE.out] as [number, number, number, number];
 
 export function MorphIcon({
   name,
   size,
-  slot,
   dur = DUR[3],
   ease = EASE.inOut,
   className,
 }: {
   name: MorphName;
   size: number;
-  /** Continuity slot (pairs with the button's layoutId, e.g. "mode-primary"):
-   * the glyph morphs FROM whatever this slot last showed, across remounts. */
-  slot?: string;
   dur?: number;
   ease?: readonly [number, number, number, number];
   className?: string;
 }) {
   const reduced = useReducedMotion() ?? false;
-  const [mountName] = useState<MorphName>(() => (slot ? (lastGlyph.get(slot) ?? name) : name));
-  const prevName = useRef<MorphName>(mountName);
+  const prevName = useRef<MorphName>(name);
   useEffect(() => {
-    if (slot) lastGlyph.set(slot, name);
     prevName.current = name;
-  }, [slot, name]);
+  }, [name]);
 
   const from = ICONS[prevName.current];
   const to = ICONS[name];

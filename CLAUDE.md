@@ -48,12 +48,19 @@ src/icons/      morphing icon system (benji.org/morphing-icons-with-claude, gene
                 every icon = 3 strokes × 2 cubics with identical command skeletons, so
                 any icon morphs into any other by tweening d strings — geometry.ts is
                 the data (stroke ORDER is the correspondence map; prev is deliberately
-                order-swapped, don't re-sort), MorphIcon.tsx renders + morphs (slot
-                registry carries the FROM glyph across App's mode-keyed remounts).
+                order-swapped, don't re-sort), MorphIcon.tsx renders + morphs (plain
+                name-prop driven; a glyph that must morph across a UI transition lives
+                in a component hoisted OUT of the remounting subtree, not a registry).
                 Mode buttons: expand/contract corner brackets for the size ladder +
                 a mic for the lyrics view — action verbs, not container pictograms
                 (v1 pill/card/lyrics pictograms read as abstract shapes at 13px) and
-                never a direction chevron. Dev sequencer: npm run dev → /?lab
+                never a direction chevron. They live in App's ModeCluster, pinned at
+                the window's top-right OUTSIDE the mode-keyed remount: two fixed
+                seats (outer goes UP the ladder — one persistent button folding
+                expand↔mic in place; inner is contract, never moves or morphs) and
+                absent actions hide in their seat (opacity-0, inert) instead of
+                unmounting, so surviving buttons never slide and the cursor never
+                chases across modes. Dev sequencer: npm run dev → /?lab
 ```
 
 Design rule: chrome stays neutral (house semantic tokens); the album-art palette is the **accent layer only** — progress fills, the **living separator** (src/Waveform.tsx — a colorless muted middot between artist and album that blooms into five Apple-style accent capsules while music plays and settles back on pause; replaces the em dash in every mode; the ONLY audio-reactive surface; supersedes the art-halo direction and the shell glow blessed 2026-07-06), and the current-lyric **marker** (the lyric line's text stays fg — extracted accents only guarantee 3:1, below the 4.5:1 text floor). No glow anywhere: the card shell shadow is neutral black and non-reactive (lift only), the art carries no shadow. The art never moves; nothing moves *ambiently* except the separator's bars — interactive icon glyphs may morph in response to input (press, mode change), per src/icons/. Accent never colors text or chrome surfaces. Motion uses EASE/DUR tokens — `/emil-pass` binds to them. Transitions earn continuity by content identity: arrival choreography (the expanded view's lyric cascade) is reserved for content the user actually waited on; on a track change the outgoing view exits fast and plain — stale art/lyrics never get choreographed continuity, and chrome (transport/progress/badge) holds still by living outside the swap.
