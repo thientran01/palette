@@ -36,8 +36,14 @@ src-tauri/src/
 src/            React widget: pill ↔ card ↔ expanded modes; lib/posClock.ts is the ONE
                 owner of playback position (monotonic per track while playing — raw pairs
                 in, display clock out; all seek/pause/jitter filtering lives there);
-                expanded = karaoke lyrics view
-                (click-line-to-seek) with big-art fallback; palette.ts accent extraction
+                expanded = karaoke lyrics view (click-line-to-seek — clicks land
+                VOCAL_LEAD_MS before the line so the clicked line is the one that
+                highlights) with big-art fallback; palette.ts accent extraction.
+                Per-player timing constants (posClock JITTER_BAND_MS, lrc
+                VOCAL_LEAD_MS) mirror docs/smtc-support-matrix.md — update both
+                together. Browser mock: npm run dev → /?am replays Apple Music's
+                pathological emit profile (1s-floored positions, pause-era stamp on
+                resume, can_seek=false) for posClock repro without a live player
 src/icons/      morphing icon system (benji.org/morphing-icons-with-claude, generalized):
                 every icon = 3 strokes × 2 cubics with identical command skeletons, so
                 any icon morphs into any other by tweening d strings — geometry.ts is
