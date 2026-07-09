@@ -10,7 +10,7 @@ Grab `Pulse_x.y.z_x64-setup.exe` from the [latest release](https://github.com/th
 
 **Hotkeys:** `Ctrl+Alt+K` play/pause · `Ctrl+Alt+←/→` seek ±10s · `Ctrl+Alt+N/P` next/previous · `Ctrl+Alt+M` show/hide
 
-**Tray menu:** Show/Hide · Reset position · Start at login (opt-in) · Quit
+**Tray menu:** Show/Hide · Reset position · Start at login (opt-in) · Check for updates · Quit
 
 ## Build from source
 

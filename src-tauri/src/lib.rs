@@ -191,6 +191,106 @@ fn toggle_widget(app: &AppHandle) {
     }
 }
 
+/// Push a label/enabled change to a tray menu item from any thread — menu
+/// items are UI objects, so writes hop to the main thread.
+fn set_menu_label(
+    app: &AppHandle,
+    item: &tauri::menu::MenuItem<tauri::Wry>,
+    text: &'static str,
+    enabled: bool,
+) {
+    let item = item.clone();
+    let _ = app.run_on_main_thread(move || {
+        let _ = item.set_text(text);
+        let _ = item.set_enabled(enabled);
+    });
+}
+
+/// Check the latest GitHub release and install it if newer. Shared by the
+/// silent launch check (feedback: None) and the tray "Check for updates"
+/// entry (feedback: Some — the item's label narrates install/outcome).
+/// Success normally never returns on Windows: the passive NSIS installer
+/// kills this process and relaunches; restart() is the documented pattern
+/// and the relaunch guarantee if the installer doesn't do it.
+/// One update flow at a time — the silent launch check and a tray click can
+/// otherwise race two concurrent NSIS installs. Never cleared on the install
+/// path (the process dies there).
+static UPDATE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+enum UpdateOutcome {
+    Installed,
+    UpToDate,
+    /// Dev builds check but never install: the release would land in
+    /// %LOCALAPPDATA%\Pulse while restart() relaunches the DEV exe.
+    DevAvailable,
+}
+
+fn spawn_update_check(app: &AppHandle, feedback: Option<tauri::menu::MenuItem<tauri::Wry>>) {
+    use tauri_plugin_updater::UpdaterExt;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if UPDATE_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            // Another flow is mid-check/install (launch check racing a tray
+            // click) — put the entry back rather than leaving "Checking…".
+            if let Some(item) = &feedback {
+                set_menu_label(&app, item, "Check for updates", true);
+            }
+            return;
+        }
+        let result: Result<UpdateOutcome, String> = async {
+            let updater = app.updater().map_err(|e| e.to_string())?;
+            match updater.check().await.map_err(|e| e.to_string())? {
+                Some(update) => {
+                    if cfg!(debug_assertions) {
+                        return Ok(UpdateOutcome::DevAvailable);
+                    }
+                    if let Some(item) = &feedback {
+                        set_menu_label(&app, item, "Installing update…", false);
+                    }
+                    update
+                        .download_and_install(|_, _| {}, || {})
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(UpdateOutcome::Installed)
+                }
+                None => Ok(UpdateOutcome::UpToDate),
+            }
+        }
+        .await;
+        UPDATE_IN_FLIGHT.store(false, Ordering::SeqCst);
+        match result {
+            Ok(UpdateOutcome::Installed) => app.restart(),
+            Ok(UpdateOutcome::UpToDate) => {
+                if let Some(item) = &feedback {
+                    set_menu_label(&app, item, "Up to date", false);
+                }
+            }
+            Ok(UpdateOutcome::DevAvailable) => {
+                if let Some(item) = &feedback {
+                    set_menu_label(&app, item, "Update available (dev — not installing)", false);
+                }
+            }
+            Err(e) => {
+                eprintln!("update check failed: {e}");
+                if let Some(item) = &feedback {
+                    set_menu_label(&app, item, "Update failed", false);
+                }
+            }
+        }
+        // Leave the outcome readable for a beat, then restore the entry.
+        if let Some(item) = feedback {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(4));
+                set_menu_label(&app, &item, "Check for updates", true);
+            });
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -264,9 +364,13 @@ pub fn run() {
                 autostart_on,
                 None::<&str>,
             )?;
+            let update_check =
+                MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Pulse", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_hide, &reset, &autostart, &quit])?;
+            let menu =
+                Menu::with_items(app, &[&show_hide, &reset, &autostart, &update_check, &quit])?;
             let autostart_item = autostart.clone();
+            let update_item = update_check.clone();
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Pulse")
@@ -289,6 +393,13 @@ pub fn run() {
                         // the registry's actual state so a failed toggle
                         // doesn't leave the checkmark lying.
                         let _ = autostart_item.set_checked(al.is_enabled().unwrap_or(false));
+                    }
+                    "update" => {
+                        // Disable before spawning — we're on the main thread
+                        // here, so a double-click can't race two checks.
+                        let _ = update_item.set_text("Checking…");
+                        let _ = update_item.set_enabled(false);
+                        spawn_update_check(app, Some(update_item.clone()));
                     }
                     "quit" => app.exit(0),
                     _ => {}
@@ -331,40 +442,15 @@ pub fn run() {
                 }
             }
 
-            // Self-update: one check at launch against the latest GitHub
-            // release, release builds only (a dev build "updating" itself to
-            // the published version would be chaos). Passive install mode —
-            // NSIS shows a small progress bar, replaces the app, relaunches.
-            // Every failure path is a shrug: no network / rate-limited / repo
-            // gone just means this launch runs the current version.
+            // Self-update: one silent check at launch against the latest
+            // GitHub release, release builds only (a dev build "updating"
+            // itself to the published version would be chaos). The tray's
+            // "Check for updates" re-runs the same flow on demand — in any
+            // build, since a click is deliberate. Every failure path is a
+            // shrug: no network / rate-limited / repo gone just means this
+            // launch runs the current version.
             #[cfg(not(debug_assertions))]
-            {
-                use tauri_plugin_updater::UpdaterExt;
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let updater = match handle.updater() {
-                        Ok(u) => u,
-                        Err(e) => {
-                            eprintln!("updater unavailable: {e}");
-                            return;
-                        }
-                    };
-                    match updater.check().await {
-                        Ok(Some(update)) => {
-                            match update.download_and_install(|_, _| {}, || {}).await {
-                                // Usually unreachable on Windows — the NSIS
-                                // installer kills this process during install —
-                                // but the documented pattern, and the relaunch
-                                // guarantee if the installer doesn't do it.
-                                Ok(()) => handle.restart(),
-                                Err(e) => eprintln!("update install failed: {e}"),
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(e) => eprintln!("update check failed: {e}"),
-                    }
-                });
-            }
+            spawn_update_check(app.handle(), None);
 
             // Audio-reactive capture switch: on ONLY while visible AND playing
             // (plan M4 — a hidden or paused widget does zero audio work).
