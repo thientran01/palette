@@ -1,6 +1,6 @@
 [package]
 name = "pulse"
-version = "0.4.0"
+version = "0.4.1"
 description = "Pulse — mini music player widget for Windows"
 authors = ["Thien Tran"]
 edition = "2021"
