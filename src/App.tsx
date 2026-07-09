@@ -649,7 +649,10 @@ function ProgressBar({ np }: { np: NowPlaying }) {
       {/* No JSX children: the rAF driver owns this text (a rendered child
           would let drag re-renders clobber the drag-preview time). The
           pre-paint write() populates it at mount. */}
-      <span ref={timeRef} className="w-9 text-right text-[11px] leading-4 tabular-nums text-muted" />
+      {/* Hug width (Figma 874:299): the elapsed label's left edge sits flush
+          on the album cover's left edge. tabular-nums keeps the width stable
+          within a digit count, so the track edge only moves at e.g. 9:59→10:00. */}
+      <span ref={timeRef} className="text-[11px] leading-4 tabular-nums text-muted" />
       <div
         ref={barRef}
         role={seekable ? "slider" : "progressbar"}
@@ -709,7 +712,7 @@ function ProgressBar({ np }: { np: NowPlaying }) {
           />
         </div>
       </div>
-      <span className="w-9 text-[11px] leading-4 tabular-nums text-muted">{fmt(np.duration_ms)}</span>
+      <span className="text-[11px] leading-4 tabular-nums text-muted">{fmt(np.duration_ms)}</span>
     </div>
   );
 }
