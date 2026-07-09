@@ -21,7 +21,7 @@ type Mode = "pill" | "card" | "expanded";
  * (200ms EASE.inOut on the Rust side) while the content morphs. */
 const MODE_SIZES: Record<Mode, [number, number]> = {
   pill: [300, 48],
-  card: [380, 132], // art block + centered transport + full-width progress, no slack
+  card: [380, 146], // Figma spec 874:299: art block, left transport, full-width progress
   expanded: [380, 440], // lyrics home; big-art fallback gets breathing room
 };
 
@@ -646,7 +646,7 @@ function ProgressBar({ np }: { np: NowPlaying }) {
       {/* No JSX children: the rAF driver owns this text (a rendered child
           would let drag re-renders clobber the drag-preview time). The
           pre-paint write() populates it at mount. */}
-      <span ref={timeRef} className="w-9 text-right text-[11px] tabular-nums text-muted" />
+      <span ref={timeRef} className="w-9 text-right text-[11px] leading-4 tabular-nums text-muted" />
       <div
         ref={barRef}
         role={seekable ? "slider" : "progressbar"}
@@ -706,7 +706,7 @@ function ProgressBar({ np }: { np: NowPlaying }) {
           />
         </div>
       </div>
-      <span className="w-9 text-[11px] tabular-nums text-muted">{fmt(np.duration_ms)}</span>
+      <span className="w-9 text-[11px] leading-4 tabular-nums text-muted">{fmt(np.duration_ms)}</span>
     </div>
   );
 }
@@ -751,7 +751,7 @@ function Art({ url, size, radiusPx }: { url: string | null; size: number; radius
 
 function Transport({ np, seekable, playing }: { np: NowPlaying; seekable: boolean; playing: boolean }) {
   return (
-    <div className="flex items-center gap-0.5">
+    <div className="flex items-center gap-1">
       <IconButton label="Previous track" onClick={commands.prev}>
         <MorphIcon name="prev" size={16} />
       </IconButton>
@@ -1028,32 +1028,32 @@ function App() {
             <Hairline np={np} />
           </>
         ) : mode === "card" ? (
-          <div className="flex h-full gap-3 px-3 pb-1.5 pt-3">
-            {/* Two columns: the art anchors the left; EVERYTHING else lives in
-                the right column, so transport and progress share that column's
-                centerline. The art's fixed 80px equals title row 28 + artist
-                16 + transport 32 + two 2px gaps — top flush with the title,
-                bottom flush with the transport row. */}
-            <Art url={shownArt} size={80} radiusPx={8} />
-            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <div className="flex h-7 items-center gap-1">
-                <p className="min-w-0 flex-1 truncate text-[15px] font-medium text-fg">{np.title}</p>
-                {/* Windows routes commands to the OS "current" session, which
-                    hops between apps — always show which app this card controls. */}
-                <PlayerBadge player={np.player} />
-                <ModeButton to="contract" label="Collapse to pill" slot="mode-secondary" onClick={() => setMode("pill")} />
-                <ModeButton to="mic" label="Show lyrics" slot="mode-primary" onClick={() => setMode("expanded")} />
-              </div>
-              <p className="truncate text-xs leading-4 text-muted">
-                {np.artist}
-                <Waveform trailing={!np.album} />
-                {np.album}
-              </p>
-              <div className="flex justify-center">
+          <div className="flex h-full flex-col gap-3 p-3">
+            {/* Thien's Figma spec (Work / node 874:299, edited 2026-07-08):
+                80px art with a tight 4px gutter; title/artist/transport stack
+                left-aligned beside it — the stack's 80px (28+16+32+2px gaps)
+                keeps art top on the title and art bottom on the transport —
+                and the progress bar on its own full-width bottom row. */}
+            <div className="flex items-center gap-1">
+              <Art url={shownArt} size={80} radiusPx={8} />
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <div className="flex h-7 items-center gap-1">
+                  <p className="min-w-0 flex-1 truncate text-[15px] font-medium text-fg">{np.title}</p>
+                  {/* Windows routes commands to the OS "current" session, which
+                      hops between apps — always show which app this card controls. */}
+                  <PlayerBadge player={np.player} />
+                  <ModeButton to="contract" label="Collapse to pill" slot="mode-secondary" onClick={() => setMode("pill")} />
+                  <ModeButton to="mic" label="Show lyrics" slot="mode-primary" onClick={() => setMode("expanded")} />
+                </div>
+                <p className="truncate text-xs leading-4 text-muted">
+                  {np.artist}
+                  <Waveform trailing={!np.album} />
+                  {np.album}
+                </p>
                 <Transport np={np} seekable={seekable} playing={playing} />
               </div>
-              <ProgressBar np={np} />
             </div>
+            <ProgressBar np={np} />
           </div>
         ) : (
           <ExpandedView
