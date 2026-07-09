@@ -228,7 +228,10 @@ const LyricLineRow = memo(function LyricLineRow({
       <span
         aria-hidden
         data-marker
-        className={`absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-accent transition-opacity duration-3 ease-out-tk ${
+        // background-color joins opacity: an art-change retint must sweep the
+        // marker like every accent-painted surface (220ms EASE.out, the
+        // progress fills' retint timing) instead of snapping it.
+        className={`absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-accent [transition:opacity_200ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)] ${
           current ? "opacity-100" : "opacity-0"
         }`}
       />
@@ -393,7 +396,7 @@ function LyricsPanel({
           type="button"
           aria-label="Now — back to the current line"
           onClick={relatch}
-          className={`absolute left-1/2 z-10 flex -translate-x-1/2 items-center rounded-full border border-border/10 bg-surface-2/90 p-1.5 leading-none text-muted transition duration-2 ease-out-tk [animation:caption-in_140ms_var(--ease-out-tk)_both] hover:text-fg active:scale-95 ${
+          className={`absolute left-1/2 z-10 flex -translate-x-1/2 items-center rounded-full border border-border/10 bg-surface-2/90 p-1.5 leading-none text-muted [transition:color_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] [animation:caption-in_140ms_var(--ease-out-tk)_both] hover:text-fg active:scale-95 ${
             nowBelow ? "bottom-8" : "top-8"
           }`}
         >
@@ -456,7 +459,11 @@ function IconButton({
       disabled={disabled}
       onClick={onClick}
       onPointerDown={onPointerDown}
-      className={`grid place-items-center rounded-md text-fg transition duration-2 ease-out-tk hover:bg-fg/10 active:scale-95 disabled:pointer-events-none disabled:opacity-40 ${
+      // Press scale rides DUR[1] (ANIMATIONS_FROM_ZERO §6 — press feedback is
+      // 90ms) while hover bg and the disabled fade keep DUR[2]. Tailwind v4's
+      // scale-95 compiles to the native `scale` property, so that's the one
+      // the shorthand names.
+      className={`grid place-items-center rounded-md text-fg [transition:background-color_140ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/10 active:scale-95 disabled:pointer-events-none disabled:opacity-40 ${
         size === "xs" ? "h-6 w-6" : size === "sm" ? "h-7 w-7" : "h-8 w-8"
       }`}
     >
@@ -704,7 +711,7 @@ function ViewToggle({
         onClick={() => {
           if (!disabled) onToggle();
         }}
-        className={`grid h-7 w-7 place-items-center rounded-md transition duration-2 ease-out-tk ${
+        className={`grid h-7 w-7 place-items-center rounded-md [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] ${
           disabled ? "pointer-events-none text-muted opacity-30" : "text-fg hover:bg-fg/10 active:scale-95"
         }`}
       >
@@ -1340,6 +1347,20 @@ function App() {
   const morph = {
     initial: reducedMotion ? {} : { opacity: 0, scale: 0.98 },
     animate: { opacity: 1, scale: 1 },
+    // The outgoing shell dissolves in place (opacity only, no transform — the
+    // house exit rule) UNDER the incoming one's 200ms fade: without it the
+    // swap blinks the whole translucent widget toward the desktop for the
+    // morph's first frames (ANIMATIONS_FROM_ZERO §1 — outgoing 140ms EASE.out
+    // while both layers share the native resize window). pointerEvents dies
+    // at exit start so a stray click can't land on dead controls.
+    exit: {
+      opacity: 0,
+      pointerEvents: "none" as const,
+      transition: {
+        duration: reducedMotion ? 0 : DUR[2] / 1000,
+        ease: [...EASE.out] as [number, number, number, number],
+      },
+    },
     transition: { duration: reducedMotion ? 0 : DUR[3] / 1000, ease: [...EASE.out] as [number, number, number, number] },
   };
   const nothing = !np || np.player === "none";
@@ -1363,15 +1384,19 @@ function App() {
     setMode((m) => MODE_ORDER[Math.min(Math.max(MODE_ORDER.indexOf(m) + d, 0), MODE_ORDER.length - 1)]);
 
   return (
-    <div className="group/widget relative h-screen p-1.5" onMouseDown={onDragStart}>
-      <motion.div
-        key={mode}
-        {...morph}
-        // Shadow must die out inside the 6px window padding (p-1.5 on the
-        // root) — anything larger hard-clips at the transparent window edge
-        // and reads as a gray box on light surfaces.
-        className="relative flex h-full flex-col overflow-hidden rounded-xl border border-border/10 bg-surface/95 shadow-[0_1px_3px_rgb(0_0_0/0.18),0_3px_6px_rgb(0_0_0/0.12)]"
-      >
+    <div className="group/widget relative h-screen" onMouseDown={onDragStart}>
+      {/* AnimatePresence keeps the outgoing shell mounted for its 140ms exit
+          fade; absolute inset (not flow + root padding) lets the two shells
+          stack during the crossfade instead of pushing each other. */}
+      <AnimatePresence>
+        <motion.div
+          key={mode}
+          {...morph}
+          // Shadow must die out inside the 6px window inset (inset-1.5) —
+          // anything larger hard-clips at the transparent window edge and
+          // reads as a gray box on light surfaces.
+          className="absolute inset-1.5 flex flex-col overflow-hidden rounded-xl border border-border/10 bg-surface/95 shadow-[0_1px_3px_rgb(0_0_0/0.18),0_3px_6px_rgb(0_0_0/0.12)]"
+        >
         {nothing ? (
           <div className="flex h-full w-full items-center justify-center gap-2 text-muted">
             <MorphIcon name="note" size={22} />
@@ -1445,7 +1470,8 @@ function App() {
         ) : (
           <ExpandedView np={np} artUrl={shownArt} lyrics={lyrics} seekable={seekable} playing={playing} />
         )}
-      </motion.div>
+        </motion.div>
+      </AnimatePresence>
       {/* Outside the mode-keyed remount: the cluster never fades or rescales
           with the content morph, and — docked bottom-right — never moves on
           screen. See ModeCluster. */}

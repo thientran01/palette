@@ -86,8 +86,13 @@ let lastAlive = false;
  * transitioned while alive — the rAF loop owns it per frame. */
 function barClass(phase: Phase, i: number, size: Size): string {
   const g = GEOM[size];
+  // background-color in both lists: an art-change retint sweeps the capsules
+  // at 220ms EASE.out like every accent-painted surface (progress fills, the
+  // lyric marker) instead of snapping them. The survivor dot's rest-state
+  // drain keeps its own slower, delayed timing — that one is choreography,
+  // not a retint.
   if (phase === "alive")
-    return `${g.bar} [transition:height_220ms_var(--ease-out-tk),width_220ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk)]`;
+    return `${g.bar} [transition:height_220ms_var(--ease-out-tk),width_220ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)]`;
   // Distance from the center bar drives the collapse: "three" keeps the
   // survivor plus its immediate pair, so at lg the three outer pairs leave
   // on one beat — their 260ms fades on 200ms beats still read outside-in.
@@ -97,7 +102,7 @@ function barClass(phase: Phase, i: number, size: Size): string {
   // The survivor grows to the middot's size once it's alone, so the final
   // layer handoff is pixel-perfect.
   const dotSize = mid && (phase === "one" || phase === "rest") ? g.survivor : g.dot;
-  return `${dotSize} ${dropped ? `opacity-0 ${g.dropBlur}` : "opacity-100 blur-0"} [transition:height_260ms_var(--ease-out-tk),width_260ms_var(--ease-out-tk),transform_260ms_var(--ease-out-tk),opacity_260ms_var(--ease-out-tk),filter_260ms_var(--ease-out-tk)]`;
+  return `${dotSize} ${dropped ? `opacity-0 ${g.dropBlur}` : "opacity-100 blur-0"} [transition:height_260ms_var(--ease-out-tk),width_260ms_var(--ease-out-tk),transform_260ms_var(--ease-out-tk),opacity_260ms_var(--ease-out-tk),filter_260ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)]`;
 }
 
 export function Waveform({ trailing, size = "sm" }: { trailing?: boolean; size?: Size }) {
