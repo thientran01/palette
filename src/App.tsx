@@ -539,8 +539,11 @@ function TruncateTip({ text, className }: { text: string; className: string }) {
  * registry + layoutId stay so a future remount or seat change still morphs/
  * glides instead of popping. End-of-ladder buttons DISABLE in place (opacity
  * fade, 140ms EASE.out) — never unmount, which would shift the sibling.
- * pointer-events dies with it so a park-and-click drag never starts a window
- * drag from a dead button. */
+ * pointer-events-none makes a dead button TRANSPARENT to hit-testing, so the
+ * cluster wrapper swallows mousedown (see ModeCluster) — otherwise a press
+ * on it would fall through to the root drag handler and move the window.
+ * The click guard below covers keyboard activation: aria-disabled leaves the
+ * button focusable, so Enter/Space must explicitly no-op. */
 function ModeButton({
   to,
   label,
@@ -582,7 +585,9 @@ function ModeButton({
       aria-label={label}
       title={label}
       aria-disabled={disabled || undefined}
-      onClick={onClick}
+      onClick={() => {
+        if (!disabled) onClick();
+      }}
       className={`grid h-7 w-7 place-items-center rounded-md transition-colors duration-2 ease-out-tk ${
         disabled ? "pointer-events-none text-muted" : "text-fg hover:bg-fg/10"
       }`}
@@ -604,17 +609,25 @@ const MODE_ORDER: readonly Mode[] = ["pill", "card", "expanded"];
  * fades or rescales with the content morph — chrome holds still (the
  * expanded view's hoisted-chrome rule, promoted app-wide).
  *
- * Insets are shell-relative (right 8px). Vertically the card/expanded seat
- * is 10px up from the shell; the pill's 36px shell can't fit 28px + 10px,
- * so there the cluster centers (4px) — the 6px seat shift rides the same
- * 200ms EASE.inOut as the window resize, and the 28px targets overlap
- * across modes so a parked cursor still hits every rung.
+ * Positioned in WINDOW coordinates (this div lives in the p-1.5 root, not
+ * the shell): right-3.5 = 14px window = 8px from the shell edge. Bottom 16px
+ * window = the handoff's 10px shell seat in card/expanded; the pill's 36px
+ * shell can't fit 28px + 10px, so there it drops to 10px window (= 4px
+ * shell, vertically centered) — the 6px seat shift rides the same 200ms
+ * EASE.inOut as the window resize, and the 28px targets overlap across
+ * modes so a parked cursor still hits every rung.
  */
 function ModeCluster({ mode, onStep }: { mode: Mode; onStep: (d: -1 | 1) => void }) {
   return (
     <div
       className="absolute right-3.5 z-20 flex items-center gap-1 transition-[bottom] duration-3 ease-in-out-tk"
       style={{ bottom: mode === "pill" ? 10 : 16 }}
+      // Swallow mousedown: pointer-events-none makes a DISABLED button
+      // transparent to hit-testing, so without this a press on it (or the
+      // 4px gap between the buttons) would fall through to the root drag
+      // handler and move the window — from a control the user read as a
+      // click target.
+      onMouseDown={(e) => e.stopPropagation()}
     >
       <ModeButton
         to="contract"
@@ -793,9 +806,9 @@ function ProgressBar({ np }: { np: NowPlaying }) {
       {/* No JSX children: the rAF driver owns this text (a rendered child
           would let drag re-renders clobber the drag-preview time). The
           pre-paint write() populates it at mount. */}
-      {/* Hug width (Figma 874:299): the elapsed label's left edge sits flush
-          on the album cover's left edge. tabular-nums keeps the width stable
-          within a digit count, so the track edge only moves at e.g. 9:59→10:00. */}
+      {/* Hug width: the elapsed label's left edge sits flush on the album
+          cover's left edge. tabular-nums keeps the width stable within a
+          digit count, so the track edge only moves at e.g. 9:59→10:00. */}
       <span ref={timeRef} className="text-[11px] leading-4 tabular-nums text-muted" />
       <div
         ref={barRef}
