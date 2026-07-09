@@ -296,9 +296,12 @@ let lyricsGen = 0;
  * fetch from even STARTING — the "next song sits ~10s before lyrics show up"
  * stall. Here every call invokes immediately; a fetch superseded by a newer one
  * resolves to a miss (its track key is already stale, so useLyrics' lastKey
- * guard drops it regardless). Concurrency is bounded in practice by human
- * track-change pacing plus the Rust-side disk-cache / session-miss
- * short-circuit — a given track only reaches the network once per session.
+ * guard drops it regardless). There is no hard concurrency cap: a fast scrub
+ * through several uncached tracks can put a few fetches in flight at once, and
+ * a quick A→B→A flip can even fetch A twice before its cache write lands. That
+ * is acceptable here — fetches are human-paced and idempotent, and each track
+ * short-circuits on the Rust-side disk cache / session-miss set next time — but
+ * it is NOT the prior single-flight gate's hard "one in flight" guarantee.
  */
 function lyricsLatestWins(start: () => Promise<Lyrics>): Promise<Lyrics> {
   const gen = ++lyricsGen;

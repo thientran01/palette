@@ -226,8 +226,13 @@ pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_
             return Ok(Some(r));
         }
 
+        // The normalized-title search is a last resort, reached only when both
+        // prior attempts SERVED a negative. Skipping it when either was Offline
+        // matches the old `?`-propagation (which bailed on the first transport
+        // error) AND caps the degraded-network bail at one timeout window
+        // instead of chaining a third sequential 15s attempt.
         let norm = norm_title(title);
-        let norm_res = if !norm.is_empty() && norm != title {
+        let norm_res = if !exact_offline && !raw_offline && !norm.is_empty() && norm != title {
             search(artist, &norm, duration_s)
         } else {
             Ok(None)
