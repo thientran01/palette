@@ -1282,7 +1282,12 @@ function ExpandedView({
           transport (handoff order) so the transport is the very-bottom row —
           the anchored cluster shares its vertical band at the corner. */}
       <ProgressBar np={np} />
-      <div className="flex h-8 items-center justify-center">
+      {/* outline-offset 0: the md buttons fill this h-8 row, leaving only the
+          pb-0.5 (2px) between their bottom edge and the shell's overflow clip
+          — the house ring's 2px offset would push its bottom stroke entirely
+          past the clip line, so here the 2px stroke hugs the button instead
+          and exactly fits the clearance. */}
+      <div className="flex h-8 items-center justify-center [&_button:focus-visible]:[outline-offset:0px]">
         <Transport np={np} seekable={seekable} playing={playing} />
       </div>
     </div>
