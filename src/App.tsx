@@ -609,19 +609,24 @@ const MODE_ORDER: readonly Mode[] = ["pill", "card", "expanded"];
  * fades or rescales with the content morph — chrome holds still (the
  * expanded view's hoisted-chrome rule, promoted app-wide).
  *
- * Positioned in WINDOW coordinates (this div lives in the p-1.5 root, not
- * the shell): right-3.5 = 14px window = 8px from the shell edge. Bottom 16px
- * window = the handoff's 10px shell seat in card/expanded; the pill's 36px
- * shell can't fit 28px + 10px, so there it drops to 10px window (= 4px
- * shell, vertically centered) — the 6px seat shift rides the same 200ms
- * EASE.inOut as the window resize, and the 28px targets overlap across
- * modes so a parked cursor still hits every rung.
+ * Positioned in WINDOW coordinates (this div lives in the p-1.5 root, not the
+ * shell): right-3.5 = 14px window = 8px from the shell edge; bottom-4 = 16px
+ * window = the handoff's 10px shell seat. That seat is CONSTANT in every mode
+ * (no mode-dependent bottom) — docked bottom-right the window's bottom edge is
+ * pinned, so the cluster holds the exact same screen pixels across
+ * pill/card/expanded: the fixed-point guarantee, no drift even while hidden
+ * (ANIMATIONS.md §2 — "opacity only, zero transforms; the fixed-point
+ * guarantee includes the hidden state"). In the 36px pill shell a 28px button
+ * at this seat overhangs the shell top by 2px into the transparent window pad
+ * — invisible (the 13px glyph stays centered well inside the shell), and the
+ * price of the fixed point. Hidden at rest (opacity 0, pointer-events none),
+ * it reveals on widget hover (group/widget): opacity 0→1 over 140ms EASE.out,
+ * no motion.
  */
 function ModeCluster({ mode, onStep }: { mode: Mode; onStep: (d: -1 | 1) => void }) {
   return (
     <div
-      className="absolute right-3.5 z-20 flex items-center gap-1 transition-[bottom] duration-3 ease-in-out-tk"
-      style={{ bottom: mode === "pill" ? 10 : 16 }}
+      className="pointer-events-none absolute bottom-4 right-3.5 z-20 flex items-center gap-1 opacity-0 transition-opacity duration-2 ease-out-tk group-hover/widget:pointer-events-auto group-hover/widget:opacity-100"
       // Swallow mousedown: pointer-events-none makes a DISABLED button
       // transparent to hit-testing, so without this a press on it (or the
       // 4px gap between the buttons) would fall through to the root drag
@@ -894,6 +899,28 @@ function Hairline({ np }: { np: NowPlaying }) {
         className="h-full w-full origin-left bg-accent will-change-transform [transition:transform_90ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)]"
       />
     </div>
+  );
+}
+
+/** The pill's resting elapsed label — rAF-driven exactly like the card's
+ * (position never enters React state; the Waveform pattern). Fades out
+ * opacity-only on widget hover (ANIMATIONS.md §3) so the title/artist line
+ * never reflows as the controls take the corner. aria-hidden: the pill's
+ * Hairline progressbar already announces position, so the visible label is a
+ * glance-only duplicate. */
+function PillTime({ np }: { np: NowPlaying }) {
+  const timeRef = useRef<HTMLSpanElement>(null);
+  // Label only: the bar/fill refs stay unattached (useProgressDom null-guards
+  // them), so this drives no second progress surface.
+  const bar = useRef<HTMLDivElement>(null);
+  const fill = useRef<HTMLDivElement>(null);
+  useProgressDom(np.duration_ms, np.status === "playing", bar, fill, timeRef);
+  return (
+    <span
+      ref={timeRef}
+      aria-hidden
+      className="shrink-0 text-[11px] leading-4 tabular-nums text-muted transition-opacity duration-2 ease-out-tk group-hover/widget:opacity-0"
+    />
   );
 }
 
@@ -1191,7 +1218,7 @@ function App() {
     setMode((m) => MODE_ORDER[Math.min(Math.max(MODE_ORDER.indexOf(m) + d, 0), MODE_ORDER.length - 1)]);
 
   return (
-    <div className="relative h-screen p-1.5" onMouseDown={onDragStart}>
+    <div className="group/widget relative h-screen p-1.5" onMouseDown={onDragStart}>
       <motion.div
         key={mode}
         {...morph}
@@ -1206,16 +1233,31 @@ function App() {
             <span className="text-sm">Nothing playing</span>
           </div>
         ) : mode === "pill" ? (
+          /* "5a — time at rest" (ANIMATIONS.md §3): at rest the pill is pure
+             glance — art · title · artist · elapsed time, no buttons. On widget
+             hover the time fades out (keeping its flex slot so the title/artist
+             line never reflows) and a right-edge scrim carrying play/pause
+             fades in; the anchored bracket cluster joins from the app root. All
+             three cross at 140ms EASE.out, opacity only. */
           <>
-            {/* pr reserves the anchored cluster's corner zone (60px cluster
-                + 8px inset, measured from the shell's right edge). */}
-            <div className="flex h-full items-center gap-2 pl-3 pr-[70px]">
+            <div className="flex h-full items-center gap-2 px-3">
               <Art url={shownArt} size={26} radiusPx={6} />
               <p className="min-w-0 flex-1 truncate text-xs font-medium text-fg">
                 {np.title}
                 <Waveform trailing={!np.artist} />
                 <span className="font-normal text-muted">{np.artist}</span>
               </p>
+              <PillTime np={np} />
+            </div>
+            {/* Scrim + play/pause, revealed on hover. Absolute over the row so
+                nothing reflows; the gradient lets the artist text fade UNDER
+                the incoming control. 180px wide, play/pause ending 76px from
+                the shell right edge — an 8px gap before the corner cluster.
+                Stops 2px above the bottom so the progress hairline stays lit. */}
+            <div
+              className="pointer-events-none absolute bottom-0.5 right-0 top-0 flex w-[180px] items-center justify-end pr-[76px] opacity-0 transition-opacity duration-2 ease-out-tk group-hover/widget:pointer-events-auto group-hover/widget:opacity-100"
+              style={{ background: "linear-gradient(90deg, transparent, rgb(var(--surface) / 0.96) 45%)" }}
+            >
               <PlayPauseButton size="sm" iconSize={16} playing={playing} />
             </div>
             {/* Non-interactive progress hairline — still announced to AT. */}
