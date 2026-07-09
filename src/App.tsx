@@ -150,7 +150,18 @@ function useLyrics(np: NowPlaying | null): LyricsState {
   return state;
 }
 
-const BROWSE_RESUME_MS = 3500;
+/** Browsing hands control back three ways, fastest first: the "Now" chip
+ * (instant), scrolling back toward the live line into the re-latch band
+ * (instant), or wheel idle (this timeout — the fallback, not the only path,
+ * so it can sit tighter than the old 3500ms). */
+const BROWSE_RESUME_MS = 2000;
+/** Fraction of the viewport height around the live offset that counts as
+ * "back at now": a wheel tick that lands inside this band while moving
+ * TOWARD the live line re-latches auto-follow immediately. Toward-only, so
+ * the first tick of a browse (inside the band but moving away) still opens
+ * a browse instead of being swallowed. Also the chip's visibility gate —
+ * inside the band the live line is on screen and a chip would be noise. */
+const RELATCH_BAND = 0.5;
 
 /** Arrival cascade (index.css `.lyrics-entering`): rows radiate outward from
  * the current line. The step is per-row stagger spacing (like the settle
@@ -244,7 +255,9 @@ function LyricsPanel({
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [autoOffset, setAutoOffset] = useState(0);
-  // Wheel-scrolling pauses auto-follow; it resumes after a short idle.
+  // Wheel-scrolling pauses auto-follow; it resumes via the "Now" chip,
+  // scrolling back into the re-latch band, or a short idle (see RELATCH_BAND
+  // / BROWSE_RESUME_MS).
   const [manualOffset, setManualOffset] = useState<number | null>(null);
   const resumeTimer = useRef<number | undefined>(undefined);
 
@@ -299,9 +312,26 @@ function LyricsPanel({
 
   const browsing = manualOffset !== null;
   const offset = manualOffset ?? autoOffset;
+  const band = (viewportRef.current?.clientHeight ?? 0) * RELATCH_BAND;
+  // Where "now" sits relative to the browse — drives the chip's edge/arrow.
+  const nowBelow = browsing && autoOffset > (manualOffset as number);
+
+  const relatch = () => {
+    setManualOffset(null);
+    window.clearTimeout(resumeTimer.current);
+  };
 
   const onWheel = (e: React.WheelEvent) => {
-    const next = Math.round(Math.min(Math.max((manualOffset ?? autoOffset) + e.deltaY, 0), maxOffset()));
+    const prev = manualOffset ?? autoOffset;
+    const next = Math.round(Math.min(Math.max(prev + e.deltaY, 0), maxOffset()));
+    // Magnetic re-latch: arriving inside the band while closing on the live
+    // line IS the resume gesture — no idle wait. (When not browsing, prev is
+    // autoOffset and the distance can only grow, so this never traps the
+    // opening tick.)
+    if (Math.abs(next - autoOffset) < Math.abs(prev - autoOffset) && Math.abs(next - autoOffset) <= band) {
+      relatch();
+      return;
+    }
     setManualOffset(next);
     window.clearTimeout(resumeTimer.current);
     resumeTimer.current = window.setTimeout(() => setManualOffset(null), BROWSE_RESUME_MS);
@@ -331,8 +361,7 @@ function LyricsPanel({
           // there is no earlier position to seek to; a neighboring intro line
           // may highlight instead.)
           commands.seekAbs(Math.max(line.t - leadMs, 0));
-          setManualOffset(null); // hand control back to auto-follow
-          window.clearTimeout(resumeTimer.current);
+          relatch(); // hand control back to auto-follow
         }}
         className={`flex flex-col gap-1 py-4 will-change-transform ${
           browsing || !anchored ? "" : "[transition:transform_220ms_var(--ease-in-out-tk)]"
@@ -354,6 +383,33 @@ function LyricsPanel({
           />
         ))}
       </div>
+      {/* Return-to-now chip — neutral chrome (accent stays on the line
+       * marker), on the edge the live line sits past, outside the re-latch
+       * band only (inside it the line is on screen and a wheel-back
+       * re-latches anyway). 32px offsets clear the 28px mask fade. Exits
+       * plain with the browse, per the house transition rule. */}
+      {browsing && Math.abs((manualOffset as number) - autoOffset) > band && (
+        <button
+          type="button"
+          aria-label="Now — back to the current line"
+          onClick={relatch}
+          className={`absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border/10 bg-surface-2/90 py-1 pl-2.5 pr-2 text-[11px] font-medium leading-none text-muted transition duration-2 ease-out-tk [animation:caption-in_140ms_var(--ease-out-tk)_both] hover:text-fg active:scale-95 ${
+            nowBelow ? "bottom-8" : "top-8"
+          }`}
+        >
+          Now
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 10 10"
+            fill="none"
+            aria-hidden
+            className={nowBelow ? "" : "rotate-180"}
+          >
+            <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
