@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State, WebviewWindow, Window};
 use windows::core::BOOL;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SetWindowPos, SystemParametersInfoW, SET_WINDOW_POS_FLAGS, SM_SWAPBUTTON,
@@ -239,21 +240,37 @@ fn spawn_animation(
     std::thread::spawn(move || {
         let dock = window.state::<Dock>();
         if snap_animation_enabled() {
+            // Default Windows timer resolution rounds thread::sleep(8ms) up
+            // to ~15.6ms, landing ~13 UNEVEN frames across the 200ms window —
+            // the mid-curve (fastest) stretch jumps in irregular steps and
+            // the motion reads as lunge-then-settle instead of one glide.
+            // 1ms resolution for the animation's lifetime makes the 8ms
+            // cadence real; wall-clock progress below stays the correctness
+            // backstop for any frame the OS still delays.
+            unsafe {
+                let _ = timeBeginPeriod(1);
+            }
             let start = Instant::now();
             loop {
                 std::thread::sleep(Duration::from_millis(FRAME_MS));
                 if dock.epoch.load(Ordering::SeqCst) != my_epoch {
                     // Superseded by a drag or resize — stop where we are.
                     dock.animating.store(false, Ordering::SeqCst);
+                    unsafe {
+                        let _ = timeEndPeriod(1);
+                    }
                     return;
                 }
-                // Progress from wall-clock, not frame count: Windows timer
-                // granularity (~15.6ms) drops frames instead of slowing down.
+                // Progress from wall-clock, not frame count: a delayed frame
+                // skips ahead instead of slowing the animation down.
                 let t = (start.elapsed().as_secs_f64() * 1000.0 / SNAP_MS as f64).min(1.0);
                 frame(&window, ease(t));
                 if t >= 1.0 {
                     break;
                 }
+            }
+            unsafe {
+                let _ = timeEndPeriod(1);
             }
         } else {
             frame(&window, 1.0);
