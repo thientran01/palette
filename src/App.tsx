@@ -1436,16 +1436,29 @@ const PRESENCE_OVERLAY =
       })()
     : new URLSearchParams(window.location.search).has("presence"));
 
-function PresenceOverlay() {
+/** Seat the overlay diagonally OPPOSITE the docked shell — that corner is
+ * gutter in pill/card (expanded fills the window; some overlap is
+ * unavoidable there for a display-only debug chip). */
+const OVERLAY_SEAT: Record<DockCorner, string> = {
+  "top-left": "bottom-1.5 right-1.5",
+  "top-right": "bottom-1.5 left-1.5",
+  "bottom-left": "top-1.5 right-1.5",
+  "bottom-right": "top-1.5 left-1.5",
+};
+
+function PresenceOverlay({ corner }: { corner: DockCorner }) {
   const [state, setState] = useState<PresenceState | null>(null);
   const [dbg, setDbg] = useState<PresenceDebug | null>(null);
   useEffect(() => onPresence(setState), []);
   // Subscribing votes the backend's raw stream on; unmount votes it off.
   useEffect(() => onPresenceDebug(setDbg), []);
   return (
-    // Sits in the oversized window's gutter (display-only — the gutter is
-    // click-through in-app, and pointer-events-none keeps the mock honest).
-    <div className="pointer-events-none absolute left-1.5 top-1.5 z-50 rounded-md bg-black/70 px-2 py-1 font-mono text-[10px] leading-4 text-white/85">
+    // Display-only: click-through in-app (the gutter), pointer-events-none
+    // in the mock, hidden from AT like every decorative element here.
+    <div
+      aria-hidden
+      className={`pointer-events-none absolute z-50 rounded-md bg-black/70 px-2 py-1 font-mono text-[10px] leading-4 text-white/85 ${OVERLAY_SEAT[corner]}`}
+    >
       <div>
         {state
           ? `presence fs=${state.fullscreen ? "YES" : "no"} user=${state.user} concealed=${state.concealed ? "YES" : "no"}`
@@ -1636,7 +1649,7 @@ function App() {
       onMouseLeave={() => setHot(false)}
       onMouseDown={onDragStart}
     >
-      {PRESENCE_OVERLAY && <PresenceOverlay />}
+      {PRESENCE_OVERLAY && <PresenceOverlay corner={dockCorner} />}
       {/* THE widget box — persistent across modes: the chrome never remounts
           or fades, only the content layers crossfade inside it. It glides
           between mode boxes (200ms EASE.inOut, the house morph curve) out of

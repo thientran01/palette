@@ -24,7 +24,9 @@ export interface NowPlaying {
 /** Settled device-context state from the presence engine (presence.rs).
  * P0: sense-only — no behavior keys off it yet; the dev overlay observes it. */
 export interface PresenceState {
-  /** Hysteresis-settled: fullscreen content owns the widget's monitor. */
+  /** Hysteresis-settled: fullscreen content owns the widget's monitor, or a
+   * GLOBAL QUNS state (exclusive D3D / presentation mode) is active — the
+   * QUNS methods carry no monitor scoping. */
   fullscreen: boolean;
   /** Input idleness ("working" arrives in P4). */
   user: "active" | "away";

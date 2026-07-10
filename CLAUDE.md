@@ -40,9 +40,10 @@ src-tauri/src/
                 derived from the window-state-restored position, never stored
   lyrics.rs     LRCLIB get→search fallback, disk cache (bounded, app-data) + session miss set
   presence.rs   presence engine (P0: SENSE-ONLY, no actions yet): own 1s watcher
-                thread sensing fullscreen foreground content (rect-vs-monitor +
-                SHQueryUserNotificationState, hysteresis-settled 2s in / 1s out,
-                self/shell excluded, widget-monitor scoped) and input idleness
+                thread sensing fullscreen foreground content (rect-vs-monitor —
+                widget-monitor scoped — OR'd with SHQueryUserNotificationState's
+                D3D/presentation states, which are GLOBAL; hysteresis-settled
+                2s in / 1s out, self/shell excluded) and input idleness
                 (GetLastInputInfo; away at 180s, 15s in debug builds) → settled
                 "presence" events (diff-suppressed + presence_state seed) plus a
                 raw "presence-debug" stream while the dev overlay subscribes.

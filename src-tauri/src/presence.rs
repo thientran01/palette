@@ -294,6 +294,11 @@ pub fn spawn(app: AppHandle) {
             // No foreground window (secure desktop): hold every derived
             // state exactly where it was — emit nothing, decide nothing.
             let Some(mut dbg) = sampled else {
+                // Also drop any accumulated hysteresis credit: pre-gap
+                // disagreement must not let one post-unlock tick flip the
+                // settled state early — the full window restarts (conservative
+                // in both directions; quick-review catch, 2026-07-09).
+                disagree_ms = 0;
                 std::thread::sleep(Duration::from_millis(PRESENCE_POLL_MS));
                 continue;
             };
