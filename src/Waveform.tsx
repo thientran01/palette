@@ -13,12 +13,13 @@ import { useEffect, useRef, useState } from "react";
 import { type AudioBands } from "./lib/backend";
 import { Envelope, subscribeBands } from "./lib/reactive";
 
-/** Three renditions of the same instrument: "sm" is the inline text separator
- * (5 bars); "md" is the lyrics-view header separator (7 bars, scaled up — the
- * header is that view's only now-playing signal, so it earns more presence
- * than a text separator); "lg" is the standalone hero in the expanded big-art
- * view (9 bars — the wider stage earns the extra pairs) — same choreography,
- * scaled geometry. boxH/aliveW/restW size the container: sm/md morph
+/** Three renditions of the same instrument: "sm" is the pill's inline text
+ * separator (5 bars); "md" is the card and lyrics-header separator (7 bars,
+ * scaled up — those containers are ~3× the pill's, so the separator steps
+ * with them; the lyrics header is also that view's only now-playing signal);
+ * "lg" is the standalone hero in the expanded big-art view (9 bars — the
+ * wider stage earns the extra pairs) — same choreography, scaled geometry.
+ * boxH/aliveW/restW size the container: sm/md morph
  * width between rest and alive; the lg footprint is CONSTANT (no width/margin
  * morph, rest keeps the full box) because it sits in a centered column above
  * the transport — collapsing it would re-center the column and move the art. */
@@ -294,8 +295,9 @@ export function Waveform({ trailing, size = "sm" }: { trailing?: boolean; size?:
             }`
       }`}
     >
-      {/* AT hears the separator only when it actually separates two things. */}
-      {size === "sm" && !trailing && <span className="sr-only"> — </span>}
+      {/* AT hears the separator only when it actually separates two things —
+          any text-separator size (the lg hero is purely decorative). */}
+      {size !== "lg" && !trailing && <span className="sr-only"> — </span>}
       {/* Resting state: a colorless middot — just a separator. It swaps in
           INSTANTLY over the survivor dot (identical pixels, so no crossfade
           is needed and none is wanted — a fade would ghost while the

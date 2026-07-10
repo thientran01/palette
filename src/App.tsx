@@ -1604,9 +1604,14 @@ function App() {
               <Art url={shownArt} size={52} radiusPx={8} />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[15px] font-medium text-fg">{np.title}</p>
+                {/* md, not sm: the card's container is ~3× the pill's, and a
+                    pill-scale separator read as an accident of reuse next to
+                    the expanded hero's ladder (Thien, 2026-07-10) — the size
+                    rung steps with the container: pill sm → card md →
+                    expanded md header / lg hero. */}
                 <p className="truncate text-xs leading-4 text-muted">
                   {np.artist}
-                  <Waveform trailing={!np.album} />
+                  <Waveform size="md" trailing={!np.album} />
                   {np.album}
                 </p>
               </div>
