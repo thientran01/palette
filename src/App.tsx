@@ -1601,16 +1601,19 @@ function App() {
     if (presence.user === "away") workingArmed.current = true;
   }, [presence.user]);
   useEffect(() => {
-    if (ambient && ambientArmed.current) {
-      setPresenceOverride("expanded");
-      return;
-    }
+    // Branch order mirrors the documented precedence (conceal > working
+    // quiet > ambient): user states are mutually exclusive today, but the
+    // order must not silently invert the doctrine if that ever loosens.
     if (workingQuiet && workingArmed.current) {
       // Never shrink under the cursor: apply only while the pointer is
       // away from the widget (hot=false). While hot, HOLD the current
       // state — an already-applied quiet stays, a pending one waits for
       // the next hot=false flip (this effect re-runs on it).
       if (!hot) setPresenceOverride("pill");
+      return;
+    }
+    if (ambient && ambientArmed.current) {
+      setPresenceOverride("expanded");
       return;
     }
     setPresenceOverride(null);

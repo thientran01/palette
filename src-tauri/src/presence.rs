@@ -53,11 +53,14 @@ const FS_EXIT_MS: u64 = 1000;
 /// one sitting.
 const AWAY_AFTER_S: u64 = if cfg!(debug_assertions) { 15 } else { 180 };
 /// Working = sustained input duty: at least WORK_DUTY of the last
-/// WORK_WINDOW_S one-second windows saw fresh input. Entry is inherently
-/// hysteretic (the window must FILL that dense — ≥72 input-seconds of the
-/// last 120), and exit needs the duty to decay below the bar (~50-60s of
-/// quiet), matching the arc plan's enter-slow/exit-slow shape without a
-/// second state machine. Coarse GetLastInputInfo deltas only — no hooks.
+/// WORK_WINDOW_S one-second windows saw fresh input (idle_s == 0 exactly —
+/// `<= 1` would let one physical event mark TWO slots, dropping the real
+/// bar to "an event every ~3.3s", light fidgeting instead of sustained
+/// work; quick-review catch, 2026-07-09). Entry is inherently hysteretic
+/// (release: ≥72 input-seconds of the last 120; debug: ≥12 of 20), and
+/// exit is the duty decaying below the bar (release ~50-60s of quiet,
+/// debug ~8s) — the arc plan's enter-slow/exit-slow shape without a second
+/// state machine. Coarse GetLastInputInfo deltas only — no hooks.
 const WORK_WINDOW_S: usize = if cfg!(debug_assertions) { 20 } else { 120 };
 const WORK_DUTY: f32 = 0.6;
 
@@ -371,7 +374,7 @@ pub fn spawn(app: AppHandle) {
                 disagree_ms = 0;
             }
 
-            work_ring[work_i] = dbg.idle_s <= 1;
+            work_ring[work_i] = dbg.idle_s == 0;
             work_i = (work_i + 1) % WORK_WINDOW_S;
             work_filled = (work_filled + 1).min(WORK_WINDOW_S);
             let duty =
@@ -393,6 +396,7 @@ pub fn spawn(app: AppHandle) {
             // and a snoozed episode stays visible without special cases here.
             let vis = app.state::<crate::VisIntent>();
             let companion = vis.companion.load(Ordering::Relaxed);
+            let mut restore_pending = false;
             if fs_settled && companion {
                 // Defer (not skip) while a press is in flight: hiding the
                 // window mid-drag would yank it out from under the hand —
@@ -404,7 +408,13 @@ pub fn spawn(app: AppHandle) {
             } else if vis.concealed.load(Ordering::Relaxed) {
                 vis.concealed.store(false, Ordering::Relaxed);
                 vis.conceal_snoozed.store(false, Ordering::Relaxed);
-                crate::apply_visibility(&app);
+                // Restore AFTER the emit below: the still-hidden webview
+                // gets the new state first (override layout applies while
+                // nothing is visible), so the show can't flash the loud
+                // mode for a beat before re-quieting under the user's eye
+                // (quick-review catch, 2026-07-09). Hides stay immediate —
+                // there's nothing to mis-show on the way out.
+                restore_pending = true;
             }
 
             let state = PresenceState {
@@ -432,6 +442,10 @@ pub fn spawn(app: AppHandle) {
                     let _ = app.emit("presence", &state);
                     *last = Some(state);
                 }
+            }
+
+            if restore_pending {
+                crate::apply_visibility(&app);
             }
 
             if presence.debug.load(Ordering::Relaxed) {
