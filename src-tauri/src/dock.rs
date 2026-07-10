@@ -52,6 +52,13 @@ const HIT_NEAR_MS: u64 = 8;
 const HIT_FAR_MS: u64 = 40;
 /// "Near" halo around the window rect that switches the fast cadence on.
 const HIT_NEAR_PAD: i32 = 64;
+/// Post-corner-change grace: the webview shell glides to its new seat for
+/// SNAP_MS (App.tsx FLIP), so until it lands the corner-anchored hit rect
+/// is wrong on both ends — the traveling shell sits outside it while the
+/// still-empty destination reads as interactive. The whole window stays
+/// interactive for the glide instead — the same never-smaller-than-what's-
+/// on-screen rule as the frontend's deferred hit shrinks (hitCommanded).
+const HIT_GRACE_MS: u64 = SNAP_MS + 80;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Corner {
@@ -98,6 +105,10 @@ pub struct Dock {
     /// corner) the frontend reports per mode — everything outside it is
     /// click-through. None (pre-report) = the whole window is interactive.
     hit_size: Mutex<Option<(f64, f64)>>,
+    /// When the docked corner last CHANGED (not launch-derived) — hit_rect
+    /// widens to the whole window for HIT_GRACE_MS after it while the shell
+    /// glides to its new seat.
+    corner_changed: Mutex<Option<Instant>>,
 }
 
 impl Default for Dock {
@@ -109,6 +120,7 @@ impl Default for Dock {
             last_moved: Mutex::new(Instant::now()),
             watcher_armed: AtomicBool::new(false),
             hit_size: Mutex::new(None),
+            corner_changed: Mutex::new(None),
         }
     }
 }
@@ -332,6 +344,12 @@ fn spawn_animation(
 /// the oversized window rect.
 fn hit_rect(window: &WebviewWindow, wx: i32, wy: i32, ww: i32, wh: i32) -> (i32, i32, i32, i32) {
     let dock = window.state::<Dock>();
+    // Corner-glide grace: while the shell travels between seats, no
+    // corner-anchored rect is honest — stay whole-window interactive.
+    let changed = *dock.corner_changed.lock().unwrap_or_else(PoisonError::into_inner);
+    if changed.is_some_and(|t| t.elapsed() < Duration::from_millis(HIT_GRACE_MS)) {
+        return (wx, wy, ww, wh);
+    }
     let hit = *dock.hit_size.lock().unwrap_or_else(PoisonError::into_inner);
     let Some((hw, hh)) = hit else {
         return (wx, wy, ww, wh);
@@ -368,7 +386,17 @@ fn snap_to_nearest(window: &WebviewWindow) {
     // is where the shell currently sits).
     let (hx, hy, hw, hh) = hit_rect(window, pos.x, pos.y, w, h);
     let corner = nearest_corner(hx + hw / 2, hy + hh / 2, &wa);
-    *dock.corner.lock().unwrap_or_else(PoisonError::into_inner) = Some(corner);
+    {
+        let mut c = dock.corner.lock().unwrap_or_else(PoisonError::into_inner);
+        // A real corner CHANGE starts the shell's seat glide in the webview —
+        // open the hit-rect grace window for it. Launch derivation (None →
+        // corner) doesn't glide and gets no grace.
+        if c.is_some() && *c != Some(corner) {
+            *dock.corner_changed.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(Instant::now());
+        }
+        *c = Some(corner);
+    }
     emit_corner(window, corner);
     let scale = window.scale_factor().unwrap_or(1.0);
     let margin = (MARGIN_LOGICAL * scale).round() as i32;

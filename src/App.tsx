@@ -1670,13 +1670,31 @@ function App() {
     ];
     const [px, py] = seat(prev);
     const [nx, ny] = seat(dockCorner);
-    if (px === nx && py === ny) return;
+    // A previous corner glide may still be in flight — fold its current
+    // animated offset into the new start point. Assuming "at rest at
+    // seat(prev)" would measure the jump from the wrong baseline and pop
+    // on rapid successive corner changes (quick-review catch). Read BEFORE
+    // muting: the mute snaps the computed value to the inline target.
+    const inFlight = getComputedStyle(el).translate;
+    let tx = 0;
+    let ty = 0;
+    if (inFlight && inFlight !== "none") {
+      const parts = inFlight.split(" ").map(parseFloat);
+      tx = parts[0] || 0;
+      ty = parts[1] || 0;
+    }
+    const dx = px - nx + tx;
+    const dy = py - ny + ty;
+    if (!dx && !dy) return;
     // Classic FLIP: jump to the old seat with the transition muted, flush
     // styles so the jump is the transition's start value, then release.
-    el.style.transition = "none";
-    el.style.translate = `${px - nx}px ${py - ny}px`;
+    // Muted via transitionProperty scoped to width/height — NOT
+    // transition:none, which would also snap an in-flight mode-size glide
+    // to its end box (quick-review catch, three agents converged).
+    el.style.transitionProperty = "width, height";
+    el.style.translate = `${dx}px ${dy}px`;
     void el.offsetWidth;
-    el.style.transition = "";
+    el.style.transitionProperty = "";
     el.style.translate = "0px 0px";
   }, [dockCorner, mode, reducedMotion]);
 
