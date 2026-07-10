@@ -1560,7 +1560,12 @@ function App() {
              fades in; the anchored bracket cluster joins from the app root. All
              three cross at 140ms EASE.out, opacity only. */
           <>
-            <div className="flex h-full items-center gap-2 px-3">
+            {/* pl-1.5, not px-3: the art gets ~5px of air vertically, so a
+                12px left inset read as stranded (Thien, 2026-07-10). 6px
+                also sits the art's 6px radius concentric with the shell's
+                12px corner (outer = inset + inner). The text side keeps the
+                12px it needs to breathe. */}
+            <div className="flex h-full items-center gap-2 pl-1.5 pr-3">
               <Art url={shownArt} size={26} radiusPx={6} />
               <p className="min-w-0 flex-1 truncate text-xs font-medium text-fg">
                 {np.title}
