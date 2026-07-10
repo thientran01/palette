@@ -1270,20 +1270,21 @@ function ExpandedView({
               <div className="flex items-center gap-2.5 pr-8">
                 <Art url={artUrl} size={44} radiusPx={6} />
                 <div className="min-w-0 flex-1">
-                  <TruncateTip text={np.title} className="text-[15px] font-medium text-fg" />
-                  {/* Flex row, not inline flow: a long artist truncates in
-                      its own box while the waveform keeps its seat right
-                      after the clipped text — inline, it rode the string's
-                      full width into the clip edge. */}
+                  {/* The living instance rides the TITLE, matching the card
+                      and the pill — the capsules are a now-playing pulse and
+                      belong to the song, one grammar across views (Thien,
+                      2026-07-10). Flex row, not inline flow: a long title
+                      truncates in its own box while the waveform keeps its
+                      seat right after the clipped text — inline, it rode the
+                      string's full width into the clip edge. ml-1 on top of
+                      the waveform's mx-1.5 = the same 10px gap as the card. */}
                   <div className="flex min-w-0 items-center">
-                    <TruncateTip text={np.artist} className="text-[13px] text-muted" />
-                    {/* md, not sm: this header is the lyrics view's only
-                        now-playing signal, so it earns more presence than
-                        an inline text separator. */}
-                    <span className="flex shrink-0 items-center">
+                    <TruncateTip text={np.title} className="text-[15px] font-medium text-fg" />
+                    <span className="ml-1 flex shrink-0 items-center">
                       <Waveform size="md" trailing />
                     </span>
                   </div>
+                  <TruncateTip text={np.artist} className="text-[13px] text-muted" />
                 </div>
               </div>
               <LyricsPanel
@@ -1612,7 +1613,12 @@ function App() {
                     (Thien, 2026-07-10). One living instance per view. */}
                 <p className="truncate text-[15px] font-medium text-fg">
                   {np.title}
-                  <Waveform size="md" trailing />
+                  {/* ml-1 on top of the waveform's own mx-1.5: a 10px gap —
+                      at mx-1.5 alone the capsules crowded the title. Inert
+                      at rest (trailing renders nothing visible). */}
+                  <span className="ml-1">
+                    <Waveform size="md" trailing />
+                  </span>
                 </p>
                 <p className="truncate text-xs leading-4 text-muted">
                   {np.artist}
