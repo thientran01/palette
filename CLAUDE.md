@@ -35,7 +35,12 @@ src-tauri/src/
                 window's gutter is kept from eating clicks by spawn_hit_watcher:
                 cursor-polled whole-window click-through (set_ignore_cursor_events)
                 gated on the frontend-reported hit rect (set_hit_size, the mode's
-                footprint at the docked corner). Docked corner is pushed to the
+                footprint at the docked corner). The snap corner is decided from
+                that hit rect's center too — the VISIBLE widget, not the oversized
+                window — and a corner CHANGE glides the shell to its new seat
+                (App.tsx FLIP translate, EASE.out, riding the native glide; a bare
+                seat flip teleports the widget across the fixed window). Docked
+                corner is pushed to the
                 webview ("dock-corner" event + dock_corner seed command); corner
                 derived from the window-state-restored position, never stored
   lyrics.rs     LRCLIB get→search fallback, disk cache (bounded, app-data) + session

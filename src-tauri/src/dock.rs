@@ -325,6 +325,34 @@ fn spawn_animation(
     });
 }
 
+/// The interactive rect (physical px, screen coords): the frontend-reported
+/// mode footprint anchored at the docked corner, or the whole window before
+/// the first report. This is the widget the user SEES (shell + gutter) —
+/// the click-through gate and the snap decision both key on it, never on
+/// the oversized window rect.
+fn hit_rect(window: &WebviewWindow, wx: i32, wy: i32, ww: i32, wh: i32) -> (i32, i32, i32, i32) {
+    let dock = window.state::<Dock>();
+    let hit = *dock.hit_size.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some((hw, hh)) = hit else {
+        return (wx, wy, ww, wh);
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let hw = ((hw * scale).round() as i32).min(ww);
+    let hh = ((hh * scale).round() as i32).min(wh);
+    let corner = dock
+        .corner
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .unwrap_or(Corner::BottomRight);
+    let (l, t) = match corner {
+        Corner::TopLeft => (wx, wy),
+        Corner::TopRight => (wx + ww - hw, wy),
+        Corner::BottomLeft => (wx, wy + wh - hh),
+        Corner::BottomRight => (wx + ww - hw, wy + wh - hh),
+    };
+    (l, t, hw, hh)
+}
+
 /// Dock to the nearest work-area corner from the current position.
 fn snap_to_nearest(window: &WebviewWindow) {
     let dock = window.state::<Dock>();
@@ -333,7 +361,13 @@ fn snap_to_nearest(window: &WebviewWindow) {
         return;
     };
     let (w, h) = (size.width as i32, size.height as i32);
-    let corner = nearest_corner(pos.x + w / 2, pos.y + h / 2, &wa);
+    // Decide from the VISIBLE widget's center: the shell sits corner-anchored
+    // inside the WINDOW_MAX window, so the window center can be a couple
+    // hundred px off what the user actually dragged — a pill dropped just
+    // below the midline would snap UP (hit_rect reads the OLD corner, which
+    // is where the shell currently sits).
+    let (hx, hy, hw, hh) = hit_rect(window, pos.x, pos.y, w, h);
+    let corner = nearest_corner(hx + hw / 2, hy + hh / 2, &wa);
     *dock.corner.lock().unwrap_or_else(PoisonError::into_inner) = Some(corner);
     emit_corner(window, corner);
     let scale = window.scale_factor().unwrap_or(1.0);
@@ -379,7 +413,8 @@ pub fn set_window_size(window: WebviewWindow, dock: State<Dock>, width: f64, hei
 
 /// The frontend reports the current mode's interactive footprint (logical
 /// px, anchored at the docked corner) on every mode change — the hit
-/// watcher makes everything outside it click-through. The full MODE_SIZES
+/// watcher makes everything outside it click-through, and the drag-release
+/// snap picks its corner from this rect's center. The full MODE_SIZES
 /// footprint (shell + gutter), not just the shell, so the visible edge ring
 /// stays grabbable for drags.
 #[tauri::command]
@@ -411,28 +446,8 @@ pub fn spawn_hit_watcher(window: WebviewWindow) {
                             && p.x < wx + ww + HIT_NEAR_PAD
                             && p.y >= wy - HIT_NEAR_PAD
                             && p.y < wy + wh + HIT_NEAR_PAD;
-                        let dock = window.state::<Dock>();
-                        let hit = *dock.hit_size.lock().unwrap_or_else(PoisonError::into_inner);
-                        let inside = match hit {
-                            None => p.x >= wx && p.x < wx + ww && p.y >= wy && p.y < wy + wh,
-                            Some((hw, hh)) => {
-                                let scale = window.scale_factor().unwrap_or(1.0);
-                                let hw = ((hw * scale).round() as i32).min(ww);
-                                let hh = ((hh * scale).round() as i32).min(wh);
-                                let corner = dock
-                                    .corner
-                                    .lock()
-                                    .unwrap_or_else(PoisonError::into_inner)
-                                    .unwrap_or(Corner::BottomRight);
-                                let (l, t) = match corner {
-                                    Corner::TopLeft => (wx, wy),
-                                    Corner::TopRight => (wx + ww - hw, wy),
-                                    Corner::BottomLeft => (wx, wy + wh - hh),
-                                    Corner::BottomRight => (wx + ww - hw, wy + wh - hh),
-                                };
-                                p.x >= l && p.x < l + hw && p.y >= t && p.y < t + hh
-                            }
-                        };
+                        let (l, t, hw, hh) = hit_rect(&window, wx, wy, ww, wh);
+                        let inside = p.x >= l && p.x < l + hw && p.y >= t && p.y < t + hh;
                         // inside == ignoring means the state is wrong-way —
                         // flip it, unless a press is in flight. The mirror
                         // only advances when the OS call lands, so a failed
