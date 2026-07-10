@@ -99,7 +99,11 @@ impl Candidate {
             started_at_ms: unix_ms(),
             listened_ms: 0,
             playing_since: (np.status == "playing").then(Instant::now),
-            last_raw_pos_ms: np.position_ms,
+            // Same trust rule as the update path: an untimestamped payload's
+            // position carries no replay signal — don't seed the baseline
+            // from it (a stale first read past the bar would make the next
+            // real near-zero position look like a replay).
+            last_raw_pos_ms: if np.position_at_ms > 0 { np.position_ms } else { 0 },
             vanished_at: None,
             spotify_uri: None,
         }
@@ -179,14 +183,18 @@ pub fn init(app: &AppHandle) {
     inner.index = index;
 }
 
+/// Byte-wise on purpose: `read_to_string` would reject the WHOLE file over
+/// one torn multi-byte character (a crash mid-append on a non-ASCII title),
+/// silently emptying the index. Parsing per line bounds that damage to the
+/// torn line — every other entry stays reachable.
 fn load_index(path: &Path) -> Vec<IndexEntry> {
-    let Ok(raw) = std::fs::read_to_string(path) else {
+    let Ok(raw) = std::fs::read(path) else {
         return Vec::new();
     };
     let mut offset = 0u64;
     let mut out = Vec::new();
-    for line in raw.split_inclusive('\n') {
-        if let Ok(e) = serde_json::from_str::<HistoryEntry>(line.trim_end()) {
+    for line in raw.split_inclusive(|b| *b == b'\n') {
+        if let Ok(e) = serde_json::from_slice::<HistoryEntry>(line) {
             out.push(IndexEntry { started_at_ms: e.started_at_ms, offset });
         }
         offset += line.len() as u64;

@@ -234,6 +234,13 @@ fn player_kind(app_id: &str) -> &'static str {
 /// key, the emitted art_id's key prefix, AND history.rs's entry/thumb key
 /// (posClock keys on the same raw tuple frontend-side). Album and duration
 /// are deliberately NOT included (that's the lyrics key).
+///
+/// DefaultHasher's algorithm is not guaranteed stable across Rust releases,
+/// and history.rs persists these keys (entry `key`, thumb filenames). A
+/// toolchain bump that changes it costs only cosmetics — old thumbs stop
+/// resolving (glyph fallback, eviction cleans them up) while entry data stays
+/// intact — so we accept it; switch to a fixed hasher if keys ever gain a
+/// load-bearing cross-version meaning.
 pub(crate) fn ident_key(app_id: &str, title: &str, artist: &str) -> String {
     let mut h = DefaultHasher::new();
     (app_id, title, artist).hash(&mut h);
