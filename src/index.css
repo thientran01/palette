@@ -94,6 +94,30 @@ body {
   }
 }
 
+/* The resting pulse — the presence layer's licensed ambient element
+ * (CLAUDE.md Presence clause 2): with no media session, one muted dot
+ * breathes. Opacity ONLY (nothing moves), 8s period — slower than any
+ * attention-seeking rhythm — and the reduced-motion block above collapses
+ * it to a single static frame (iteration-count 1 at 0.01ms). */
+@keyframes resting-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.resting-pulse {
+  /* Base opacity = the keyframe's resting trough: under the reduced-motion
+   * kill (iteration-count 1 at 0.01ms, no fill) the animation stops
+   * affecting opacity and the element reverts to THIS — a dim static dot,
+   * not a full-opacity pop (quick-review catch, 2026-07-09). */
+  opacity: 0.35;
+  animation: resting-breathe 8s var(--ease-in-out-tk) infinite;
+}
+
 /* Lyrics arrival cascade: rows radiate outward from the current line — each
  * row's --cascade-delay is its distance from the mount anchor (see
  * CASCADE_* in App.tsx). Inert without .lyrics-entering on the list, which
