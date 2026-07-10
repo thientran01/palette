@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/
 import type { MorphName } from "./icons/geometry";
 import { MorphIcon } from "./icons/MorphIcon";
 import { useSeekTick } from "./icons/useSeekTick";
-import { commands, onDockCorner, onNowPlaying, type DockCorner } from "./lib/backend";
+import { commands, onCursorLeft, onDockCorner, onNowPlaying, type DockCorner } from "./lib/backend";
 import { currentLineIndex, msUntilNextLine, parseLrc, VOCAL_LEAD_MS, type LyricLine } from "./lib/lrc";
 import { extractAccent } from "./lib/palette";
 import * as posClock from "./lib/posClock";
@@ -17,14 +17,25 @@ const SEEK_STEP_MS = 10_000;
 
 type Mode = "pill" | "card" | "expanded";
 
-/** Native window size per mode — the window grows out of its docked corner
- * (200ms EASE.inOut on the Rust side), clip-revealing the incoming mode's
- * already-final ModeContent plane while the shells crossfade. */
+/** Each mode's FOOTPRINT (shell + gutter), in logical px. The native window
+ * itself never resizes: it lives at WINDOW_MAX from birth (tauri.conf.json)
+ * and every mode change is the shell's 200ms EASE.inOut CSS glide inside it,
+ * clip-revealing the incoming mode's already-final ModeContent plane while
+ * the content layers crossfade. (Resizing a WebView2 window at all costs one
+ * wrong frame: per-frame animation shakes, a snap blinks — measured live
+ * 2026-07-09/10.) These sizes still drive the shell/plane boxes and the
+ * click-through hit rect (dock.rs). */
 const MODE_SIZES: Record<Mode, [number, number]> = {
   pill: [300, 48],
   card: [380, 132], // anchored-cluster handoff: 52px art row, full-width progress, bottom transport
   expanded: [380, 440], // lyrics home; big-art fallback gets breathing room
 };
+
+/** The window's permanent size = the largest mode. Keep in sync with
+ * tauri.conf.json width/height (the window must be BORN at this size —
+ * matching them means the launch dock is pure positioning, no resize, no
+ * first-frame artifact). */
+const WINDOW_MAX: [number, number] = MODE_SIZES.expanded;
 
 function fmt(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -498,6 +509,19 @@ function TruncateTip({ text, className }: { text: string; className: string }) {
     timer.current = null;
   };
   useEffect(() => clear, []);
+  // The window can go click-through while the cursor rests on this line —
+  // no mouseleave ever arrives then (see onCursorLeft), so the hover-hold
+  // timer would open a tooltip over an unattended widget with nothing left
+  // to close it. Drop the hold and the tooltip on the signal.
+  useEffect(
+    () =>
+      onCursorLeft(() => {
+        if (timer.current !== null) window.clearTimeout(timer.current);
+        timer.current = null;
+        setOpen(false);
+      }),
+    [],
+  );
   const reducedMotion = useReducedMotion();
   return (
     <span className="relative block min-w-0">
@@ -608,21 +632,32 @@ function ModeButton({
 /** Ordered mode ladder the anchored cluster steps through. */
 const MODE_ORDER: readonly Mode[] = ["pill", "card", "expanded"];
 
+/** The 6px transparent gutter per side between the window edge and shell —
+ * 2× SHELL_SEAT's 1.5 inset. Change the seat inset, change this too. */
+const SHELL_GUTTER_PX = 12;
 /** What the shell's chrome takes from the window before content: the 6px
- * transparent inset per side (inset-1.5) + the shell's 1px border per side.
- * Change the inset or border, change this. */
+ * gutter per side (SHELL_SEAT's 1.5 inset) + the shell's 1px border per
+ * side. Change the seat inset or border, change this. */
 const SHELL_CHROME_PX = 14;
 
+/** Where the gliding shell seats within the window: on the docked corner, so
+ * its size glide radiates out of the one corner that never moves. */
+const SHELL_SEAT: Record<DockCorner, string> = {
+  "top-left": "left-1.5 top-1.5",
+  "top-right": "right-1.5 top-1.5",
+  "bottom-left": "bottom-1.5 left-1.5",
+  "bottom-right": "bottom-1.5 right-1.5",
+};
+
 /** The mode's content plane: laid out at its FINAL size from the first
- * frame, anchored to the docked corner, while the shell (a plain surface —
- * cheap to paint) tracks the animating window and clip-reveals it
- * (ANIMATIONS_FROM_ZERO §2: "content lays out at final size immediately;
- * the growing window reveals it"). Before this the content filled the live
- * window instead: every native resize frame reflowed the whole interior —
- * rows sliding, boxes re-flexing — which read as the UI "catching up with
- * the expansion" instead of being revealed by it (Thien, live, 2026-07-09).
- * The fixed box also keeps the exiting mode's content from squashing while
- * it fades.
+ * frame, anchored to the docked corner, while the shell glides between mode
+ * boxes and clip-reveals it (ANIMATIONS_FROM_ZERO §2: "content lays out at
+ * final size immediately; the growing window reveals it"). Before this the
+ * content filled the live box instead: every resize frame reflowed the whole
+ * interior — rows sliding, boxes re-flexing — which read as the UI "catching
+ * up with the expansion" instead of being revealed by it (Thien, live,
+ * 2026-07-09). The fixed box also keeps the exiting mode's content from
+ * squashing while it fades.
  *
  * Also marks the exiting subtree inert for the crossfade: the shell-level
  * exit pointerEvents can't do it alone — CSS pointer-events inherits, so a
@@ -676,29 +711,42 @@ const CORNER_SEAT: Record<DockCorner, string> = {
  * fades or rescales with the content morph — chrome holds still (the
  * expanded view's hoisted-chrome rule, promoted app-wide).
  *
- * Positioned in WINDOW coordinates (this div lives in the window root, not
- * the inset-1.5 shell): right-3.5 = 14px window = 8px from the shell edge; bottom-[11px]
- * puts the 28px buttons' center 25px from the window bottom — the CONTROL
- * CENTERLINE every mode's controls sit on: the pill scrim's play/pause
+ * Positioned in SHELL coordinates — this div lives inside the persistent
+ * shell, beside (never inside) the content swap. The old hoist-to-root
+ * reason died when the crossfading shells became one persistent shell: the
+ * chrome can't fade anymore, and shell-relative seating is what keeps the
+ * cluster glued to the VISIBLE box in every dock corner and every mode —
+ * the window is permanently WINDOW_MAX-sized, so window-relative seating
+ * would float it over the transparent gutter whenever the shell is smaller
+ * (quick-review catch). Seat math:
+ * right-[7px] shell = +1px border +6px gutter = 14px window (8px from the
+ * shell's outer edge); bottom-[4px] shell = 11px window, putting the 28px
+ * buttons' center 25px from the window bottom — the CONTROL CENTERLINE
+ * every mode's controls sit on: the pill scrim's play/pause
  * (top-0/bottom-0.5 in the 36px shell → center 25px), and the card/expanded
  * transports via their pb-1/pb-0.5 column padding (the shell's 1px border
  * adds to both). Change one, change all four. The seat is CONSTANT in every
- * mode (no mode-dependent bottom) — docked bottom-right the window's bottom
- * edge is pinned, so the cluster holds the exact same screen pixels across
- * pill/card/expanded: the
+ * mode (no mode-dependent bottom) — docked bottom-right the shell's bottom-
+ * right corner is welded through rests AND glides, so the cluster holds the
+ * exact same screen pixels across pill/card/expanded: the
  * fixed-point guarantee, no drift even while hidden (ANIMATIONS.md §2 —
  * "opacity only, zero transforms; the fixed-point guarantee includes the
  * hidden state"). Hidden at rest (opacity 0, pointer-events none),
- * it reveals on widget hover (group/widget): opacity 0→1 over 140ms EASE.out,
- * no motion. Also reveals on focus-within — the buttons stay in the Tab
- * order the whole time (hidden ≠ inert), so a hover-only reveal would strand
- * keyboard users on an invisible, invisibly-outlined control (quick-review
- * catch, 2026-07-08).
+ * it reveals on widget hover — the root's data-hot, JS-owned (mousemove
+ * arms, mouseleave + the Rust cursor-left event clear; CSS :hover freezes
+ * true once the window goes click-through): opacity 0→1 over 140ms
+ * EASE.out, no motion. Also reveals on KEYBOARD focus — has-[:focus-visible], NOT
+ * focus-within: the buttons stay in the Tab order the whole time (hidden ≠
+ * inert), so a hover-only reveal would strand keyboard users on an
+ * invisible, invisibly-outlined control (quick-review catch, 2026-07-08) —
+ * but plain focus-within also matched the residual focus a mouse click
+ * leaves on the clicked button, pinning the chrome open after the cursor
+ * left (Thien, 2026-07-10). Mouse clicks don't set :focus-visible; Tab does.
  */
 function ModeCluster({ mode, onStep }: { mode: Mode; onStep: (d: -1 | 1) => void }) {
   return (
     <div
-      className="pointer-events-none absolute bottom-[11px] right-3.5 z-20 flex items-center gap-1 opacity-0 transition-opacity duration-2 ease-out-tk group-hover/widget:pointer-events-auto group-hover/widget:opacity-100 group-focus-within/widget:pointer-events-auto group-focus-within/widget:opacity-100"
+      className="pointer-events-none absolute bottom-[4px] right-[7px] z-20 flex items-center gap-1 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100"
       // Swallow mousedown: pointer-events-none makes a DISABLED button
       // transparent to hit-testing, so without this a press on it (or the
       // 4px gap between the buttons) would fall through to the root drag
@@ -738,9 +786,10 @@ function readViewPref(): "lyrics" | "art" {
 /**
  * The expanded view's art ⇄ lyrics toggle: one 28px seat at the top-right —
  * the corner the anchored cluster's move to the bottom freed up. Same
- * hover/focus-within reveal contract as the cluster (hidden at rest, opacity
- * only, hidden ≠ inert — see ModeCluster), same mousedown swallow so a press
- * never falls through to the window drag. The glyph names the DESTINATION:
+ * hover/keyboard-focus reveal contract as the cluster (hidden at rest,
+ * opacity only, hidden ≠ inert, has-[:focus-visible] not focus-within — see
+ * ModeCluster), same mousedown swallow so a press never falls through to
+ * the window drag. The glyph names the DESTINATION:
  * mic = show lyrics (karaoke), note = show album cover; a track with no
  * synced lyrics disables the seat in place as a crossed-out mic — the seat
  * never unmounts, so there's nothing to hunt for and nothing shifts. */
@@ -757,7 +806,7 @@ function ViewToggle({
 }) {
   return (
     <div
-      className="pointer-events-none absolute right-2 top-2 z-10 opacity-0 transition-opacity duration-2 ease-out-tk group-hover/widget:pointer-events-auto group-hover/widget:opacity-100 group-focus-within/widget:pointer-events-auto group-focus-within/widget:opacity-100"
+      className="pointer-events-none absolute right-2 top-2 z-10 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100"
       onMouseDown={(e) => e.stopPropagation()}
     >
       <button
@@ -1036,10 +1085,10 @@ function Hairline({ np }: { np: NowPlaying }) {
  * opacity-only on widget hover (ANIMATIONS.md §3) so the title/artist line
  * never reflows as the controls take the corner. aria-hidden: the pill's
  * Hairline progressbar already announces position, so the visible label is a
- * glance-only duplicate. Also fades on focus-within — the swap must track
- * the same reveal signal as the controls it's trading places with, or a
- * keyboard user tabbing to play/pause would see it fight the still-visible
- * time label. */
+ * glance-only duplicate. Also fades on keyboard focus (has-[:focus-visible],
+ * matching the controls' reveal signal exactly) — a keyboard user tabbing to
+ * play/pause must not see it fight the still-visible time label, and a
+ * mouse click's residual focus must not keep it hidden. */
 function PillTime({ np }: { np: NowPlaying }) {
   const timeRef = useRef<HTMLSpanElement>(null);
   // Label only: the bar/fill refs stay unattached (useProgressDom null-guards
@@ -1051,7 +1100,7 @@ function PillTime({ np }: { np: NowPlaying }) {
     <span
       ref={timeRef}
       aria-hidden
-      className="shrink-0 text-[11px] leading-4 tabular-nums text-muted transition-opacity duration-2 ease-out-tk group-hover/widget:opacity-0 group-focus-within/widget:opacity-0"
+      className="shrink-0 text-[11px] leading-4 tabular-nums text-muted transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:opacity-0 group-has-[:focus-visible]/widget:opacity-0"
     />
   );
 }
@@ -1240,20 +1289,21 @@ function ExpandedView({
               <div className="flex items-center gap-2.5 pr-8">
                 <Art url={artUrl} size={44} radiusPx={6} />
                 <div className="min-w-0 flex-1">
-                  <TruncateTip text={np.title} className="text-[15px] font-medium text-fg" />
-                  {/* Flex row, not inline flow: a long artist truncates in
-                      its own box while the waveform keeps its seat right
-                      after the clipped text — inline, it rode the string's
-                      full width into the clip edge. */}
+                  {/* The living instance rides the TITLE, matching the card
+                      and the pill — the capsules are a now-playing pulse and
+                      belong to the song, one grammar across views (Thien,
+                      2026-07-10). Flex row, not inline flow: a long title
+                      truncates in its own box while the waveform keeps its
+                      seat right after the clipped text — inline, it rode the
+                      string's full width into the clip edge. ml-1 on top of
+                      the waveform's mx-1.5 = the same 10px gap as the card. */}
                   <div className="flex min-w-0 items-center">
-                    <TruncateTip text={np.artist} className="text-[13px] text-muted" />
-                    {/* md, not sm: this header is the lyrics view's only
-                        now-playing signal, so it earns more presence than
-                        an inline text separator. */}
-                    <span className="flex shrink-0 items-center">
+                    <TruncateTip text={np.title} className="text-[15px] font-medium text-fg" />
+                    <span className="ml-1 flex shrink-0 items-center">
                       <Waveform size="md" trailing />
                     </span>
                   </div>
+                  <TruncateTip text={np.artist} className="text-[13px] text-muted" />
                 </div>
               </div>
               <LyricsPanel
@@ -1404,25 +1454,72 @@ function App() {
     } catch {
       // non-fatal: mode resets to card on next launch
     }
-    const [w, h] = MODE_SIZES[mode];
-    commands.setWindowSize(w, h);
   }, [mode]);
 
   const reducedMotion = useReducedMotion();
+
+  // One-time launch dock: the window is born at WINDOW_MAX (tauri.conf.json
+  // matches, so this never resizes anything) — it positions the window in
+  // its corner and seeds the dock-corner event. The window is never touched
+  // again; every mode change below is pure CSS.
+  useEffect(() => {
+    commands.setWindowSize(WINDOW_MAX[0], WINDOW_MAX[1]);
+  }, []);
+
+  // Report the mode's interactive footprint: outside it the fixed-size
+  // window is click-through (dock.rs hit watcher), so the invisible gutter
+  // above a small shell can't eat clicks — or start drags — meant for
+  // whatever is beneath the widget. Shrinks are DEFERRED past the glide:
+  // the hit rect must never be smaller than the shell still on screen, or
+  // clicks on the visibly-shrinking shell would fall through mid-glide
+  // (quick-review catch, 2026-07-10). Grows apply instantly — the gutter
+  // intercepting 200ms early is invisible; the shell arriving into a dead
+  // zone would not be. hitCommanded keeps interrupted shrinks honest (the
+  // winCommanded lesson from the snap era).
+  const hitCommanded = useRef<[number, number] | null>(null);
+  useEffect(() => {
+    const [w1, h1] = MODE_SIZES[mode];
+    const [cw, ch] = hitCommanded.current ?? [w1, h1];
+    const uw = Math.max(w1, cw);
+    const uh = Math.max(h1, ch);
+    hitCommanded.current = [uw, uh];
+    commands.setHitSize(uw, uh);
+    let timer: number | undefined;
+    if (uw !== w1 || uh !== h1) {
+      timer = window.setTimeout(
+        () => {
+          hitCommanded.current = [w1, h1];
+          commands.setHitSize(w1, h1);
+        },
+        reducedMotion ? 0 : DUR[3] + 80,
+      );
+    }
+    return () => window.clearTimeout(timer);
+  }, [mode, reducedMotion]);
+
+  // JS-owned hover: mousemove arms it, mouseleave clears it, and the Rust
+  // cursor-left event clears it for gutter exits — once the window goes
+  // click-through the webview receives no more mouse events at all, so a
+  // CSS :hover would freeze true and pin the revealed chrome open
+  // (quick-review catch, 2026-07-10). Every reveal surface keys on the
+  // root's data-hot instead of group-hover.
+  const [hot, setHot] = useState(false);
+  useEffect(() => onCursorLeft(() => setHot(false)), []);
+
   const morph = {
-    // Opacity ONLY — no scale. The native window growth is the mode swap's
-    // single motion system; a content zoom stacked on it ran slightly out of
-    // phase (EASE.out over EASE.inOut) and wobbled the shell edges — part of
-    // the "bouncy" live feel (Thien, 2026-07-09). Dropping it also honors
-    // spec failure-mode #2: growth must never read as a zoom.
+    // Opacity ONLY — no scale. The shell's size glide is the mode swap's
+    // single motion system; a content zoom stacked on it runs out of phase
+    // (EASE.out over EASE.inOut) and wobbles the edges — part of the
+    // "bouncy" live feel (Thien, 2026-07-09). Also spec failure-mode #2:
+    // growth must never read as a zoom.
     initial: reducedMotion ? {} : { opacity: 0 },
     animate: { opacity: 1 },
-    // The outgoing shell dissolves in place (opacity only, no transform — the
-    // house exit rule) UNDER the incoming one's 200ms fade: without it the
-    // swap blinks the whole translucent widget toward the desktop for the
-    // morph's first frames (ANIMATIONS_FROM_ZERO §1 — outgoing 140ms EASE.out
-    // while both layers share the native resize window). pointerEvents dies
-    // at exit start so a stray click can't land on dead controls.
+    // The outgoing content layer dissolves in place (opacity only, no
+    // transform — the house exit rule) UNDER the incoming one's 200ms fade,
+    // both clipped by the persistent shell, which itself never fades — the
+    // widget can't blink toward the desktop mid-swap (ANIMATIONS_FROM_ZERO
+    // §1: outgoing 140ms EASE.out sharing the resize window). pointerEvents
+    // dies at exit start so a stray click can't land on dead controls.
     exit: {
       opacity: 0,
       pointerEvents: "none" as const,
@@ -1463,11 +1560,11 @@ function App() {
   return (
     <div
       className={`group/widget relative ${IN_TAURI ? "h-screen" : ""}`}
-      // The mock window frame (browser dev only): a MODE_SIZES box docked
-      // 12px off the viewport's bottom-right like dock.rs's corner, width and
-      // height sharing one 200ms EASE.inOut window — the handoff prototype's
-      // reference implementation of the corner-anchored native resize, so the
-      // mock previews the content crossfade composed with "window" growth.
+      // The mock window frame (browser dev only): the fake OS window, docked
+      // 12px off the viewport's bottom-right like dock.rs's corner. Fixed at
+      // WINDOW_MAX exactly like the real window — the visible glide belongs
+      // to the shell in both worlds, so the mock previews the exact live
+      // composition.
       style={
         IN_TAURI
           ? undefined
@@ -1475,25 +1572,33 @@ function App() {
               position: "fixed",
               right: 12,
               bottom: 12,
-              width: MODE_SIZES[mode][0],
-              height: MODE_SIZES[mode][1],
-              transition: "width 200ms var(--ease-in-out-tk), height 200ms var(--ease-in-out-tk)",
+              width: WINDOW_MAX[0],
+              height: WINDOW_MAX[1],
             }
       }
+      data-hot={hot || undefined}
+      onMouseMove={() => setHot(true)}
+      onMouseLeave={() => setHot(false)}
       onMouseDown={onDragStart}
     >
-      {/* AnimatePresence keeps the outgoing shell mounted for its 140ms exit
-          fade; absolute inset (not flow + root padding) lets the two shells
-          stack during the crossfade instead of pushing each other. */}
+      {/* THE widget box — persistent across modes: the chrome never remounts
+          or fades, only the content layers crossfade inside it. It glides
+          between mode boxes (200ms EASE.inOut, the house morph curve) out of
+          the docked corner inside the never-resizing window — the webview
+          compositor owns the entire visible resize, which is why it cannot
+          shake or blink (see dock.rs's module comment). Shadow must die out
+          inside the 6px window gutter — anything larger hard-clips at the
+          transparent window edge and reads as a gray box on light surfaces. */}
+      <div
+        className={`absolute overflow-hidden rounded-xl border border-border/10 bg-surface/97 shadow-[0_1px_3px_rgb(0_0_0/0.18),0_3px_6px_rgb(0_0_0/0.12)] [transition:width_200ms_var(--ease-in-out-tk),height_200ms_var(--ease-in-out-tk)] ${SHELL_SEAT[dockCorner]}`}
+        style={{
+          width: MODE_SIZES[mode][0] - SHELL_GUTTER_PX,
+          height: MODE_SIZES[mode][1] - SHELL_GUTTER_PX,
+        }}
+      >
+      {/* Crossfading content layers, clipped by the gliding shell above. */}
       <AnimatePresence>
-        <motion.div
-          key={mode}
-          {...morph}
-          // Shadow must die out inside the 6px window inset (inset-1.5) —
-          // anything larger hard-clips at the transparent window edge and
-          // reads as a gray box on light surfaces.
-          className="absolute inset-1.5 flex flex-col overflow-hidden rounded-xl border border-border/10 bg-surface/95 shadow-[0_1px_3px_rgb(0_0_0/0.18),0_3px_6px_rgb(0_0_0/0.12)]"
-        >
+        <motion.div key={mode} {...morph} className="absolute inset-0">
         <ModeContent mode={mode} corner={dockCorner}>
         {nothing ? (
           <div className="flex h-full w-full items-center justify-center gap-2 text-muted">
@@ -1508,7 +1613,12 @@ function App() {
              fades in; the anchored bracket cluster joins from the app root. All
              three cross at 140ms EASE.out, opacity only. */
           <>
-            <div className="flex h-full items-center gap-2 px-3">
+            {/* pl-1.5, not px-3: the art gets ~5px of air vertically, so a
+                12px left inset read as stranded (Thien, 2026-07-10). 6px
+                also sits the art's 6px radius concentric with the shell's
+                12px corner (outer = inset + inner). The text side keeps the
+                12px it needs to breathe. */}
+            <div className="flex h-full items-center gap-2 pl-1.5 pr-3">
               <Art url={shownArt} size={26} radiusPx={6} />
               <p className="min-w-0 flex-1 truncate text-xs font-medium text-fg">
                 {np.title}
@@ -1522,11 +1632,13 @@ function App() {
                 the incoming control. 180px wide, play/pause ending 76px from
                 the shell right edge — an 8px gap before the corner cluster.
                 Stops 2px above the bottom so the progress hairline stays lit.
-                Also reveals on focus-within (play/pause stays tabbable the
-                whole time — a hover-only reveal would strand keyboard users
-                on an invisible button, quick-review catch 2026-07-08). */}
+                Also reveals on keyboard focus (has-[:focus-visible], not
+                focus-within — see ModeCluster; play/pause stays tabbable the
+                whole time, and a mouse click's residual focus must not pin
+                the scrim open, quick-review catch 2026-07-08 / Thien
+                2026-07-10). */}
             <div
-              className="pointer-events-none absolute bottom-0.5 right-0 top-0 flex w-[180px] items-center justify-end pr-[76px] opacity-0 transition-opacity duration-2 ease-out-tk group-hover/widget:pointer-events-auto group-hover/widget:opacity-100 group-focus-within/widget:pointer-events-auto group-focus-within/widget:opacity-100"
+              className="pointer-events-none absolute bottom-0.5 right-0 top-0 flex w-[180px] items-center justify-end pr-[76px] opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100"
               style={{ background: "linear-gradient(90deg, transparent, rgb(var(--surface) / 0.96) 45%)" }}
               // Swallow mousedown, same reason as ModeCluster: pointer-events
               // only turns on for the 180px scrim, but the button inside it
@@ -1552,10 +1664,28 @@ function App() {
             <div className="flex min-h-0 flex-1 items-center gap-3">
               <Art url={shownArt} size={52} radiusPx={8} />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-[15px] font-medium text-fg">{np.title}</p>
+                {/* The living separator rides the TITLE here, trailing (rest =
+                    nothing, bars only while playing): at md — the size rung
+                    steps with the container (pill sm → card md → expanded md
+                    header / lg hero) — it overpowered the 12px artist·album
+                    line as a separator, so that line keeps a static dot and
+                    the waveform sits where the card has presence to spare
+                    (Thien, 2026-07-10). One living instance per view.
+                    FLEX row, not inline flow, same as the lyrics header: the
+                    title truncates in its own box, and items-center seats the
+                    capsules on the line box's center — inline align-middle
+                    hangs an md box ~5px under the baseline, visibly low
+                    against a cap-height bold title. ml-1 over the waveform's
+                    own mx-1.5 = the 10px gap. */}
+                <div className="flex min-w-0 items-center">
+                  <p className="min-w-0 truncate text-[15px] font-medium text-fg">{np.title}</p>
+                  <span className="ml-1 flex shrink-0 items-center">
+                    <Waveform size="md" trailing />
+                  </span>
+                </div>
                 <p className="truncate text-xs leading-4 text-muted">
                   {np.artist}
-                  <Waveform trailing={!np.album} />
+                  {np.album && <SeparatorDot />}
                   {np.album}
                 </p>
               </div>
@@ -1571,10 +1701,12 @@ function App() {
         </ModeContent>
         </motion.div>
       </AnimatePresence>
-      {/* Outside the mode-keyed remount: the cluster never fades or rescales
-          with the content morph, and — docked bottom-right — never moves on
-          screen. See ModeCluster. */}
+      {/* Inside the persistent shell but OUTSIDE the content swap: the shell
+          never fades, so the cluster never fades with content — and seated
+          on the shell it tracks the visible box in every dock corner and
+          every mode of the fixed-size window. See ModeCluster. */}
       {!nothing && <ModeCluster mode={mode} onStep={stepMode} />}
+      </div>
       {/* Broken-art detector — OUTSIDE the mode-keyed subtree so the data URL
           isn't re-decoded on every mode switch, only per track. */}
       {artUrl && artUrl !== brokenArtUrl && (

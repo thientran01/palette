@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Pulse",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "identifier": "com.thien.pulse",
   "plugins": {
     "updater": {
@@ -26,7 +26,7 @@
         "label": "main",
         "title": "Pulse",
         "width": 380,
-        "height": 132,
+        "height": 440,
         "decorations": false,
         "transparent": true,
         "shadow": false,

@@ -24,11 +24,20 @@ src-tauri/src/
                 (splits into media_core/ + adapters/ when M5 adds Spotify Web API)
   dock.rs       corner docking: window lives in one of the 4 work-area corners (12px
                 margin, above the taskbar); free drag snaps to the nearest corner on
-                release (Moved-debounce + GetAsyncKeyState — no drag-end event exists);
-                mode resizes grow/shrink out of the docked corner (200ms EASE.inOut —
-                on-screen morph; the snap glide keeps EASE.out, momentum inheritance;
-                size+origin per frame in one SetWindowPos); corner derived from the
-                window-state-restored position, never stored
+                release (Moved-debounce + GetAsyncKeyState — no drag-end event exists;
+                glide stays native EASE.out — pure moves never shake). The window
+                NEVER RESIZES after launch: born at WINDOW_MAX (tauri.conf =
+                MODE_SIZES.expanded, keep in sync), docked once; every mode change
+                is the shell's 200ms EASE.inOut CSS glide inside it. NEVER resize
+                the native window for animation — WebView2's composited frame lags
+                the rect one frame, so per-frame animation shakes (measured v0.5.0)
+                and even a single snap blinks (measured PR #51). The oversized
+                window's gutter is kept from eating clicks by spawn_hit_watcher:
+                cursor-polled whole-window click-through (set_ignore_cursor_events)
+                gated on the frontend-reported hit rect (set_hit_size, the mode's
+                footprint at the docked corner). Docked corner is pushed to the
+                webview ("dock-corner" event + dock_corner seed command); corner
+                derived from the window-state-restored position, never stored
   lyrics.rs     LRCLIB get→search fallback, disk cache (bounded, app-data) + session miss set
   audio.rs      WASAPI loopback (cpal input stream on the output device) → FFT →
                 smoothed auto-gained band energies at ~30Hz; capture runs ONLY
@@ -63,7 +72,7 @@ src/icons/      morphing icon system (benji.org/morphing-icons-with-claude, gene
                 never a direction chevron. Dev sequencer: npm run dev → /?lab
 ```
 
-Design rule: chrome stays neutral (house semantic tokens); the album-art palette is the **accent layer only** — progress fills, the **living separator** (src/Waveform.tsx — a colorless muted middot between artist and album that blooms into five Apple-style accent capsules while music plays and settles back on pause; replaces the em dash in every mode; the ONLY audio-reactive surface — one instance per view: the expanded big-art view promotes it to a standalone hero (`size="lg"`, nine capsules, same choreography, constant footprint so the art never moves) between the metadata and the transport, and that view's artist·album line drops to a static `SeparatorDot`; supersedes the art-halo direction and the shell glow blessed 2026-07-06), and the current-lyric **marker** (the lyric line's text stays fg — extracted accents only guarantee 3:1, below the 4.5:1 text floor). No glow anywhere: the card shell shadow is neutral black and non-reactive (lift only), the art carries no shadow. The art never moves; nothing moves *ambiently* except the separator's bars — interactive icon glyphs may morph in response to input (press, mode change), per src/icons/. Accent never colors text or chrome surfaces. Motion uses EASE/DUR tokens — `/emil-pass` binds to them. Transitions earn continuity by content identity: arrival choreography (the expanded view's lyric cascade) is reserved for content the user actually waited on; on a track change the outgoing view exits fast and plain — stale art/lyrics never get choreographed continuity, and chrome (transport/progress/mode cluster) holds still by living outside the swap.
+Design rule: chrome stays neutral (house semantic tokens); the album-art palette is the **accent layer only** — progress fills, the **living separator** (src/Waveform.tsx — a colorless muted middot that blooms into Apple-style accent capsules while music plays and settles back on pause; the ONLY audio-reactive surface — one living instance per view, riding the TITLE line everywhere (the capsules are a now-playing pulse — they belong to the song), sized to its container (pill: `sm` inline between title·artist; card + expanded lyrics header: `md` trailing the title, bars-only while playing, 10px gap = ml-1 over the built-in mx-1.5, with the artist/album lines on a static `SeparatorDot` — an md separator overpowered the 12px line, 2026-07-10; expanded big-art: standalone `lg` hero, nine capsules, constant footprint so the art never moves, metadata line on a static `SeparatorDot`); supersedes the art-halo direction and the shell glow blessed 2026-07-06), and the current-lyric **marker** (the lyric line's text stays fg — extracted accents only guarantee 3:1, below the 4.5:1 text floor). No glow anywhere: the card shell shadow is neutral black and non-reactive (lift only), the art carries no shadow. The art never moves; nothing moves *ambiently* except the separator's bars — interactive icon glyphs may morph in response to input (press, mode change), per src/icons/. Accent never colors text or chrome surfaces. Motion uses EASE/DUR tokens — `/emil-pass` binds to them. Transitions earn continuity by content identity: arrival choreography (the expanded view's lyric cascade) is reserved for content the user actually waited on; on a track change the outgoing view exits fast and plain — stale art/lyrics never get choreographed continuity, and chrome (transport/progress/mode cluster) holds still by living outside the swap.
 
 ## Global hotkeys (M1 defaults, constants in src-tauri/src/lib.rs)
 

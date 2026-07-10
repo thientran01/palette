@@ -155,6 +155,19 @@ export function onDockCorner(cb: (corner: DockCorner) => void): () => void {
   };
 }
 
+/** Fires when the window goes click-through (the cursor left the interactive
+ * footprint — dock.rs hit watcher): WS_EX_TRANSPARENT stops all mouse
+ * messages, so the webview never receives that exit's mouseleave. Hover
+ * state must be JS-owned and dropped on this signal — CSS :hover would
+ * freeze true. */
+export function onCursorLeft(cb: () => void): () => void {
+  if (!IN_TAURI) return () => {}; // mock: real mouseleave always fires
+  const un = listen("cursor-left", () => cb());
+  return () => {
+    un.then((f) => f());
+  };
+}
+
 export const SPECTRUM_BINS = 16;
 
 export interface AudioBands {
@@ -209,10 +222,19 @@ export const commands = {
   startDrag(): void {
     if (IN_TAURI) void invoke("start_drag");
   },
-  /** Resize the native window to the mode's logical size, anchored to the
-   * docked corner (Rust owns all positioning — see src-tauri/src/dock.rs). */
+  /** Dock the native window at a logical size (one corner-pinned
+   * SetWindowPos — Rust owns all positioning, see src-tauri/src/dock.rs).
+   * Called ONCE at launch with WINDOW_MAX; the window never resizes after
+   * that — mode changes are the shell's CSS glide. */
   setWindowSize(width: number, height: number): void {
     if (IN_TAURI) void invoke("set_window_size", { width, height });
+  },
+  /** Report the current mode's interactive footprint (logical px, anchored
+   * at the docked corner). The Rust cursor watcher makes everything outside
+   * it click-through — the fixed-size window's gutter must not eat clicks
+   * meant for what's beneath. */
+  setHitSize(width: number, height: number): void {
+    if (IN_TAURI) void invoke("set_hit_size", { width, height });
   },
   playPause(): void {
     if (IN_TAURI) {
