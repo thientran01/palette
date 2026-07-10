@@ -23,18 +23,19 @@ can't be driven from a headless session — run the spike alongside real usage).
 |---|---|---|---|---|
 | Normal windowed app (Spotify) | ✅ `windowed` — rect well inside work area | `ACCEPTS_NOTIFICATIONS(5)` | counts correctly | ✅ measured 2026-07-09 |
 | Alt-Tab task switcher held open | `maximized` (spans work area exactly) | ⚠️ **`BUSY(2)`** | 0 | ✅ measured 2026-07-09 — **finding 1** |
-| Maximized normal window | ⏳ expect `maximized` (= work area, NOT monitor) | ⏳ | — | hypothesis consistent with the task-switcher row; confirm with a maximized browser |
+| **Fullscreen browser video (Netflix in Chrome, live session)** | ✅ **`fullscreen`** — rect == monitor rect exactly | ⚠️ **`BUSY(2)`**, sustained for minutes | counted 34→63s during watching, reset on input | ✅ measured 2026-07-09 — **finding 4**: the rect method alone carries the flagship conceal case; BUSY is corroboration, never required |
+| Maximized normal window (Chrome, Claude, Edge) | ✅ `maximized` — rect = work area ±8px border overhang, NOT monitor | `ACCEPTS_NOTIFICATIONS(5)` | — | ✅ measured 2026-07-09 on three real apps — no false fullscreen |
+| Minimized window still foreground (transient) | ✅ `windowed` (rect at -32000) | `ACCEPTS_NOTIFICATIONS(5)` | — | ✅ measured 2026-07-09 — harmless |
+| Taskbar foreground (`Shell_TrayWnd`) | ✅ excluded by shell-class filter | — | — | ✅ measured 2026-07-09 |
 | Bare desktop foreground (`Progman`/`WorkerW`) | ⏳ expect monitor-covering — engine excludes shell classes preemptively | ⏳ | — | confirm the exclusion is actually needed |
 | Exclusive-fullscreen game | ⏳ | ⏳ expect `RUNNING_D3D_FULL_SCREEN(3)` | — | |
-| Borderless-windowed game | ⏳ expect `fullscreen` rect | ⏳ likely `ACCEPTS_NOTIFICATIONS` | — | the case the rect method exists for |
-| YouTube fullscreen (Chrome, Edge) | ⏳ expect `fullscreen` rect | ⏳ | — | |
-| VLC / Movies & TV fullscreen | ⏳ | ⏳ | — | |
+| Borderless-windowed game | ⏳ expect `fullscreen` rect (Netflix row makes this near-certain) | ⏳ | — | |
 | PowerPoint slideshow | ⏳ | ⏳ expect `PRESENTATION_MODE(4)` | — | |
 | Zoom/Teams screen-share + fullscreen call | ⏳ | ⏳ `BUSY`? `PRESENTATION_MODE`? | — | decides whether calls conceal |
-| Fullscreen on the OTHER monitor | ⏳ | ⏳ does QUNS fire globally? | — | multi-monitor scoping — widget must NOT conceal |
-| Lock screen / UAC secure desktop | ⏳ expect `GetForegroundWindow` → null | ⏳ | ⏳ | engine already HOLDS state on null — confirm null actually happens |
+| Fullscreen on the OTHER monitor | **N/A on this hardware** — single 27" 2560×1440 monitor | — | — | scoping code stays (rect method widget-monitor gated; QUNS global); re-measure if a second monitor ever lands |
+| Lock screen / UAC secure desktop | ⏳ expect `GetForegroundWindow` → null | ⏳ | ⏳ | engine already HOLDS state (and resets hysteresis credit) on null — confirm null actually happens |
 | Idle while gaming (controller only) | — | — | ⏳ expect **blind to XInput** | AFK/working must never gate conceal |
-| Auto-hidden taskbar | ⏳ work area == monitor rect ⇒ `maximized` reads as `fullscreen`? | — | — | known caveat of the rect method |
+| Auto-hidden taskbar | ⏳ work area == monitor rect ⇒ `maximized` reads as `fullscreen`? | — | — | known caveat of the rect method (taskbar is standard 48px on this machine) |
 
 ## Findings that change the plan
 
@@ -48,7 +49,19 @@ can't be driven from a headless session — run the spike alongside real usage).
    `fullscreen`. The auto-hidden-taskbar caveat row is still open.
 3. **The desktop shell and the widget itself are excluded by class/pid in presence.rs**
    (`Progman`/`WorkerW`/`Shell_TrayWnd`, own pid) — a monitor-spanning shell window must
-   never read as fullscreen content. Preemptive; confirm with the bare-desktop row.
+   never read as fullscreen content. `Shell_TrayWnd` exclusion confirmed live; the
+   bare-desktop (`Progman`) row is still preemptive.
+4. **Fullscreen browser video reports `QUNS_BUSY`, not a fullscreen QUNS state**
+   (measured against a real Netflix session, 2026-07-09). Two consequences: (a) the
+   rect method is the load-bearing detector for browser/borderless fullscreen — QUNS 3/4
+   likely only cover exclusive D3D and presentation mode; (b) finding 1 stands — BUSY
+   still can't join the predicate alone (alt-tab fires it too), but BUSY+`rect_fullscreen`
+   co-occurring is the normal browser-video signature, not an anomaly.
+5. **Measurement etiquette (self-note): foreground scenarios are user-visible.** The
+   2026-07-09 synthetic runs (maximized window, MinimizeAll, Edge F11) executed while a
+   live Netflix session had the screen and stole its foreground/fullscreen. Real usage
+   plus `presence-spike changes` produces the same rows without the disruption — prefer
+   passive capture for everything except rows that never occur naturally.
 
 ## How to fill the ⏳ rows
 
