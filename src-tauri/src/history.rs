@@ -246,6 +246,25 @@ pub fn flush(app: &AppHandle) {
     inner.finalize();
 }
 
+/// Opportunistic Spotify-uri stamping (called from spotify.rs whenever a
+/// successful API read reveals the current track's uri): if the in-flight
+/// candidate is that track, remember the uri so its history row can replay
+/// without a search round-trip. Loose match — GSMTC may carry the primary
+/// artist where the API joins all of them.
+pub fn enrich_uri(app: &AppHandle, title: &str, artist: &str, uri: &str) {
+    let tracker = app.state::<Tracker>();
+    let mut inner = lock(&tracker);
+    let Some(c) = inner.candidate.as_mut() else { return };
+    if c.spotify_uri.is_some() || c.player != "spotify" {
+        return;
+    }
+    let title_eq = c.title.trim().to_lowercase() == title.trim().to_lowercase();
+    let (a, b) = (c.artist.trim().to_lowercase(), artist.trim().to_lowercase());
+    if title_eq && !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a)) {
+        c.spotify_uri = Some(uri.to_string());
+    }
+}
+
 impl Inner {
     fn ingest(&mut self, np: &NowPlaying) -> Option<HistoryEntry> {
         if np.player == "none" || np.status == "none" {

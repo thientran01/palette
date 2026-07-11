@@ -5,6 +5,7 @@ mod lyrics;
 mod media;
 mod presence;
 mod spotify;
+mod upnext;
 
 use media::ArtCache;
 use serde::Serialize;
@@ -435,6 +436,7 @@ pub fn run() {
         .manage(LastEmit(Mutex::new(None)))
         .manage(history::Tracker::default())
         .manage(spotify::SpotifyAuth::default())
+        .manage(upnext::UpNext::default())
         .manage(UiReactive(Arc::new(AtomicBool::new(true))))
         .manage(dock::Dock::default())
         .manage(presence::Presence::default())
@@ -456,6 +458,11 @@ pub fn run() {
             spotify::spotify_status,
             spotify::spotify_disconnect,
             spotify::spotify_queue,
+            spotify::spotify_play_now,
+            upnext::upnext_list,
+            upnext::upnext_add,
+            upnext::upnext_remove,
+            upnext::upnext_move,
             dock::set_window_size,
             dock::set_hit_size,
             dock::start_drag,
@@ -626,6 +633,8 @@ pub fn run() {
 
             // Play-history: resolve the log dir + build the line index once.
             history::init(app.handle());
+            // Managed up-next: restore the persisted list + fed marker.
+            upnext::init(app.handle());
 
             // Global hotkeys, each with its own action.
             type Action = fn(&AppHandle);
@@ -724,6 +733,7 @@ pub fn run() {
                         let p = if std::mem::take(&mut force_snapshot) || probing || tick != last_tick {
                             let np = emit_now(&handle);
                             history::ingest(&handle, &np);
+                            upnext::tick(&handle, &np);
                             np.status == "playing"
                         } else {
                             tick.as_ref().is_some_and(|k| k.3 == "playing")
@@ -734,7 +744,9 @@ pub fn run() {
                         hidden_beats += 1;
                         if hidden_beats >= HISTORY_PROBE_BEATS {
                             hidden_beats = 0;
-                            history::ingest(&handle, &media::history_probe());
+                            let np = media::history_probe();
+                            history::ingest(&handle, &np);
+                            upnext::tick(&handle, &np);
                         }
                         false
                     };

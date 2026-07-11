@@ -10,6 +10,7 @@ import {
   type NowPlaying,
   type PresenceDebug,
   type PresenceState,
+  type QueueTrack,
   type SpotifyQueueResult,
   type SpotifyStatus,
 } from "../types";
@@ -68,14 +69,23 @@ let mock: NowPlaying = {
 };
 
 function mockSkip(dir: 1 | -1): void {
-  // The outgoing track becomes a history entry, like the backend tracker
-  // finalizing on a track change — keeps `?am`/`__mockNext()` exercising the
-  // history live-append path alongside everything else.
+  mockJumpTo((mockTrack + dir + MOCK_TRACKS.length) % MOCK_TRACKS.length);
+}
+
+/** Land on ring index `i`: history-finalize the outgoing track (like the
+ * backend tracker), switch, and pop a matching up-next front (like the
+ * backend feeder confirming its fed item played). */
+function mockJumpTo(i: number): void {
   mockHistoryAppend(mockHistoryEntry(MOCK_TRACKS[mockTrack], Date.now() - 190_000, 190_000));
-  mockTrack = (mockTrack + dir + MOCK_TRACKS.length) % MOCK_TRACKS.length;
+  mockTrack = i;
   const now = Date.now();
   amTruth = { pos: 0, at: now };
   pushMock({ ...MOCK_TRACKS[mockTrack], status: "playing", position_ms: 0, position_at_ms: now });
+  const front = mockUpNext[0];
+  if (front && front.title === MOCK_TRACKS[mockTrack].title) {
+    mockUpNext.shift();
+    mockUpNextListeners.forEach((cb) => cb([...mockUpNext]));
+  }
 }
 
 // ---- play history (history.rs seam) ----
@@ -166,6 +176,37 @@ export function onSpotifyStatus(cb: (s: SpotifyStatus) => void): () => void {
   mockSpotifyListeners.add(cb);
   return () => {
     mockSpotifyListeners.delete(cb);
+  };
+}
+
+// ---- Pulse-managed up-next (upnext.rs seam) ----
+
+/** `?jump=partial` forces playNow to report a failed re-queue in preview. */
+const JUMP_PARTIAL =
+  !IN_TAURI && new URLSearchParams(window.location.search).get("jump") === "partial";
+
+/** The mock's Pulse-managed list — seeded with two upcoming ring tracks so
+ * the queue surface has rows at plain `/`. */
+const mockUpNext: QueueTrack[] = !IN_TAURI
+  ? [mockQueueTrack(MOCK_TRACKS[1]), mockQueueTrack(MOCK_TRACKS[2])]
+  : [];
+const mockUpNextListeners = new Set<(list: QueueTrack[]) => void>();
+
+function mockUpNextChanged(): void {
+  mockUpNextListeners.forEach((cb) => cb([...mockUpNext]));
+}
+
+/** The managed list — seed via commands.upnextList, then live updates. */
+export function onUpNextChanged(cb: (list: QueueTrack[]) => void): () => void {
+  if (IN_TAURI) {
+    const un = listen<QueueTrack[]>("upnext-changed", (e) => cb(e.payload));
+    return () => {
+      un.then((f) => f());
+    };
+  }
+  mockUpNextListeners.add(cb);
+  return () => {
+    mockUpNextListeners.delete(cb);
   };
 }
 
@@ -563,6 +604,52 @@ export const commands = {
       };
     }
     return invoke<SpotifyQueueResult>("spotify_queue");
+  },
+  /** Pulse-managed up-next list (seed; "upnext-changed" is the live half). */
+  async upnextList(): Promise<QueueTrack[]> {
+    if (!IN_TAURI) return [...mockUpNext];
+    return invoke<QueueTrack[]>("upnext_list");
+  },
+  upnextAdd(item: QueueTrack, at?: number): void {
+    if (IN_TAURI) {
+      void invoke("upnext_add", { item, at: at ?? null });
+    } else {
+      mockUpNext.splice(Math.min(at ?? mockUpNext.length, mockUpNext.length), 0, item);
+      mockUpNextChanged();
+    }
+  },
+  upnextRemove(uri: string): void {
+    if (IN_TAURI) {
+      void invoke("upnext_remove", { uri });
+    } else {
+      const i = mockUpNext.findIndex((t) => t.uri === uri);
+      if (i !== -1) mockUpNext.splice(i, 1);
+      mockUpNextChanged();
+    }
+  },
+  upnextMove(from: number, to: number): void {
+    if (IN_TAURI) {
+      void invoke("upnext_move", { from, to });
+    } else if (from < mockUpNext.length && to < mockUpNext.length && from !== to) {
+      const [item] = mockUpNext.splice(from, 1);
+      mockUpNext.splice(to, 0, item);
+      mockUpNextChanged();
+    }
+  },
+  /** Context-preserving jump (spotify.rs play_now). Statuses: ok | busy |
+   * no_playback | gone | diverged | partial | disconnected | offline. The
+   * caller owns announcement suppression around this. */
+  async playNow(uri: string): Promise<string> {
+    if (!IN_TAURI) {
+      if (!mockSpotifyConnected) return "disconnected";
+      const i = MOCK_TRACKS.findIndex((t) => mockQueueTrack(t).uri === uri);
+      if (i === -1) return "gone";
+      // Rotate the ring straight to the target — one announcement, like the
+      // real jump after suppression.
+      mockJumpTo(i);
+      return JUMP_PARTIAL ? "partial" : "ok";
+    }
+    return invoke<string>("spotify_play_now", { uri });
   },
   /** Newest-first history page; `before` = the oldest loaded entry's
    * started_at_ms for infinite scroll, null seeds from the newest. */

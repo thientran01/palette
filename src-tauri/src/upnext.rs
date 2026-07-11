@@ -1,0 +1,282 @@
+//! Pulse-managed up-next: the queue the 11a UI shows and mutates. Spotify's
+//! public API cannot remove or reorder queue items, so Pulse keeps its OWN
+//! ordered list and feeds Spotify one track shortly before each track ends —
+//! remove/reorder/insert are pure local ops, and Spotify's real queue stays
+//! shallow (decided with Thien 2026-07-10; the alternative was read+add-only).
+//!
+//! Honest limits (docs/smtc-support-matrix.md finding): the chain holds only
+//! while Pulse runs and Spotify is connected — otherwise the user's playlist
+//! just continues naturally (graceful). Skips made inside the Spotify app
+//! pull Spotify's own queue and bypass this list. A fed-but-unplayed front
+//! item can't be pulled back out of Spotify's queue — removing it locally
+//! accepts that one-track leak.
+//!
+//! The feeder rides the media loop's observations (visible snapshots AND the
+//! hidden ~5s history probe, so concealed listening keeps the chain alive).
+//! "Remaining time" is a coarse backend projection off the raw pair — the
+//! same documented carve-out as history's ms_listened: it never feeds the
+//! UI clock.
+
+use crate::media::{self, NowPlaying};
+use crate::spotify::{self, QueueTrack};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+/// Feed the front item when this little of the current track remains.
+/// Position is pushed ~every 5s on Spotify, so the estimate can run ~5s
+/// stale — 15s keeps a full push cycle of margin before the transition.
+const FEED_REMAINING_MS: i64 = 15_000;
+/// Minimum gap between feed attempts (throttles offline retries).
+const FEED_RETRY_MS: i64 = 5_000;
+
+#[derive(Serialize, Deserialize, Default)]
+struct Persisted {
+    v: u32,
+    /// The front item already POSTed into Spotify's queue, if any — persisted
+    /// so a restart doesn't double-feed the same track.
+    fed: Option<String>,
+    list: Vec<QueueTrack>,
+}
+
+#[derive(Default)]
+pub struct UpNext {
+    inner: Mutex<Inner>,
+    /// One feed HTTP call at a time (fired from the media loop, runs on the
+    /// blocking pool — the loop itself must never block on network).
+    feed_in_flight: AtomicBool,
+}
+
+#[derive(Default)]
+struct Inner {
+    dir: Option<PathBuf>,
+    list: Vec<QueueTrack>,
+    /// uri of the fed-but-not-yet-played front item.
+    fed: Option<String>,
+    last_feed_attempt_ms: i64,
+    /// Identity key of the last observed track — change detection. A session
+    /// vanish does NOT clear it (AM-style stop/resume is not a track change).
+    last_track: Option<String>,
+}
+
+fn unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn lock(u: &UpNext) -> std::sync::MutexGuard<'_, Inner> {
+    u.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn store_path(dir: &Path) -> PathBuf {
+    dir.join("upnext.json")
+}
+
+fn persist(inner: &Inner) {
+    let Some(dir) = &inner.dir else { return };
+    let p = Persisted { v: 1, fed: inner.fed.clone(), list: inner.list.clone() };
+    if let Ok(json) = serde_json::to_string(&p) {
+        let _ = std::fs::create_dir_all(dir);
+        if let Err(e) = std::fs::write(store_path(dir), json) {
+            eprintln!("upnext: persist failed: {e}");
+        }
+    }
+}
+
+fn emit_list(app: &AppHandle, list: &[QueueTrack]) {
+    let _ = app.emit("upnext-changed", list);
+}
+
+/// Load the persisted list. Setup-time.
+pub fn init(app: &AppHandle) {
+    let Ok(dir) = app.path().app_data_dir() else {
+        eprintln!("upnext: app data dir unavailable — up-next disabled this run");
+        return;
+    };
+    let loaded = std::fs::read_to_string(store_path(&dir))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Persisted>(&raw).ok())
+        .unwrap_or_default();
+    let upnext = app.state::<UpNext>();
+    let mut inner = lock(&upnext);
+    inner.dir = Some(dir);
+    inner.list = loaded.list;
+    inner.fed = loaded.fed;
+}
+
+/// Loose GSMTC↔Web-API track match: same title (case-insensitive) and the
+/// artist strings overlap (GSMTC may carry the primary artist where the API
+/// joins all of them).
+fn matches_track(np: &NowPlaying, t: &QueueTrack) -> bool {
+    let title_eq = np.title.trim().to_lowercase() == t.title.trim().to_lowercase();
+    if !title_eq {
+        return false;
+    }
+    let a = np.artist.trim().to_lowercase();
+    let b = t.artist.trim().to_lowercase();
+    !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a))
+}
+
+/// One media-loop observation. Handles track-change bookkeeping (pop a fed
+/// item that just started playing) and fires the feeder when the current
+/// track nears its end.
+pub fn tick(app: &AppHandle, np: &NowPlaying) {
+    let upnext = app.state::<UpNext>();
+
+    // Track-change bookkeeping. While a play_now jump is skipping through
+    // the queue, intermediate tracks flicker as "playing" for ~150ms each —
+    // the fed item among them must NOT be popped as played; the jump
+    // re-queues everything it skipped over.
+    if np.player != "none" && np.status != "none" {
+        let jump_active = spotify::jump_active(app);
+        let key = media::ident_key(&np.app_id, &np.title, &np.artist);
+        let popped = {
+            let mut inner = lock(&upnext);
+            if inner.last_track.as_deref() == Some(key.as_str()) {
+                None
+            } else if jump_active {
+                inner.last_track = Some(key);
+                None
+            } else {
+                inner.last_track = Some(key);
+                match inner.fed.take() {
+                    Some(fed_uri) => {
+                        let fed_idx = inner.list.iter().position(|t| t.uri == fed_uri);
+                        match fed_idx {
+                            // The fed item started playing — it left Spotify's
+                            // queue and leaves Pulse's list. A change to any
+                            // OTHER track (user skipped in the Spotify app,
+                            // radio jump) just unmarks: the item is still in
+                            // Spotify's queue and will surface eventually,
+                            // but Pulse no longer counts on it.
+                            Some(i) if matches_track(np, &inner.list[i]) => {
+                                inner.list.remove(i);
+                                persist(&inner);
+                                Some(inner.list.clone())
+                            }
+                            _ => {
+                                persist(&inner);
+                                None
+                            }
+                        }
+                    }
+                    None => None,
+                }
+            }
+        };
+        if let Some(list) = popped {
+            emit_list(app, &list);
+        }
+    }
+
+    // Feeder.
+    if np.player != "spotify" || np.status != "playing" {
+        return;
+    }
+    if np.duration_ms <= 0 || np.position_at_ms <= 0 {
+        return;
+    }
+    // Coarse remaining estimate off the raw pair (never reaches the UI).
+    let projected = np.position_ms + (unix_ms() - np.position_at_ms).clamp(0, 30_000);
+    let remaining = np.duration_ms - projected;
+    if remaining > FEED_REMAINING_MS {
+        return;
+    }
+    let front = {
+        let mut inner = lock(&upnext);
+        if inner.fed.is_some() || inner.list.is_empty() {
+            return;
+        }
+        let now = unix_ms();
+        if now - inner.last_feed_attempt_ms < FEED_RETRY_MS {
+            return;
+        }
+        inner.last_feed_attempt_ms = now;
+        inner.list[0].clone()
+    };
+    if !spotify::connected(app) {
+        return;
+    }
+    if upnext
+        .feed_in_flight
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    // Blocking HTTP must not run on the media loop thread.
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let ok = spotify::add_to_queue(&app, &front.uri).is_ok();
+        let upnext = app.state::<UpNext>();
+        if ok {
+            let mut inner = lock(&upnext);
+            inner.fed = Some(front.uri);
+            persist(&inner);
+        }
+        upnext.feed_in_flight.store(false, Ordering::SeqCst);
+    });
+}
+
+/// Run a mutation, persist, emit. Everything the UI does routes through here.
+fn mutate(app: &AppHandle, f: impl FnOnce(&mut Inner)) {
+    let upnext = app.state::<UpNext>();
+    let list = {
+        let mut inner = lock(&upnext);
+        f(&mut inner);
+        persist(&inner);
+        inner.list.clone()
+    };
+    emit_list(app, &list);
+}
+
+/// Remove by uri (first occurrence). Public for play_now's queue-row path.
+pub fn remove(app: &AppHandle, uri: &str) {
+    mutate(app, |inner| {
+        if let Some(i) = inner.list.iter().position(|t| t.uri == uri) {
+            inner.list.remove(i);
+        }
+        // Removing the fed front: the item is already in Spotify's queue and
+        // can't be pulled back — the documented one-track leak. Unmark so
+        // the feeder moves on to the new front.
+        if inner.fed.as_deref() == Some(uri) {
+            inner.fed = None;
+        }
+    });
+}
+
+// ---- commands ----
+
+/// Seed for the queue UI ("upnext-changed" is the event half).
+#[tauri::command]
+pub async fn upnext_list(upnext: State<'_, UpNext>) -> Result<Vec<QueueTrack>, ()> {
+    Ok(lock(&upnext).list.clone())
+}
+
+#[tauri::command]
+pub async fn upnext_add(app: AppHandle, item: QueueTrack, at: Option<usize>) {
+    mutate(&app, |inner| {
+        let at = at.unwrap_or(inner.list.len()).min(inner.list.len());
+        inner.list.insert(at, item);
+    });
+}
+
+#[tauri::command]
+pub async fn upnext_remove(app: AppHandle, uri: String) {
+    remove(&app, &uri);
+}
+
+#[tauri::command]
+pub async fn upnext_move(app: AppHandle, from: usize, to: usize) {
+    mutate(&app, |inner| {
+        if from < inner.list.len() && to < inner.list.len() && from != to {
+            let item = inner.list.remove(from);
+            inner.list.insert(to, item);
+        }
+    });
+}
