@@ -50,7 +50,7 @@ src-tauri/src/
                 "history-appended" seed/event pair). Fed from the media loop:
                 visible rides emit_now's return; hidden probes ~5s via
                 media::history_probe (art-free, no emit — the ONE exception to
-                "no work while hidden", so P1-concealed listens still log).
+                "no work while hidden", so conceal-hidden listens still log).
                 ms_listened = wall-clock playing spans, NOT position projection
                 (that rule guards the UI clock). Dedupe: pause/resume = one
                 entry; AM session vanish + same track back within 10min resumes

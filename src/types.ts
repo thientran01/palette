@@ -28,7 +28,8 @@ export interface PresenceState {
    * GLOBAL QUNS state (exclusive D3D / presentation mode) is active — the
    * QUNS methods carry no monitor scoping. */
   fullscreen: boolean;
-  /** What the engine did about it — always false until P1 ships conceal. */
+  /** What the engine did about it: the window is currently hidden by the
+   * courtesy conceal (false while a manual show snoozes the episode). */
   concealed: boolean;
 }
 

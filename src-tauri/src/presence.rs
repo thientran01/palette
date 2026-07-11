@@ -1,10 +1,11 @@
 /*
- * Presence engine: senses the user's device context — fullscreen foreground
- * content and input idleness — emits derived, hysteresis-settled states to
- * the frontend, and acts on them in the licensed ways only (CLAUDE.md
- * "Presence" doctrine). P1: courtesy conceal — settled fullscreen hides the
- * native window via lib.rs's VisIntent/apply_visibility (manual intent
- * always wins; the tray "Companion mode" switch stops all actions).
+ * Presence engine: senses ONE thing — settled fullscreen foreground
+ * content — and takes ONE action: the courtesy conceal. Settled fullscreen
+ * hides the native window via lib.rs's VisIntent/apply_visibility; the
+ * episode ending restores it exactly as it was (manual intent always wins;
+ * the tray "Hide on fullscreen" switch stops the action, sensing
+ * continues). Input-idleness sensing and the behaviors that rode it were
+ * removed 2026-07-11 — see CLAUDE.md's Presence paragraph.
  * docs/presence-signal-matrix.md is the source of truth for what Windows
  * reports — no behavior ships on an unmeasured signal.
  *
