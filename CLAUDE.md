@@ -167,9 +167,16 @@ src/Queue.tsx   the 11a queue & history UI: Pulse's up-next list + the
                 flash + 1.6s aria-live toast, keyboard ↑/↓/Delete/Enter.
                 play_now suppresses the pill announcement for intermediates
                 (isAnnounceSuppressed) — the target announces once. The
-                cluster is [queue][collapse][expand]; the expanded note
-                seat stays the ONLY lyrics entry and exits the queue
-                surface to lyrics
+                queue toggle left the bracket cluster (2026-07-11: brackets
+                = container verbs, queue = content surface): card/expanded
+                seat it bottom-left (QueueSeat, left-[7px] bottom-[4px] —
+                mirrors the cluster and holds pixels across card⇄expanded);
+                the pill seats it in the hover scrim beside play/pause
+                ([queue][play/pause] on the cluster's gap-1 rhythm, ending
+                108px from the shell right edge — the pill's bottom-left IS
+                the album art). The cluster stays [collapse][expand]. The
+                expanded note seat stays the ONLY lyrics entry and exits
+                the queue surface to lyrics
 src/icons/      morphing icon system (benji.org/morphing-icons-with-claude, generalized):
                 every icon = 3 strokes × 2 cubics with identical command skeletons, so
                 any icon morphs into any other by tweening d strings — geometry.ts is
