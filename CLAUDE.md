@@ -62,8 +62,7 @@ src-tauri/src/
   spotify.rs    Spotify Web API adapter (the app's first OAuth): PKCE +
                 loopback redirect (127.0.0.1:43117/callback — the dashboard
                 app must register EXACTLY that URI; SPOTIFY_CLIENT_ID const,
-                public under PKCE, EMPTY until Thien's dashboard app exists —
-                tray narrates "setup needed"). Tokens in their own
+                public under PKCE — set 2026-07-10). Tokens in their own
                 app-data/spotify_tokens.json (NOT clobber-write settings.json);
                 refresh on demand <60s to expiry, single-flighted
                 (refresh_gate) with rotation persisted. Tokens are destroyed
