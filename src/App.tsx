@@ -2026,17 +2026,23 @@ function App() {
             </div>
             {/* Scrim + [queue][play/pause], revealed on hover. Absolute over
                 the row so nothing reflows; the gradient lets the artist text
-                fade UNDER the incoming controls. 180px wide, play/pause
-                ending 76px from the shell right edge — 9px before the
-                two-bracket cluster's reach (7 + 28 + 4 + 28 = 67) — and the
-                queue seat gap-1 to its left, ending 108px in: the pill has
-                no free corner for QueueSeat (bottom-left IS the album art),
-                so queue joins the grammar the pill already owns, everything
-                in the right-edge reveal, spaced on the cluster's own 4px
-                rhythm. Re-derived 2026-07-11: the old 76px seat was computed
-                against a two-bracket cluster, and 11a's third cluster seat
-                overlapped it by 23px. Stops 2px above the bottom so the
-                progress hairline stays lit. Also reveals on keyboard focus
+                fade UNDER the incoming controls. 200px wide with the solid
+                stop at 30%, so the surface fill is fully opaque from 140px
+                in — PAST the queue seat's far edge (136): both buttons sit
+                on solid ground and the ramp (140→200) stays a real fade.
+                Re-derived twice 2026-07-11: the old 76px play/pause seat was
+                computed against a two-bracket cluster (11a's third cluster
+                seat overlapped it by 23px), and the old 180px/45% gradient
+                was tuned for ONE button — its opaque zone ended at 99px,
+                short of the queue seat (quick-review catch). Play/pause ends
+                76px from the shell right edge — 9px before the two-bracket
+                cluster's reach (7 + 28 + 4 + 28 = 67) — and the queue seat
+                sits gap-1 to its left, ending 108px in: the pill has no
+                free corner for QueueSeat (bottom-left IS the album art), so
+                queue joins the grammar the pill already owns, everything in
+                the right-edge reveal, spaced on the cluster's own 4px
+                rhythm. Stops 2px above the bottom so the progress hairline
+                stays lit. Also reveals on keyboard focus
                 (has-[:focus-visible], not focus-within — see ModeCluster;
                 play/pause stays tabbable the whole time, and a mouse click's
                 residual focus must not pin the scrim open, quick-review
@@ -2044,10 +2050,10 @@ function App() {
                 pill's queue popover is up — it hosts the control that
                 closes it. */}
             <div
-              className={`pointer-events-none absolute bottom-0.5 right-0 top-0 flex w-[180px] items-center justify-end gap-1 pr-[76px] opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 ${
+              className={`pointer-events-none absolute bottom-0.5 right-0 top-0 flex w-[200px] items-center justify-end gap-1 pr-[76px] opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 ${
                 queueOpen ? "pointer-events-auto opacity-100" : ""
               }`}
-              style={{ background: "linear-gradient(90deg, transparent, rgb(var(--surface) / 0.96) 45%)" }}
+              style={{ background: "linear-gradient(90deg, transparent, rgb(var(--surface) / 0.96) 30%)" }}
               // Swallow mousedown, same reason as ModeCluster: pointer-events
               // only turns on for the 180px scrim, but the buttons inside it
               // don't fill that box — a press that lands on the gradient
