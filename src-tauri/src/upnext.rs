@@ -366,6 +366,71 @@ pub fn remove(app: &AppHandle, uri: &str) {
     });
 }
 
+/// The frontend arms its own suppression when IT starts a jump; this event
+/// covers backend-initiated jumps (the queue-aware skip) so the pill's
+/// announcement still holds for intermediates and fires once on the target.
+#[derive(serde::Serialize, Clone)]
+struct JumpTarget {
+    title: String,
+    artist: String,
+}
+
+/// Queue-aware skip: a "next" pressed IN PULSE (transport button, the
+/// Ctrl+Alt+N hotkey) lands on the up-next front instead of falling through
+/// to the playlist — the mid-song skip was the one transition the feed-late
+/// model missed (feeding waits for the last ~15s precisely so remove/reorder
+/// keep working; a skip before that window meant Spotify had never been
+/// handed anything). Skips made inside the Spotify app still bypass the
+/// list — nothing can intercept those (matrix finding 11).
+///
+/// Returns true when the press was consumed (jump spawned, or one is
+/// already in flight — never stack skips); false = caller does a plain
+/// next. Cheap sync gates only; all HTTP on the blocking pool.
+pub fn try_queue_skip(app: &AppHandle) -> bool {
+    let upnext = app.state::<UpNext>();
+    let (front, was_fed) = {
+        let inner = lock(&upnext);
+        match inner.list.first() {
+            Some(t) => (t.clone(), inner.fed.as_deref() == Some(t.uri.as_str())),
+            None => return false,
+        }
+    };
+    if !spotify::connected(app) || media::current_player() != "spotify" {
+        return false;
+    }
+    if spotify::jump_active(app) {
+        return true; // a jump is mid-flight — swallow the press
+    }
+    let _ = app.emit(
+        "spotify-jump",
+        JumpTarget { title: front.title.clone(), artist: front.artist.clone() },
+    );
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        match spotify::play_now(&app, &front.uri) {
+            // Landed: pop the front from Pulse's list. A FED front pops via
+            // tick's fed-match instead (racing it here could eat a duplicate
+            // entry) — this handles the unfed mid-song case.
+            "ok" | "partial" => {
+                if !was_fed {
+                    remove(&app, &front.uri);
+                }
+            }
+            // Skips happened but the landing is unconfirmed / another jump
+            // won the guard — do NOT add a plain skip on top.
+            "diverged" | "busy" => {}
+            // Nothing was skipped (unreachable, no playback, target gone):
+            // the user still asked for NEXT — deliver the plain one so the
+            // press never dead-ends.
+            _ => {
+                media::next();
+                crate::emit_now(&app);
+            }
+        }
+    });
+    true
+}
+
 // ---- commands ----
 
 /// Seed for the queue UI ("upnext-changed" is the event half).
