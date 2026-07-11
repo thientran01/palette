@@ -567,11 +567,16 @@ fn api_call(
     let mut refreshed = false;
     let mut waited_429 = false;
     loop {
-        let resp = ureq::request(method, url)
+        let req = ureq::request(method, url)
             .set("User-Agent", UA)
             .set("Authorization", &format!("Bearer {token}"))
-            .timeout(TIMEOUT)
-            .call();
+            .timeout(TIMEOUT);
+        // POSTs must carry an explicit (empty) body: ureq's bodyless call()
+        // sends no Content-Length and Spotify's edge answers 411 "Length
+        // Required" — which read as "Spotify unreachable" on every play_now
+        // and silently starved the feeder (first live soak, 2026-07-11;
+        // GETs were never affected, which is why search/enrich worked).
+        let resp = if method == "GET" { req.call() } else { req.send_bytes(&[]) };
         match resp {
             Ok(r) => {
                 if r.status() == 204 {
