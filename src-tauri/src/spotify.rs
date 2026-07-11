@@ -35,7 +35,7 @@ use tauri_plugin_opener::OpenerExt;
 /// Redirect URI EXACTLY `http://127.0.0.1:43117/callback` (literal 127.0.0.1,
 /// not localhost — Spotify's loopback rules), Web API enabled, then paste the
 /// Client ID here. Empty = the tray narrates "Spotify setup needed".
-const SPOTIFY_CLIENT_ID: &str = "";
+const SPOTIFY_CLIENT_ID: &str = "3f82e7a35eea45ddab8625819a79d1de";
 
 const REDIRECT_PORT: u16 = 43117;
 /// read = queue/currently-playing; modify = add-to-queue/skip (play-now and
