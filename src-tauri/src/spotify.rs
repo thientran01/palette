@@ -80,6 +80,9 @@ pub struct SpotifyAuth {
     /// clears (invalid_grant, dead session) and frontend disconnects, not
     /// just tray clicks. The label doubles as the connection state.
     narrator: Mutex<Option<Narrator>>,
+    /// One play_now jump at a time; also gates upnext's fed-pop bookkeeping
+    /// against the intermediate track flicker a jump produces.
+    jump_in_flight: AtomicBool,
 }
 
 #[derive(Default)]
@@ -172,6 +175,12 @@ pub fn connected(app: &AppHandle) -> bool {
     let auth = app.state::<SpotifyAuth>();
     let inner = lock(&auth);
     inner.tokens.is_some()
+}
+
+/// True while a play_now jump is skipping through the queue — upnext::tick
+/// suspends its fed-pop bookkeeping for the duration.
+pub fn jump_active(app: &AppHandle) -> bool {
+    app.state::<SpotifyAuth>().jump_in_flight.load(Ordering::SeqCst)
 }
 
 /// Emit the connection state AND re-sync the tray label to it — the label is
@@ -544,14 +553,18 @@ fn ensure_access(app: &AppHandle) -> Result<String, &'static str> {
 
 // ---- Web API ----
 
-/// GET a player endpoint with one 401-refresh retry and one 429 Retry-After
-/// honor. Ok(None) = 204 (no active playback).
-fn api_get(app: &AppHandle, url: &str) -> Result<Option<serde_json::Value>, &'static str> {
+/// Call a player endpoint with one 401-refresh retry and one 429 Retry-After
+/// honor. Ok(None) = 204 (no active playback) or an empty body.
+fn api_call(
+    app: &AppHandle,
+    method: &str,
+    url: &str,
+) -> Result<Option<serde_json::Value>, &'static str> {
     let mut token = ensure_access(app)?;
     let mut refreshed = false;
     let mut waited_429 = false;
     loop {
-        let resp = ureq::get(url)
+        let resp = ureq::request(method, url)
             .set("User-Agent", UA)
             .set("Authorization", &format!("Bearer {token}"))
             .timeout(TIMEOUT)
@@ -561,7 +574,12 @@ fn api_get(app: &AppHandle, url: &str) -> Result<Option<serde_json::Value>, &'st
                 if r.status() == 204 {
                     return Ok(None);
                 }
-                return r.into_json().map(Some).map_err(|_| "offline");
+                // A GET's body is the answer — a garbled one is a failure.
+                // POST answers (200/202) may carry no body; that's success.
+                if method == "GET" {
+                    return r.into_json().map(Some).map_err(|_| "offline");
+                }
+                return Ok(r.into_json().ok());
             }
             Err(ureq::Error::Status(401, _)) if !refreshed => {
                 refreshed = true;
@@ -648,11 +666,40 @@ fn parse_track(v: &serde_json::Value) -> Option<QueueTrack> {
     })
 }
 
+/// One "queue" POST: append a track to the END of Spotify's real queue —
+/// the up-next feeder's rung and the jump's re-queue primitive.
+pub fn add_to_queue(app: &AppHandle, uri: &str) -> Result<(), &'static str> {
+    api_call(
+        app,
+        "POST",
+        &format!("https://api.spotify.com/v1/me/player/queue?uri={}", urlenc(uri)),
+    )
+    .map(|_| ())
+}
+
+fn next_track(app: &AppHandle) -> Result<(), &'static str> {
+    api_call(app, "POST", "https://api.spotify.com/v1/me/player/next").map(|_| ())
+}
+
 /// The user's queue (currently playing + up next). Served from a 5s cache;
 /// note Spotify mixes user-queued and autoplay items with no distinction and
 /// caps at ~20 items.
 pub fn queue(app: &AppHandle) -> QueueResult {
-    {
+    queue_impl(app, true)
+}
+
+/// Cache-bypassing read — play_now's positioning must never act on a stale
+/// snapshot (it skips by position).
+pub(crate) fn queue_fresh(app: &AppHandle) -> QueueResult {
+    queue_impl(app, false)
+}
+
+/// `use_cache: false` (the jump's reads) neither reads NOR writes the shared
+/// cache and skips enrichment: mid-jump snapshots reflect transient
+/// skipped-through tracks — caching one would poison what the UI shows for
+/// up to 5s, and enriching from one could stamp a wrong uri.
+fn queue_impl(app: &AppHandle, use_cache: bool) -> QueueResult {
+    if use_cache {
         let auth = app.state::<SpotifyAuth>();
         let inner = lock(&auth);
         if let Some((at, cached)) = &inner.queue_cache {
@@ -661,7 +708,7 @@ pub fn queue(app: &AppHandle) -> QueueResult {
             }
         }
     }
-    let result = match api_get(app, "https://api.spotify.com/v1/me/player/queue") {
+    let result = match api_call(app, "GET", "https://api.spotify.com/v1/me/player/queue") {
         Err(status) => QueueResult::bare(status),
         Ok(None) => QueueResult::bare("no_playback"),
         Ok(Some(v)) => {
@@ -680,14 +727,131 @@ pub fn queue(app: &AppHandle) -> QueueResult {
     // Cache ok/no_playback (real answers); transient failures retry freely.
     // Guarded on tokens still existing so a concurrent disconnect's cache
     // clear can't be repopulated by this in-flight read.
-    if result.status == "ok" || result.status == "no_playback" {
-        let auth = app.state::<SpotifyAuth>();
-        let mut inner = lock(&auth);
-        if inner.tokens.is_some() {
-            inner.queue_cache = Some((unix_ms(), result.clone()));
+    if use_cache {
+        if result.status == "ok" || result.status == "no_playback" {
+            let auth = app.state::<SpotifyAuth>();
+            let mut inner = lock(&auth);
+            if inner.tokens.is_some() {
+                inner.queue_cache = Some((unix_ms(), result.clone()));
+            }
+        }
+        // Opportunistic history enrichment: a settled read tells us the
+        // current track's uri — stamp it onto history's in-flight candidate
+        // so history rows can replay without a search round-trip.
+        if let Some(cp) = &result.currently_playing {
+            crate::history::enrich_uri(app, &cp.title, &cp.artist, &cp.uri);
         }
     }
     result
+}
+
+// ---- play_now: the context-preserving jump ----
+
+/// Play `uri` NOW without losing the playlist context or the rest of the
+/// queue. Never `PUT /me/player/play` with bare uris (that kills the
+/// context — Thien's explicit constraint): the target is positioned in the
+/// real queue (added if absent), skipped to, the landing verified, and every
+/// skipped-over item re-queued in order. Under the managed up-next model
+/// Spotify's queue stays shallow, so the normal case is 0–2 skips.
+///
+/// Returns: "ok" | "busy" | "gone" | "diverged" | "partial" |
+/// "disconnected" | "offline".
+pub fn play_now(app: &AppHandle, uri: &str) -> &'static str {
+    let auth = app.state::<SpotifyAuth>();
+    if auth
+        .jump_in_flight
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return "busy";
+    }
+    let outcome = jump(app, uri);
+    app.state::<SpotifyAuth>().jump_in_flight.store(false, Ordering::SeqCst);
+    outcome
+}
+
+fn jump(app: &AppHandle, target: &str) -> &'static str {
+    // 1. Where is the target? (Fresh read — positions go stale in seconds.)
+    let q = queue_fresh(app);
+    match q.status.as_str() {
+        "ok" => {}
+        "no_playback" => return "no_playback",
+        "disconnected" => return "disconnected",
+        _ => return "offline",
+    }
+    if q.currently_playing.as_ref().is_some_and(|t| t.uri == target) {
+        return "ok"; // already playing
+    }
+    let (skips, skipped): (usize, Vec<QueueTrack>) =
+        match q.queue.iter().position(|t| t.uri == target) {
+            Some(k) => (k + 1, q.queue[..k].to_vec()),
+            None => {
+                // Not in the queue (a history replay / Pulse up-next row):
+                // append it, then find where it landed — user-queued items
+                // sit before autoplay continuation, so the position after a
+                // fresh read is the real skip count.
+                if let Err(status) = add_to_queue(app, target) {
+                    return status;
+                }
+                let q2 = queue_fresh(app);
+                if q2.status != "ok" {
+                    return "diverged";
+                }
+                let Some(k) = q2.queue.iter().position(|t| t.uri == target) else {
+                    return "gone";
+                };
+                (k + 1, q2.queue[..k].to_vec())
+            }
+        };
+
+    // 2. Skip to it. A failure midway leaves playback partway — re-queue
+    // what was already consumed (best effort) and report.
+    for i in 0..skips {
+        if next_track(app).is_err() {
+            requeue(app, &skipped[..i.min(skipped.len())]);
+            return "partial";
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+
+    // 3. Verify the landing — never keep acting on an unconfirmed state
+    // (matrix finding 3: never trust command bools; re-read).
+    let mut landing: Option<QueueTrack> = None;
+    for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(300));
+        let v = queue_fresh(app);
+        if v.currently_playing.as_ref().is_some_and(|t| t.uri == target) {
+            landing = v.currently_playing;
+            break;
+        }
+    }
+
+    // 4. Re-queue the skipped-over items in their original order. They were
+    // consumed unplayed — this includes a fed up-next front item, which then
+    // plays right after the target (upnext's fed marker stays armed; its
+    // tick suspends fed-pop bookkeeping while jump_in_flight is set).
+    let requeued_ok = requeue(app, &skipped);
+    let Some(t) = landing else {
+        return "diverged"; // concurrent user action — stopped, not forced
+    };
+    // The verified landing is trustworthy — enrich here (mid-jump reads
+    // deliberately don't).
+    crate::history::enrich_uri(app, &t.title, &t.artist, &t.uri);
+    if !requeued_ok {
+        return "partial";
+    }
+    "ok"
+}
+
+fn requeue(app: &AppHandle, items: &[QueueTrack]) -> bool {
+    let mut ok = true;
+    for t in items {
+        if add_to_queue(app, &t.uri).is_err() {
+            ok = false;
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    ok
 }
 
 // ---- commands ----
@@ -711,5 +875,20 @@ pub async fn spotify_queue(app: AppHandle) -> QueueResult {
         .unwrap_or_else(|e| {
             eprintln!("spotify queue task panicked: {e}");
             QueueResult::bare("offline")
+        })
+}
+
+/// The context-preserving jump. Statuses: ok | busy (a jump is already
+/// running — ignore) | no_playback (nothing to skip within — start playback
+/// first) | gone | diverged (concurrent user action; stopped) | partial
+/// (re-queue incomplete) | disconnected | offline. Up to ~several seconds of
+/// blocking work — dedicated pool.
+#[tauri::command]
+pub async fn spotify_play_now(app: AppHandle, uri: String) -> String {
+    tauri::async_runtime::spawn_blocking(move || play_now(&app, &uri).to_string())
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("spotify play_now task panicked: {e}");
+            "offline".into()
         })
 }

@@ -79,7 +79,27 @@ src-tauri/src/
                 doubles as state + flow narration — spotify.rs owns the
                 narrator, so EVERY state transition re-syncs the label
                 (frontend disconnects and background clears included); one
-                consent flow at a time (in-flight guard)
+                consent flow at a time (in-flight guard). play_now = the
+                context-preserving jump (position target in the real queue,
+                skip to it, VERIFY the landing by re-read — never trust
+                command results, matrix finding 3 — re-queue everything
+                skipped over; never `PUT play uris`, which kills the
+                playlist context)
+  upnext.rs     Pulse-managed up-next: Spotify's API can't remove/reorder
+                queue items, so Pulse keeps its OWN ordered list
+                (app-data/upnext.json, "upnext-changed" + upnext_list seed;
+                add/remove/move are local ops) and FEEDS Spotify one track
+                when <15s of the current track remains (coarse raw-pair
+                estimate — same never-reaches-the-UI carve-out as history's
+                ms_listened; feed HTTP on the blocking pool, never the media
+                loop thread). Fed marker persisted (no restart double-feed);
+                fed item popped when it starts playing (loose title/artist
+                match), unmarked when the user jumps elsewhere; fed-pop
+                bookkeeping suspends while a play_now jump flickers through
+                intermediates. Honest limits (matrix finding 11): chain
+                holds only while Pulse runs + Spotify connected; skips
+                inside the Spotify app bypass the list; removing a fed
+                front leaks that one track to Spotify's queue
   presence.rs   presence engine: own 1s watcher
                 thread sensing fullscreen foreground content (rect-vs-monitor —
                 widget-monitor scoped — OR'd with SHQueryUserNotificationState's
