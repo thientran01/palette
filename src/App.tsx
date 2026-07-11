@@ -818,18 +818,16 @@ function ModeCluster({
   mode,
   onStep,
   queueOpen,
-  onToggleQueue,
 }: {
   mode: Mode;
   onStep: (d: -1 | 1) => void;
   queueOpen: boolean;
-  onToggleQueue: () => void;
 }) {
   return (
     <div
-      // 11a: the cluster stays revealed while the queue UI it opened is
-      // open — otherwise moving the cursor into the popover would fade the
-      // very control that closes it.
+      // The cluster stays revealed while the queue UI is open — the corner
+      // chrome holds as one band while the popover/surface is up, so the
+      // mode ladder stays reachable without re-earning the hover.
       className={`pointer-events-none absolute bottom-[4px] right-[7px] z-20 flex items-center gap-1 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 ${
         queueOpen ? "pointer-events-auto opacity-100" : ""
       }`}
@@ -840,22 +838,6 @@ function ModeCluster({
       // click target.
       onMouseDown={(e) => e.stopPropagation()}
     >
-      {/* The queue seat (11a: [queue][collapse][expand]): opens the popover
-          in pill/card, the queue surface in expanded — one open/closed bit,
-          the garment follows the mode. Active wash while open, like the
-          expanded view toggle's lyrics state. */}
-      <button
-        type="button"
-        aria-label={queueOpen ? "Close queue" : "Open queue"}
-        title={queueOpen ? "Close queue" : "Open queue"}
-        aria-pressed={queueOpen}
-        onClick={onToggleQueue}
-        className={`grid h-7 w-7 place-items-center rounded-md text-fg [transition:background-color_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/10 active:scale-95 ${
-          queueOpen ? "bg-fg/10" : ""
-        }`}
-      >
-        <MorphIcon name="queue" size={13} />
-      </button>
       <ModeButton
         to="contract"
         label={mode === "expanded" ? "Collapse to card" : "Collapse to pill"}
@@ -870,6 +852,59 @@ function ModeCluster({
         disabled={mode === "expanded"}
         onClick={() => onStep(1)}
       />
+    </div>
+  );
+}
+
+/** The 11a queue toggle: opens the popover in pill/card, the queue surface
+ * in expanded — one open/closed bit, the garment follows the mode. Active
+ * wash while open, like the expanded view toggle's lyrics state. One
+ * component, two seats (QueueSeat bottom-left in card/expanded, the pill's
+ * hover scrim beside play/pause) so the affordance never drifts. */
+function QueueButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={open ? "Close queue" : "Open queue"}
+      title={open ? "Close queue" : "Open queue"}
+      aria-pressed={open}
+      onClick={onToggle}
+      className={`grid h-7 w-7 place-items-center rounded-md text-fg [transition:background-color_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/10 active:scale-95 ${
+        open ? "bg-fg/10" : ""
+      }`}
+    >
+      <MorphIcon name="queue" size={13} />
+    </button>
+  );
+}
+
+/**
+ * The queue seat: bottom-left corner, card + expanded only. Evicted from the
+ * bracket cluster (2026-07-11): the brackets are CONTAINER verbs — three
+ * seats crowded the corner and the pill's scrim seat was never re-derived
+ * against the wider cluster (a 23px queue-over-play/pause overlap) — while
+ * queue is a CONTENT surface, so it takes the corner the cluster's grammar
+ * leaves free. Both garments are 380 wide, so docked either bottom corner
+ * the seat holds its screen pixels across the card⇄expanded glide — the
+ * same fixed-point continuity the brackets get on the right. The pill has
+ * no free corner (bottom-left IS the album art, and a control overlaid on
+ * artwork loses to the contained-icon doctrine), so its queue seat rides
+ * the hover scrim beside play/pause instead — see the pill branch.
+ * Same contract as ModeCluster: shell coordinates on the 25px control
+ * centerline (bottom-[4px], mirrored left-[7px]), hidden at rest with the
+ * hover/focus-visible reveal, pinned open while the queue UI it opened is
+ * open (it hosts the control that closes it), mousedown swallowed so a
+ * press never falls through to the root drag handler.
+ */
+function QueueSeat({ queueOpen, onToggle }: { queueOpen: boolean; onToggle: () => void }) {
+  return (
+    <div
+      className={`pointer-events-none absolute bottom-[4px] left-[7px] z-20 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 ${
+        queueOpen ? "pointer-events-auto opacity-100" : ""
+      }`}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <QueueButton open={queueOpen} onToggle={onToggle} />
     </div>
   );
 }
@@ -1989,26 +2024,38 @@ function App() {
               </p>
               <PillTime np={np} />
             </div>
-            {/* Scrim + play/pause, revealed on hover. Absolute over the row so
-                nothing reflows; the gradient lets the artist text fade UNDER
-                the incoming control. 180px wide, play/pause ending 76px from
-                the shell right edge — an 8px gap before the corner cluster.
-                Stops 2px above the bottom so the progress hairline stays lit.
-                Also reveals on keyboard focus (has-[:focus-visible], not
-                focus-within — see ModeCluster; play/pause stays tabbable the
-                whole time, and a mouse click's residual focus must not pin
-                the scrim open, quick-review catch 2026-07-08 / Thien
-                2026-07-10). */}
+            {/* Scrim + [queue][play/pause], revealed on hover. Absolute over
+                the row so nothing reflows; the gradient lets the artist text
+                fade UNDER the incoming controls. 180px wide, play/pause
+                ending 76px from the shell right edge — 9px before the
+                two-bracket cluster's reach (7 + 28 + 4 + 28 = 67) — and the
+                queue seat gap-1 to its left, ending 108px in: the pill has
+                no free corner for QueueSeat (bottom-left IS the album art),
+                so queue joins the grammar the pill already owns, everything
+                in the right-edge reveal, spaced on the cluster's own 4px
+                rhythm. Re-derived 2026-07-11: the old 76px seat was computed
+                against a two-bracket cluster, and 11a's third cluster seat
+                overlapped it by 23px. Stops 2px above the bottom so the
+                progress hairline stays lit. Also reveals on keyboard focus
+                (has-[:focus-visible], not focus-within — see ModeCluster;
+                play/pause stays tabbable the whole time, and a mouse click's
+                residual focus must not pin the scrim open, quick-review
+                catch 2026-07-08 / Thien 2026-07-10), and pins open while the
+                pill's queue popover is up — it hosts the control that
+                closes it. */}
             <div
-              className="pointer-events-none absolute bottom-0.5 right-0 top-0 flex w-[180px] items-center justify-end pr-[76px] opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100"
+              className={`pointer-events-none absolute bottom-0.5 right-0 top-0 flex w-[180px] items-center justify-end gap-1 pr-[76px] opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 ${
+                queueOpen ? "pointer-events-auto opacity-100" : ""
+              }`}
               style={{ background: "linear-gradient(90deg, transparent, rgb(var(--surface) / 0.96) 45%)" }}
               // Swallow mousedown, same reason as ModeCluster: pointer-events
-              // only turns on for the 180px scrim, but the button inside it
-              // doesn't fill that box — a press that lands on the gradient
-              // padding instead of the 28px button would otherwise fall
+              // only turns on for the 180px scrim, but the buttons inside it
+              // don't fill that box — a press that lands on the gradient
+              // padding instead of a 28px button would otherwise fall
               // through to the root's onDragStart and move the window.
               onMouseDown={(e) => e.stopPropagation()}
             >
+              <QueueButton open={queueOpen} onToggle={() => setQueueOpen((o) => !o)} />
               <PlayPauseButton size="sm" iconSize={16} playing={playing} />
             </div>
             {/* Non-interactive progress hairline — still announced to AT. */}
@@ -2073,16 +2120,18 @@ function App() {
         </motion.div>
       </AnimatePresence>
       {/* Inside the persistent shell but OUTSIDE the content swap: the shell
-          never fades, so the cluster never fades with content — and seated
-          on the shell it tracks the visible box in every dock corner and
-          every mode of the fixed-size window. See ModeCluster. */}
+          never fades, so the corner chrome never fades with content — and
+          seated on the shell it tracks the visible box in every dock corner
+          and every mode of the fixed-size window. See ModeCluster/QueueSeat.
+          The queue seat skips the pill (its queue toggle rides the hover
+          scrim instead — the pill's bottom-left corner is the album art). */}
       {!nothing && (
-        <ModeCluster
-          mode={mode}
-          onStep={stepMode}
-          queueOpen={queueOpen}
-          onToggleQueue={() => setQueueOpen((o) => !o)}
-        />
+        <>
+          {mode !== "pill" && (
+            <QueueSeat queueOpen={queueOpen} onToggle={() => setQueueOpen((o) => !o)} />
+          )}
+          <ModeCluster mode={mode} onStep={stepMode} queueOpen={queueOpen} />
+        </>
       )}
       </div>
       {/* The 11a queue popover — the pill/card garment, floating ABOVE the
