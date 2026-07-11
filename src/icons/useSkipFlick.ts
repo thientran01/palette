@@ -10,7 +10,9 @@ const IN_OUT = [...EASE.inOut] as [number, number, number, number];
  * A directional cousin of the seek spin: full committed travel per press
  * (the ±12° seek kick taught that a partial gesture reads as a nervous
  * twitch, not the verb). EASE.inOut for the same reason as the spin — the
- * launch is slow enough for the eye to lock direction. The end frame is the
+ * launch is slow enough for the eye to lock direction. DUR[3], not the
+ * spin's DUR[5]: the extra room exists because a revolution sweeps ~4× the
+ * distance of this 16px pass — at equal duration the flick would crawl. The end frame is the
  * ghost centered, pixel-identical to rest, so the strip snaps back to 0
  * invisibly (the spin's N·360 normalize). Mashing re-launches from wherever
  * the glyph visually is: rewinding the strip one width is frame-identical
