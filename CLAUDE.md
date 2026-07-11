@@ -41,8 +41,9 @@ src-tauri/src/
   lyrics.rs     LRCLIB get→search fallback, disk cache (bounded, app-data) + session
                 miss set; candidate picking prefers ORIGINAL-SCRIPT synced entries
                 (hangul/CJK/kana) over romanized uploads — a Latin-only exact hit
-                joins the racing search to allow the upgrade; script preference
-                stays BELOW synced-ness (hangul plain-only never beats romanized synced)
+                waits UPGRADE_GRACE (3s, usually ~0: the search raced alongside)
+                for the search to offer the upgrade; script preference stays
+                BELOW synced-ness (hangul plain-only never beats romanized synced)
   history.rs    play-history: logs every track Pulse displays (player-agnostic —
                 GSMTC has no history API) to append-only app-data/history.jsonl,
                 no cap, paginated via an in-memory line index (history_page +

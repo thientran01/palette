@@ -25,6 +25,13 @@ const UA: &str = "Pulse/0.1.0 (https://github.com/thientran01/pulse)";
 // fetch runs off the main thread and the UI shows the big-art fallback while
 // waiting, so a generous timeout costs nothing visible.
 const TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a Latin-only exact hit waits for the racing search to offer an
+/// original-script upgrade before serving what it has. The search launched
+/// alongside the exact call, so it has had the exact call's whole latency as
+/// a head start — under LRCLIB's normal <1s answers this window never
+/// actually elapses; under degraded 7-9s first-bytes we'd rather show
+/// romanized lyrics than stall the happy path toward the full timeout.
+const UPGRADE_GRACE: Duration = Duration::from_secs(3);
 const DURATION_TOLERANCE_S: f64 = 4.0;
 const CACHE_MAX_FILES: usize = 500;
 
@@ -242,22 +249,24 @@ pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_
         // "- Single"/"- EP" suffix), so the search is on the common path and
         // used to run only AFTER the exact call's full latency — overlapping
         // them turns that miss-then-hit from a SUM into a MAX. The exact call
-        // keeps precedence, so we ALWAYS wait for it; the search runs on a
-        // detached worker and is joined only when exact misses. An exact hit
-        // therefore returns immediately and never blocks on the (heavier)
-        // search — the happy path is never slower than the old sequential form.
+        // keeps precedence; its result decides how long the search matters:
+        // an original-script exact hit returns immediately (never blocks on
+        // the heavier search), a Latin-only exact hit gives the search
+        // UPGRADE_GRACE to offer an original-script candidate (it can't be
+        // told apart from a romanized upload of a non-Latin song without the
+        // comparison), and an exact miss waits for the search in full — the
+        // search IS the answer then. The result travels over a channel so
+        // the grace wait can time out; a panicked worker drops its sender
+        // and reads as Offline, never a false miss.
+        let (tx, rx) = std::sync::mpsc::channel();
         let (artist_owned, title_owned) = (artist.to_string(), title.to_string());
-        let raw_worker =
-            std::thread::spawn(move || search(&artist_owned, &title_owned, duration_s));
+        std::thread::spawn(move || {
+            let _ = tx.send(search(&artist_owned, &title_owned, duration_s));
+        });
 
         // Hit precedence unchanged: exact (non-empty) > raw search > norm
-        // search — with ONE carve-out: a Latin-only exact hit can't be told
-        // apart from a romanized upload of a non-Latin song, so it waits for
-        // the (already racing) search and yields to an original-script
-        // candidate when one matched. The extra wait is bounded by the
-        // overlap, paid once per track (disk-cached), while the UI shows the
-        // big-art fallback. An original-script exact hit keeps the immediate
-        // return, and a search failure can never lose a served exact result.
+        // search — the script upgrade is the one carve-out, and a search
+        // failure or grace timeout can never lose a served exact result.
         let exact = get_exact(artist, title, album, duration_s);
         let exact_offline = exact.is_err();
         let exact_hit = match exact {
@@ -266,9 +275,9 @@ pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_
         };
         if let Some(r) = exact_hit {
             if r.has_original_script() {
-                return Ok(Some(r)); // raw_worker detaches, its result unused
+                return Ok(Some(r)); // the search worker detaches, its result unused
             }
-            if let Ok(Some(s)) = raw_worker.join().unwrap_or(Err(Offline)) {
+            if let Ok(Ok(Some(s))) = rx.recv_timeout(UPGRADE_GRACE) {
                 if s.has_original_script() {
                     return Ok(Some(s));
                 }
@@ -276,10 +285,9 @@ pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_
             return Ok(Some(r));
         }
 
-        // Exact missed; the search result now matters. Join it (usually already
-        // done, having run alongside the exact call). A panicked worker degrades
-        // to Offline — never a false miss.
-        let raw = raw_worker.join().unwrap_or(Err(Offline));
+        // Exact missed; the search result now matters. Wait for it in full
+        // (it has been running alongside the exact call the whole time).
+        let raw = rx.recv().unwrap_or(Err(Offline));
         let raw_offline = raw.is_err();
         if let Ok(Some(r)) = raw {
             return Ok(Some(r));
