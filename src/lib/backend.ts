@@ -12,6 +12,7 @@ import {
   type PresenceDebug,
   type PresenceState,
   type QueueTrack,
+  type SearchResult,
   type SpotifyQueueResult,
   type SpotifyStatus,
 } from "../types";
@@ -184,6 +185,26 @@ function mockNowTrack(): NowTrack | null {
 function mockNowChanged(): void {
   mockNowListeners.forEach((cb) => cb(mockNowTrack()));
 }
+
+/** The palette window was just summoned (palette.rs show) — the webview
+ * refocuses its input and recomputes the resurfacing rows. Mock: never fires
+ * (a plain-browser palette is always "shown"). */
+export function onPaletteShown(cb: () => void): () => void {
+  if (!IN_TAURI) return () => {};
+  const un = listen("palette-shown", () => cb());
+  return () => {
+    un.then((f) => f());
+  };
+}
+
+/** Extra searchable fixtures beyond the ring so the mock palette has more
+ * than three answers; their uris aren't in the ring, so playing one
+ * exercises the "gone" failure path deliberately. */
+const MOCK_SEARCH_EXTRAS = [
+  { title: "Happy Ending", artist: "Kep1er", album: "LOVESTRUCK!" },
+  { title: "About Love", artist: "Red Velvet", album: "Perfect Velvet" },
+  { title: "Euphoria", artist: "keshi", album: "Requiem" },
+];
 
 /** The Spotify-side current track (uri + liked) — seed + event pairing.
  * Null until the first settled enrichment (or while disconnected). */
@@ -771,6 +792,29 @@ export const commands = {
       return { synced: lines.join("\n"), plain: null };
     }
     return lyricsLatestWins(() => invoke("media_lyrics", { artist, title, album, durationMs }));
+  },
+  /** Free-text track search (spotify.rs search_tracks) — the palette's
+   * result list. Debounce + latest-wins live with the caller. */
+  async spotifySearch(query: string, limit = 8): Promise<SearchResult> {
+    if (!IN_TAURI) {
+      if (!mockSpotifyConnected) return { status: "disconnected", tracks: [] };
+      const q = query.trim().toLowerCase();
+      const pool = [...MOCK_TRACKS, ...MOCK_SEARCH_EXTRAS];
+      const tracks = pool
+        .filter(
+          (t) => t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q),
+        )
+        .slice(0, limit)
+        .map(mockQueueTrack);
+      // A breath of latency so the searching state is preview-visible.
+      await new Promise((r) => setTimeout(r, 180));
+      return { status: "ok", tracks };
+    }
+    return invoke<SearchResult>("spotify_search", { query, limit });
+  },
+  /** Dismiss the palette window (Esc / background click / post-play). */
+  paletteHide(): void {
+    if (IN_TAURI) void invoke("palette_hide");
   },
   /** Fill up-next with Last.fm-similar tracks for the current track
    * (similar.rs). Statuses: ok:<n> | no_matches | no_data | no_key | busy |

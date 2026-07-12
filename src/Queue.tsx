@@ -187,7 +187,9 @@ async function playTrackNow(t: { uri: string; title: string; artist: string }): 
 
 // ---- rows ----
 
-function RowThumb({ url }: { url: string | null }) {
+/** 26px cover thumb (remote url straight into an img; note glyph fallback).
+ * Exported for the palette's result rows — same row grammar, other window. */
+export function RowThumb({ url }: { url: string | null }) {
   return (
     <span className="grid h-[26px] w-[26px] shrink-0 place-items-center overflow-hidden rounded-md bg-surface-2 text-muted">
       {url ? (
@@ -524,7 +526,7 @@ export function QueuePanel({
     void playTrackNow(t).then((r) => {
       if (r === "diverged" || r === "gone") showToast("Queue moved on — try again");
       else if (r === "partial") showToast("Played — some items couldn't re-queue");
-      else if (r === "no_playback") showToast("Start playing something first");
+      else if (r === "no_device") showToast("Open Spotify somewhere first");
       else if (r === "busy") showToast("Still landing the last jump");
       else if (r === "offline" || r === "disconnected") showToast("Spotify unreachable");
     });

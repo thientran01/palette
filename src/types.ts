@@ -109,4 +109,10 @@ export interface SpotifyQueueResult {
   queue: QueueTrack[];
 }
 
+/** Free-text track search (the palette). Ok + empty = a real no-hits answer. */
+export interface SearchResult {
+  status: "ok" | "disconnected" | "offline";
+  tracks: QueueTrack[];
+}
+
 export const IN_TAURI = "__TAURI_INTERNALS__" in window;

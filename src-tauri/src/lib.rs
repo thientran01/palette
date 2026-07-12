@@ -4,6 +4,7 @@ mod history;
 mod lastfm;
 mod lyrics;
 mod media;
+mod palette;
 mod presence;
 mod settings;
 mod similar;
@@ -39,6 +40,8 @@ const HK_SEEK_FWD: &str = "ctrl+alt+right";
 const HK_NEXT: &str = "ctrl+alt+n";
 const HK_PREV: &str = "ctrl+alt+p";
 const HK_TOGGLE: &str = "ctrl+alt+m";
+/// S for search/summon — the palette (Thien's pick, 2026-07-11).
+const HK_PALETTE: &str = "ctrl+alt+s";
 
 // Every command that touches GSMTC (or the network) is `async` — NOT for
 // concurrency, but to move it OFF the main thread. Tauri runs sync commands
@@ -90,13 +93,30 @@ async fn media_seek_abs(position_ms: i64) -> bool {
     media::seek_abs_ms(position_ms)
 }
 
-/// The frontend's vote on audio reactivity (false under OS reduced-motion) —
-/// ANDed into the capture switch so suppressed visuals also stop the capture.
-struct UiReactive(Arc<AtomicBool>);
+/// Per-window frontend votes on audio reactivity (false under OS
+/// reduced-motion) — the effective value is the OR of live windows' votes,
+/// ANDed into the capture switch. A single shared atomic worked while
+/// "main" was the only webview; with the palette (and focus mode next) each
+/// realm's initReactive would clobber the others'. Empty map (pre-vote
+/// startup) defaults true, matching the old atomic's default. The label
+/// comes from the invoking window's IPC context, never a parameter — a
+/// webview can only vote for itself. Votes drop on Destroyed (the window
+/// event handler) so a dead window can't wedge the gate.
+struct UiReactive(Arc<Mutex<std::collections::HashMap<String, bool>>>);
+
+fn reactive_effective(votes: &Mutex<std::collections::HashMap<String, bool>>) -> bool {
+    let m = votes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    m.is_empty() || m.values().any(|v| *v)
+}
 
 #[tauri::command]
-fn set_reactive_enabled(enabled: bool, state: State<UiReactive>) {
-    state.0.store(enabled, Ordering::Relaxed);
+fn set_reactive_enabled(
+    enabled: bool,
+    window: tauri::WebviewWindow,
+    state: State<UiReactive>,
+) {
+    let mut votes = state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    votes.insert(window.label().to_string(), enabled);
 }
 
 /// Fetch synced/plain lyrics for a track (LRCLIB + disk cache). Worst case
@@ -425,6 +445,10 @@ pub fn run() {
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(tauri_plugin_window_state::StateFlags::POSITION)
+                // Only "main" persists position. The palette recenters per
+                // summon and focus mode is born fullscreen — a restored
+                // stale position would be wrong for both.
+                .with_denylist(&[palette::LABEL, "focus"])
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -433,7 +457,7 @@ pub fn run() {
         .manage(history::Tracker::default())
         .manage(spotify::SpotifyAuth::default())
         .manage(upnext::UpNext::default())
-        .manage(UiReactive(Arc::new(AtomicBool::new(true))))
+        .manage(UiReactive(Arc::new(Mutex::new(std::collections::HashMap::new()))))
         .manage(dock::Dock::default())
         .manage(presence::Presence::default())
         .manage(VisIntent::default())
@@ -458,6 +482,8 @@ pub fn run() {
             spotify::spotify_queue,
             spotify::spotify_play_now,
             spotify::spotify_resolve_uri,
+            spotify::spotify_search,
+            palette::palette_hide,
             upnext::upnext_list,
             upnext::upnext_add,
             upnext::upnext_remove,
@@ -471,8 +497,29 @@ pub fn run() {
             presence::set_presence_debug
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Moved(_) = event {
-                dock::on_moved(window);
+            match event {
+                // Corner-snap is the MAIN window's behavior only — the
+                // handler fires for every window's moves, and an unguarded
+                // forward would arm the snap on the palette (live-verified
+                // trap from the multi-window planning pass).
+                tauri::WindowEvent::Moved(_) if window.label() == "main" => {
+                    dock::on_moved(window);
+                }
+                // Blur dismisses the palette — the OS focus event is the
+                // trustworthy signal (webview-side blur can lie during
+                // devtools/IME churn).
+                tauri::WindowEvent::Focused(false) if window.label() == palette::LABEL => {
+                    palette::hide(window.app_handle());
+                }
+                // A dead window's reactive vote must not wedge the capture
+                // gate (the palette is create-once so this mostly serves
+                // focus mode's create/destroy lifecycle).
+                tauri::WindowEvent::Destroyed => {
+                    let votes = window.app_handle().state::<UiReactive>();
+                    let mut m = votes.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    m.remove(window.label());
+                }
+                _ => {}
             }
         })
         .setup(|app| {
@@ -641,7 +688,8 @@ pub fn run() {
 
             // Global hotkeys, each with its own action.
             type Action = fn(&AppHandle);
-            let hotkeys: [(&str, Action); 6] = [
+            let hotkeys: [(&str, Action); 7] = [
+                (HK_PALETTE, |app| palette::toggle(app)),
                 (HK_PLAY_PAUSE, |app| {
                     media::play_pause();
                     emit_now(app);
@@ -698,6 +746,9 @@ pub fn run() {
             let audio_switch = Arc::new(AtomicBool::new(false));
             audio::spawn(app.handle().clone(), audio_switch.clone());
             let ui_reactive = app.state::<UiReactive>().0.clone();
+            // The palette window: create-once-hidden so Ctrl+Alt+S is
+            // instant (WebView2 cold-create costs hundreds of ms).
+            palette::init(app.handle());
 
             // Media loop → "now-playing" events: a heartbeat poll plus GSMTC
             // change events that cut the wait short, so track changes,
@@ -769,7 +820,7 @@ pub fn run() {
                     // Grace-expiry sweep for a vanish-pending entry (a gone
                     // session produces no ticks to ride).
                     history::tick(&handle);
-                    let reactive = ui_reactive.load(Ordering::Relaxed);
+                    let reactive = reactive_effective(&ui_reactive);
                     audio_switch.store(visible && playing && reactive, Ordering::Relaxed);
                     use std::sync::mpsc::RecvTimeoutError;
                     match wake_rx.recv_timeout(Duration::from_millis(POLL_INTERVAL_MS)) {

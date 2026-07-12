@@ -625,6 +625,25 @@ fn api_call(
     method: &str,
     url: &str,
 ) -> Result<Option<serde_json::Value>, &'static str> {
+    api_call_impl(app, method, url, None)
+}
+
+/// api_call with a JSON body (start_playback's PUT play needs `uris`).
+fn api_call_body(
+    app: &AppHandle,
+    method: &str,
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, &'static str> {
+    api_call_impl(app, method, url, Some(body))
+}
+
+fn api_call_impl(
+    app: &AppHandle,
+    method: &str,
+    url: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<Option<serde_json::Value>, &'static str> {
     let mut token = ensure_access(app)?;
     let mut refreshed = false;
     let mut waited_429 = false;
@@ -633,12 +652,19 @@ fn api_call(
             .set("User-Agent", UA)
             .set("Authorization", &format!("Bearer {token}"))
             .timeout(TIMEOUT);
-        // POSTs must carry an explicit (empty) body: ureq's bodyless call()
-        // sends no Content-Length and Spotify's edge answers 411 "Length
-        // Required" — which read as "Spotify unreachable" on every play_now
-        // and silently starved the feeder (first live soak, 2026-07-11;
-        // GETs were never affected, which is why search/enrich worked).
-        let resp = if method == "GET" { req.call() } else { req.send_bytes(&[]) };
+        // Non-GETs must carry an explicit body even when empty: ureq's
+        // bodyless call() sends no Content-Length and Spotify's edge answers
+        // 411 "Length Required" — which read as "Spotify unreachable" on
+        // every play_now and silently starved the feeder (first live soak,
+        // 2026-07-11; GETs were never affected, which is why search/enrich
+        // worked).
+        let resp = match (method, body) {
+            ("GET", _) => req.call(),
+            (_, Some(b)) => req
+                .set("Content-Type", "application/json")
+                .send_string(&b.to_string()),
+            (_, None) => req.send_bytes(&[]),
+        };
         match resp {
             Ok(r) => {
                 if r.status() == 204 {
@@ -824,8 +850,9 @@ fn queue_impl(app: &AppHandle, use_cache: bool) -> QueueResult {
 /// skipped-over item re-queued in order. Under the managed up-next model
 /// Spotify's queue stays shallow, so the normal case is 0–2 skips.
 ///
-/// Returns: "ok" | "busy" | "gone" | "diverged" | "partial" |
-/// "disconnected" | "offline".
+/// Returns: "ok" | "busy" | "gone" | "diverged" | "partial" | "no_device"
+/// (nothing playing AND Spotify open nowhere it can play) | "disconnected" |
+/// "offline". From silence it starts playback outright (start_playback).
 pub fn play_now(app: &AppHandle, uri: &str) -> &'static str {
     let auth = app.state::<SpotifyAuth>();
     if auth
@@ -837,7 +864,44 @@ pub fn play_now(app: &AppHandle, uri: &str) -> &'static str {
     }
     let outcome = jump(app, uri);
     app.state::<SpotifyAuth>().jump_in_flight.store(false, Ordering::SeqCst);
+    if outcome == "diverged" {
+        // Suppression was armed (the jump got past target-location) but the
+        // target's arrival is unconfirmed — whatever change lands next is a
+        // legitimate one and must announce.
+        let _ = app.emit("spotify-jump-cancel", ());
+    }
     outcome
+}
+
+/// Start playback of `uri` from SILENCE. play_now's never-PUT-play-uris rule
+/// exists to protect a live playlist context — from no_playback there is no
+/// context to kill, and the bare-uris PUT on the best available device is
+/// exactly right (the palette's headline case: summon, type, play, with
+/// nothing running). "ok" | "no_device" | "disconnected" | "offline".
+fn start_playback(app: &AppHandle, uri: &str) -> &'static str {
+    let devices = match api_call(app, "GET", "https://api.spotify.com/v1/me/player/devices") {
+        Ok(Some(v)) => v,
+        Ok(None) => return "no_device",
+        Err(e) => return e,
+    };
+    let list = devices["devices"].as_array().cloned().unwrap_or_default();
+    // Prefer the active device; else the first that can accept commands.
+    let dev = list
+        .iter()
+        .find(|d| d["is_active"].as_bool() == Some(true))
+        .or_else(|| list.iter().find(|d| d["is_restricted"].as_bool() != Some(true)));
+    let Some(id) = dev.and_then(|d| d["id"].as_str()) else {
+        return "no_device"; // Spotify isn't open anywhere it can play
+    };
+    match api_call_body(
+        app,
+        "PUT",
+        &format!("https://api.spotify.com/v1/me/player/play?device_id={}", urlenc(id)),
+        &serde_json::json!({ "uris": [uri] }),
+    ) {
+        Ok(_) => "ok",
+        Err(e) => e,
+    }
 }
 
 fn jump(app: &AppHandle, target: &str) -> &'static str {
@@ -845,16 +909,18 @@ fn jump(app: &AppHandle, target: &str) -> &'static str {
     let q = queue_fresh(app);
     match q.status.as_str() {
         "ok" => {}
-        "no_playback" => return "no_playback",
+        // Nothing playing = nothing to jump within — start from silence
+        // instead (see start_playback; this is the palette's core promise).
+        "no_playback" => return start_playback(app, target),
         "disconnected" => return "disconnected",
         _ => return "offline",
     }
     if q.currently_playing.as_ref().is_some_and(|t| t.uri == target) {
         return "ok"; // already playing
     }
-    let (skips, skipped): (usize, Vec<QueueTrack>) =
+    let (skips, skipped, target_track): (usize, Vec<QueueTrack>, QueueTrack) =
         match q.queue.iter().position(|t| t.uri == target) {
-            Some(k) => (k + 1, q.queue[..k].to_vec()),
+            Some(k) => (k + 1, q.queue[..k].to_vec(), q.queue[k].clone()),
             None => {
                 // Not in the queue (a history replay / Pulse up-next row):
                 // append it, then find where it landed — user-queued items
@@ -874,9 +940,18 @@ fn jump(app: &AppHandle, target: &str) -> &'static str {
                 let Some(k) = q2.queue.iter().position(|t| t.uri == target) else {
                     return "gone";
                 };
-                (k + 1, q2.queue[..k].to_vec())
+                (k + 1, q2.queue[..k].to_vec(), q2.queue[k].clone())
             }
         };
+
+    // Arm the pill's announcement suppression in EVERY realm before skipping.
+    // The queue UI arms its own realm frontend-side, but a palette-initiated
+    // play runs in a different webview — the pill's realm only hears about
+    // it through this event (same payload as upnext's queue-aware skip).
+    let _ = app.emit(
+        "spotify-jump",
+        serde_json::json!({ "title": target_track.title, "artist": target_track.artist }),
+    );
 
     // 2. Skip to it. A failure midway leaves playback partway — re-queue
     // what was already consumed (best effort) and report "diverged": skips
@@ -1036,23 +1111,37 @@ pub fn enrich_now(app: &AppHandle) {
     });
 }
 
+/// Raw ranked track search — the palette's list and the fielded resolvers'
+/// substrate. Ok(empty) = the API answered with no hits.
+pub fn search_tracks(
+    app: &AppHandle,
+    query: &str,
+    limit: u32,
+) -> Result<Vec<QueueTrack>, &'static str> {
+    let url = format!(
+        "https://api.spotify.com/v1/search?type=track&limit={limit}&q={}",
+        urlenc(query)
+    );
+    let v = api_call(app, "GET", &url)?;
+    Ok(v
+        .and_then(|v| {
+            v["tracks"]["items"]
+                .as_array()
+                .map(|items| items.iter().filter_map(parse_track).collect())
+        })
+        .unwrap_or_default())
+}
+
 /// Resolve the best-matching track by search — the path for history entries
 /// logged before enrichment existed (or from Apple Music sessions), and the
 /// track builder for more-like-this. Best match = same title (ci) + artist
 /// overlap, first 5 results.
 pub fn search_best(app: &AppHandle, title: &str, artist: &str) -> Option<QueueTrack> {
-    let q = format!("track:{title} artist:{artist}");
-    let url = format!(
-        "https://api.spotify.com/v1/search?type=track&limit=5&q={}",
-        urlenc(&q)
-    );
-    let v = api_call(app, "GET", &url).ok()??;
-    let items = v["tracks"]["items"].as_array()?;
+    let items = search_tracks(app, &format!("track:{title} artist:{artist}"), 5).ok()?;
     let title_lc = title.trim().to_lowercase();
     let artist_lc = artist.trim().to_lowercase();
     items
         .iter()
-        .filter_map(parse_track)
         .find(|t| {
             let a = t.artist.trim().to_lowercase();
             t.title.trim().to_lowercase() == title_lc
@@ -1060,7 +1149,8 @@ pub fn search_best(app: &AppHandle, title: &str, artist: &str) -> Option<QueueTr
         })
         // Fall back to Spotify's own top hit — search relevance is usually
         // right even when metadata strings differ (remaster suffixes etc).
-        .or_else(|| items.first().and_then(|i| parse_track(i)))
+        .or_else(|| items.first())
+        .cloned()
 }
 
 pub fn search_track(app: &AppHandle, title: &str, artist: &str) -> Option<String> {
@@ -1175,11 +1265,11 @@ pub async fn spotify_queue(app: AppHandle) -> QueueResult {
         })
 }
 
-/// The context-preserving jump. Statuses: ok | busy (a jump is already
-/// running — ignore) | no_playback (nothing to skip within — start playback
-/// first) | gone | diverged (concurrent user action; stopped) | partial
-/// (re-queue incomplete) | disconnected | offline. Up to ~several seconds of
-/// blocking work — dedicated pool.
+/// The context-preserving jump (from silence: an outright start). Statuses:
+/// ok | busy (a jump is already running — ignore) | no_device (nothing
+/// playing and Spotify open nowhere) | gone | diverged (concurrent user
+/// action; stopped) | partial (re-queue incomplete) | disconnected |
+/// offline. Up to ~several seconds of blocking work — dedicated pool.
 #[tauri::command]
 pub async fn spotify_play_now(app: AppHandle, uri: String) -> String {
     tauri::async_runtime::spawn_blocking(move || play_now(&app, &uri).to_string())
@@ -1188,4 +1278,29 @@ pub async fn spotify_play_now(app: AppHandle, uri: String) -> String {
             eprintln!("spotify play_now task panicked: {e}");
             "offline".into()
         })
+}
+
+#[derive(Serialize, Clone)]
+pub struct SearchResult {
+    /// "ok" | "disconnected" | "offline"
+    pub status: String,
+    pub tracks: Vec<QueueTrack>,
+}
+
+/// Free-text track search for the palette. Ok + empty list = a real "no
+/// hits" answer.
+#[tauri::command]
+pub async fn spotify_search(app: AppHandle, query: String, limit: Option<u32>) -> SearchResult {
+    tauri::async_runtime::spawn_blocking(move || {
+        let limit = limit.unwrap_or(8).clamp(1, 20);
+        match search_tracks(&app, &query, limit) {
+            Ok(tracks) => SearchResult { status: "ok".into(), tracks },
+            Err(e) => SearchResult { status: e.into(), tracks: Vec::new() },
+        }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("spotify search task panicked: {e}");
+        SearchResult { status: "offline".into(), tracks: Vec::new() }
+    })
 }
