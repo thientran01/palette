@@ -41,10 +41,6 @@ export function useSpotifyStatus(): SpotifyStatus {
   return status;
 }
 
-export function useSpotifyConnected(): boolean {
-  return useSpotifyStatus().connected;
-}
-
 export function useUpNext(): QueueTrack[] {
   const [list, setList] = useState<QueueTrack[]>([]);
   useEffect(() => {
