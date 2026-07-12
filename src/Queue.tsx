@@ -256,6 +256,13 @@ const PlayGlyph = (
     <path d="M 5.4,3.4 L 13,8 L 5.4,12.6" />
   </svg>
 );
+/** Four-point star + satellite spark — the "more like this" verb. */
+const SparkleGlyph = (
+  <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M 7.2,2.8 L 8.4,6.4 L 12,7.6 L 8.4,8.8 L 7.2,12.4 L 6,8.8 L 2.4,7.6 L 6,6.4 Z" />
+    <path d="M 12.8,11.2 L 12.8,13.6 M 11.6,12.4 L 14,12.4" strokeWidth="1.2" />
+  </svg>
+);
 
 const QueueRowBase = function QueueRow({
   track,
@@ -448,6 +455,42 @@ export function QueuePanel({
     commands.upnextAdd(t, at);
     flash(t.uri);
     showToast(`Queued · ${t.title}`);
+  };
+
+  // ---- more-like-this (similar.rs) — the discovery seed ----
+  const [seeding, setSeeding] = useState(false);
+  // The backend appends one row per emit while a seed runs; flash each
+  // arrival so the incremental fill reads as the answer landing.
+  const prevUris = useRef<string[]>([]);
+  useEffect(() => {
+    const cur = upnext.map((t) => t.uri);
+    if (seeding) {
+      const fresh = cur.find((u) => !prevUris.current.includes(u));
+      if (fresh) flash(fresh);
+    }
+    prevUris.current = cur;
+    // flash is stable per render and timer-based; upnext identity drives this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [upnext, seeding]);
+  const moreLikeThis = () => {
+    if (!np || !np.title || seeding) return;
+    setSeeding(true);
+    showToast("Finding similar tracks…");
+    commands
+      .moreLikeThis(np.title, np.artist)
+      .then((r) => {
+        if (r.startsWith("ok:")) {
+          const n = Number(r.slice(3)) || 0;
+          showToast(`Added ${n} similar track${n === 1 ? "" : "s"}`);
+        } else if (r === "no_data") showToast("Last.fm doesn't know this one yet");
+        else if (r === "no_matches") showToast("Couldn't match those on Spotify");
+        else if (r === "no_key") showToast("Add a Last.fm API key first");
+        else if (r === "disconnected") showToast("Spotify unreachable");
+        else if (r === "busy") showToast("Still finding similar tracks");
+        else showToast("Can't reach Last.fm");
+      })
+      .catch(() => showToast("Can't reach Last.fm"))
+      .finally(() => setSeeding(false));
   };
   const playNow = (t: { uri: string; title: string; artist: string }) => {
     showToast(`Playing · ${t.title}`);
@@ -664,6 +707,26 @@ export function QueuePanel({
         <span aria-live="polite" className="ml-auto min-w-0 truncate text-[10px] text-fg">
           {toast}
         </span>
+        {/* More-like-this: fills the list with Last.fm-similar tracks for
+            the CURRENT track — seated where its output lands. Gate = the
+            queueLive class (feed/play need Spotify); a missing Last.fm key
+            answers as a toast on click, not a status plumb. */}
+        {queueLive && !!np?.title && (
+          <button
+            type="button"
+            aria-label={`More like ${np.title}`}
+            title={`More like ${np.title}`}
+            aria-disabled={seeding || undefined}
+            onClick={moreLikeThis}
+            className={`grid h-[26px] w-[26px] shrink-0 place-items-center rounded-md [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] ${
+              seeding
+                ? "pointer-events-none text-muted opacity-40"
+                : "text-fg hover:bg-fg/10 active:scale-95"
+            }`}
+          >
+            {SparkleGlyph}
+          </button>
+        )}
       </div>
       {/* The gate NARRATES instead of hiding: Pulse's list persists across
           players/connection, and queued rows vanishing on an Apple Music

@@ -1,9 +1,12 @@
 mod audio;
 mod dock;
 mod history;
+mod lastfm;
 mod lyrics;
 mod media;
 mod presence;
+mod settings;
+mod similar;
 mod spotify;
 mod upnext;
 
@@ -264,29 +267,15 @@ fn toggle_widget(app: &AppHandle) {
     apply_visibility(app);
 }
 
-/// Companion-mode persistence: one tiny JSON next to the lyrics cache.
-fn settings_path(app: &AppHandle) -> Option<std::path::PathBuf> {
-    app.path().app_data_dir().ok().map(|d| d.join("settings.json"))
-}
-
+/// Companion-mode persistence — thin wrappers over the shared settings.rs
+/// read-modify-write (the old wholesale `{"companion": on}` write clobbered
+/// every other key the moment a second one existed).
 fn load_companion(app: &AppHandle) -> bool {
-    settings_path(app)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("companion").and_then(|b| b.as_bool()))
-        .unwrap_or(true)
+    settings::get_bool(app, "companion", true)
 }
 
 fn save_companion(app: &AppHandle, on: bool) {
-    let Some(path) = settings_path(app) else { return };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    // In-session behavior rides the atomic either way; a failed write only
-    // surfaces at next launch — say so instead of diverging silently.
-    if let Err(e) = std::fs::write(path, serde_json::json!({ "companion": on }).to_string()) {
-        eprintln!("companion setting not persisted: {e}");
-    }
+    settings::set_value(app, "companion", serde_json::Value::Bool(on));
 }
 
 /// Frontend-initiated connect (the queue UI's gate state, PR 4) — same flow
@@ -473,6 +462,7 @@ pub fn run() {
             upnext::upnext_add,
             upnext::upnext_remove,
             upnext::upnext_move,
+            similar::more_like_this,
             dock::set_window_size,
             dock::set_hit_size,
             dock::start_drag,

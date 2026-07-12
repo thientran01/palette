@@ -351,6 +351,20 @@ fn mutate(app: &AppHandle, f: impl FnOnce(&mut Inner)) {
     emit_list(app, &list);
 }
 
+/// Current list uris, in order — similar.rs's dedupe read.
+pub fn uris(app: &AppHandle) -> Vec<String> {
+    let upnext = app.state::<UpNext>();
+    let inner = lock(&upnext);
+    inner.list.iter().map(|t| t.uri.clone()).collect()
+}
+
+/// Programmatic append (the more-like-this feeder) — the same emit+persist
+/// mutate path as the frontend's add, one item per call so rows arrive
+/// incrementally.
+pub fn append(app: &AppHandle, item: QueueTrack) {
+    mutate(app, |inner| inner.list.push(item));
+}
+
 /// Remove by uri (first occurrence). Public for play_now's queue-row path.
 pub fn remove(app: &AppHandle, uri: &str) {
     mutate(app, |inner| {

@@ -278,7 +278,7 @@ fn b64url_random(len: usize) -> String {
 }
 
 /// Percent-encode for query components (RFC 3986 unreserved kept).
-fn urlenc(s: &str) -> String {
+pub(crate) fn urlenc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -1035,10 +1035,11 @@ pub fn enrich_now(app: &AppHandle) {
     });
 }
 
-/// Resolve a track uri by search — the path for history entries logged
-/// before enrichment existed (or from Apple Music sessions). Best match =
-/// same title (ci) + artist overlap, first 5 results.
-pub fn search_track(app: &AppHandle, title: &str, artist: &str) -> Option<String> {
+/// Resolve the best-matching track by search — the path for history entries
+/// logged before enrichment existed (or from Apple Music sessions), and the
+/// track builder for more-like-this. Best match = same title (ci) + artist
+/// overlap, first 5 results.
+pub fn search_best(app: &AppHandle, title: &str, artist: &str) -> Option<QueueTrack> {
     let q = format!("track:{title} artist:{artist}");
     let url = format!(
         "https://api.spotify.com/v1/search?type=track&limit=5&q={}",
@@ -1059,7 +1060,17 @@ pub fn search_track(app: &AppHandle, title: &str, artist: &str) -> Option<String
         // Fall back to Spotify's own top hit — search relevance is usually
         // right even when metadata strings differ (remaster suffixes etc).
         .or_else(|| items.first().and_then(|i| parse_track(i)))
-        .map(|t| t.uri)
+}
+
+pub fn search_track(app: &AppHandle, title: &str, artist: &str) -> Option<String> {
+    search_best(app, title, artist).map(|t| t.uri)
+}
+
+/// The cached current track's uri, if the enrichment has seen one.
+pub fn now_uri(app: &AppHandle) -> Option<String> {
+    let auth = app.state::<SpotifyAuth>();
+    let inner = lock(&auth);
+    inner.now.as_ref().map(|n| n.uri.clone())
 }
 
 // ---- commands ----

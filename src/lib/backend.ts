@@ -150,6 +150,11 @@ const LIBRARY_OFF =
   !IN_TAURI && new URLSearchParams(window.location.search).get("library") === "off";
 const LIKE_FAIL =
   !IN_TAURI && new URLSearchParams(window.location.search).get("like") === "fail";
+/** `?similar=<status>` forces moreLikeThis to answer that status (no_data /
+ * no_key / offline …) so every toast is preview-reachable. */
+const SIMILAR_FORCE = IN_TAURI
+  ? null
+  : new URLSearchParams(window.location.search).get("similar");
 
 let mockSpotifyConnected = !SPOTIFY_OFF;
 const mockSpotifyListeners = new Set<(s: SpotifyStatus) => void>();
@@ -766,6 +771,34 @@ export const commands = {
       return { synced: lines.join("\n"), plain: null };
     }
     return lyricsLatestWins(() => invoke("media_lyrics", { artist, title, album, durationMs }));
+  },
+  /** Fill up-next with Last.fm-similar tracks for the current track
+   * (similar.rs). Statuses: ok:<n> | no_matches | no_data | no_key | busy |
+   * disconnected | offline. Rows land incrementally via "upnext-changed". */
+  async moreLikeThis(title: string, artist: string): Promise<string> {
+    if (!IN_TAURI) {
+      void title;
+      void artist;
+      if (!mockSpotifyConnected) return "disconnected";
+      if (SIMILAR_FORCE) return SIMILAR_FORCE;
+      // Ring tracks not already queued arrive one at a time, mirroring the
+      // backend's per-add emits (the arrival-flash choreography's driver).
+      const current = mockQueueTrack(MOCK_TRACKS[mockTrack]).uri;
+      const candidates = MOCK_TRACKS.map(mockQueueTrack).filter(
+        (t) => t.uri !== current && !mockUpNext.some((q) => q.uri === t.uri),
+      );
+      candidates.forEach((t, i) => {
+        window.setTimeout(() => {
+          // Push-time dedupe, like the backend's per-add uris re-read.
+          if (mockUpNext.some((q) => q.uri === t.uri)) return;
+          mockUpNext.push(t);
+          mockUpNextChanged();
+        }, 300 * (i + 1));
+      });
+      await new Promise((r) => setTimeout(r, 300 * candidates.length + 150));
+      return candidates.length ? `ok:${candidates.length}` : "no_data";
+    }
+    return invoke<string>("more_like_this", { title, artist });
   },
   /** Like/unlike a track (PUT/DELETE /me/tracks). "ok" | "disconnected" |
    * "offline" — callers flip optimistically and revert on non-ok. */
