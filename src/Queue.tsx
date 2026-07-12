@@ -256,11 +256,12 @@ const PlayGlyph = (
     <path d="M 5.4,3.4 L 13,8 L 5.4,12.6" />
   </svg>
 );
-/** Four-point star + satellite spark — the "more like this" verb. */
+/** Four-point star — the "more like this" verb. One shape only: a satellite
+ * spark blurred into noise at 13px (the sibling glyphs are two simple
+ * strokes; idiomatic beats clever at this size). */
 const SparkleGlyph = (
   <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="M 7.2,2.8 L 8.4,6.4 L 12,7.6 L 8.4,8.8 L 7.2,12.4 L 6,8.8 L 2.4,7.6 L 6,6.4 Z" />
-    <path d="M 12.8,11.2 L 12.8,13.6 M 11.6,12.4 L 14,12.4" strokeWidth="1.2" />
+    <path d="M 8,2.6 L 9.3,6.7 L 13.4,8 L 9.3,9.3 L 8,13.4 L 6.7,9.3 L 2.6,8 L 6.7,6.7 Z" />
   </svg>
 );
 
@@ -428,12 +429,15 @@ export function QueuePanel({
   const queueLive = connected && spotifyActive;
 
   // Quiet chip feedback (sentence case, middots, no exclamation marks).
+  // holdMs covers multi-second operations (the more-like-this run): the
+  // progress toast outlives the default clear and its completion toast
+  // replaces it.
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
-  const showToast = (msg: string) => {
+  const showToast = (msg: string, holdMs = 1600) => {
     setToast(msg);
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 1600);
+    toastTimer.current = window.setTimeout(() => setToast(null), holdMs);
   };
   useEffect(
     () => () => {
@@ -443,13 +447,32 @@ export function QueuePanel({
   );
 
   // Newly-queued flash (900ms accent wash, fades on the 600ms bg transition).
-  const [flashUri, setFlashUri] = useState<string | null>(null);
-  const flashTimer = useRef<number | null>(null);
+  // Per-uri timers: more-like-this lands rows ~120ms apart, and a single
+  // slot would snap each earlier wash off mid-fade (quick-review catch).
+  const [flashUris, setFlashUris] = useState<ReadonlySet<string>>(new Set());
+  const flashTimers = useRef(new Map<string, number>());
   const flash = (uri: string) => {
-    setFlashUri(uri);
-    if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
-    flashTimer.current = window.setTimeout(() => setFlashUri(null), 900);
+    setFlashUris((s) => new Set(s).add(uri));
+    const prev = flashTimers.current.get(uri);
+    if (prev !== undefined) window.clearTimeout(prev);
+    flashTimers.current.set(
+      uri,
+      window.setTimeout(() => {
+        flashTimers.current.delete(uri);
+        setFlashUris((s) => {
+          const next = new Set(s);
+          next.delete(uri);
+          return next;
+        });
+      }, 900),
+    );
   };
+  useEffect(
+    () => () => {
+      flashTimers.current.forEach((t) => window.clearTimeout(t));
+    },
+    [],
+  );
 
   const addToQueue = (t: QueueTrack, at?: number) => {
     commands.upnextAdd(t, at);
@@ -465,8 +488,9 @@ export function QueuePanel({
   useEffect(() => {
     const cur = upnext.map((t) => t.uri);
     if (seeding) {
-      const fresh = cur.find((u) => !prevUris.current.includes(u));
-      if (fresh) flash(fresh);
+      // ALL fresh uris — two emits can coalesce into one render, and the
+      // per-uri flash timers make concurrent washes safe.
+      cur.filter((u) => !prevUris.current.includes(u)).forEach(flash);
     }
     prevUris.current = cur;
     // flash is stable per render and timer-based; upnext identity drives this.
@@ -475,7 +499,9 @@ export function QueuePanel({
   const moreLikeThis = () => {
     if (!np || !np.title || seeding) return;
     setSeeding(true);
-    showToast("Finding similar tracks…");
+    // Held past the default clear — the run takes seconds and a blank chip
+    // mid-run reads as a stall; the result toast replaces it.
+    showToast("Finding similar tracks…", 15_000);
     commands
       .moreLikeThis(np.title, np.artist)
       .then((r) => {
@@ -485,6 +511,7 @@ export function QueuePanel({
         } else if (r === "no_data") showToast("Last.fm doesn't know this one yet");
         else if (r === "no_matches") showToast("Couldn't match those on Spotify");
         else if (r === "no_key") showToast("Add a Last.fm API key first");
+        else if (r === "bad_key") showToast("Last.fm rejected the API key");
         else if (r === "disconnected") showToast("Spotify unreachable");
         else if (r === "busy") showToast("Still finding similar tracks");
         else showToast("Can't reach Last.fm");
@@ -708,25 +735,25 @@ export function QueuePanel({
           {toast}
         </span>
         {/* More-like-this: fills the list with Last.fm-similar tracks for
-            the CURRENT track — seated where its output lands. Gate = the
-            queueLive class (feed/play need Spotify); a missing Last.fm key
-            answers as a toast on click, not a status plumb. */}
-        {queueLive && !!np?.title && (
-          <button
-            type="button"
-            aria-label={`More like ${np.title}`}
-            title={`More like ${np.title}`}
-            aria-disabled={seeding || undefined}
-            onClick={moreLikeThis}
-            className={`grid h-[26px] w-[26px] shrink-0 place-items-center rounded-md [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] ${
-              seeding
-                ? "pointer-events-none text-muted opacity-40"
-                : "text-fg hover:bg-fg/10 active:scale-95"
-            }`}
-          >
-            {SparkleGlyph}
-          </button>
-        )}
+            the CURRENT track — seated where its output lands. The seat never
+            unmounts (the ViewToggle rule: nothing to hunt for, nothing
+            shifts) — it disables in place when the queue gate is closed or a
+            run is in flight; a missing Last.fm key answers as a toast on
+            click, not a status plumb. */}
+        <button
+          type="button"
+          aria-label={np?.title ? `More like ${np.title}` : "More like this"}
+          title={np?.title ? `More like ${np.title}` : "More like this"}
+          aria-disabled={!queueLive || !np?.title || seeding || undefined}
+          onClick={moreLikeThis}
+          className={`grid h-[26px] w-[26px] shrink-0 place-items-center rounded-md [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] ${
+            !queueLive || !np?.title || seeding
+              ? "pointer-events-none text-muted opacity-30"
+              : "text-fg hover:bg-fg/10 active:scale-95"
+          }`}
+        >
+          {SparkleGlyph}
+        </button>
       </div>
       {/* The gate NARRATES instead of hiding: Pulse's list persists across
           players/connection, and queued rows vanishing on an Apple Music
@@ -761,7 +788,7 @@ export function QueuePanel({
                 index={i}
                 dragging={drag?.index === i}
                 dragDy={drag?.index === i ? drag.dy : 0}
-                flash={flashUri === t.uri}
+                flash={flashUris.has(t.uri)}
                 onDragStart={onQueueDragStart}
                 onRemove={(uri) => commands.upnextRemove(uri)}
                 onKeyDown={onQueueKeyDown}

@@ -5,9 +5,10 @@
 //! command async so nothing blocks the webview's STA thread (lib.rs rule).
 //!
 //! Tokens live in their own app-data file (`spotify_tokens.json`) — NOT
-//! settings.json, which is a whole-file clobber write. Plaintext on disk is
-//! the standard desktop-app tradeoff: the file is user-profile-scoped and
-//! holds a refresh token limited to this app's scopes.
+//! settings.json (a shared key-value file; settings.rs owns its
+//! read-modify-write). Plaintext on disk is the standard desktop-app
+//! tradeoff: the file is user-profile-scoped and holds a refresh token
+//! limited to this app's scopes.
 //!
 //! Token-destruction policy (quick-review hardening, 2026-07-10): tokens are
 //! cleared ONLY on evidence the session itself is dead — a 400-class answer

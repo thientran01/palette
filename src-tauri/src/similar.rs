@@ -32,8 +32,9 @@ const RESOLVE_GAP: Duration = Duration::from_millis(120);
 /// race two fills into the same list.
 static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
-/// Statuses: "ok:<n>" | "no_matches" | "no_data" | "no_key" | "busy" |
-/// "disconnected" | "offline". Blocking (two HTTP hops) — dedicated pool.
+/// Statuses: "ok:<n>" | "no_matches" | "no_data" | "no_key" (absent) |
+/// "bad_key" (rejected) | "busy" | "disconnected" | "offline". Blocking
+/// (two HTTP hops) — dedicated pool.
 #[tauri::command]
 pub async fn more_like_this(app: AppHandle, title: String, artist: String) -> String {
     tauri::async_runtime::spawn_blocking(move || run(&app, &title, &artist))
@@ -87,7 +88,6 @@ fn fill(app: &AppHandle, title: &str, artist: &str) -> String {
         return "no_data".into();
     }
 
-    let current_uri = spotify::now_uri(app);
     let mut added = 0usize;
     let mut resolved_any = false;
     for c in candidates {
@@ -101,9 +101,11 @@ fn fill(app: &AppHandle, title: &str, artist: &str) -> String {
         let Some(track) = spotify::search_best(app, &c.title, &c.artist) else {
             continue; // no Spotify match / transient — skip, keep walking
         };
-        // Never queue what's playing, never double-queue — re-read per add
-        // (a user drag/add can interleave with this walk).
-        if current_uri.as_deref() == Some(track.uri.as_str())
+        // Never queue what's playing, never double-queue — BOTH re-read per
+        // add: the walk takes seconds, and a track change or a user drag/add
+        // can interleave with it (quick-review catch on the once-up-front
+        // now_uri snapshot).
+        if spotify::now_uri(app).as_deref() == Some(track.uri.as_str())
             || upnext::uris(app).contains(&track.uri)
         {
             continue;

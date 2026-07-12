@@ -53,8 +53,10 @@ pub fn get_similar(
     };
     if let Some(code) = v["error"].as_i64() {
         // 10 = invalid key, 26 = suspended key; 6 = track not found.
+        // bad_key ≠ no_key: "add a key" is the wrong instruction for a key
+        // that exists and was rejected.
         return match code {
-            10 | 26 => Err("no_key"),
+            10 | 26 => Err("bad_key"),
             6 => Err("no_data"),
             _ => Err("offline"),
         };
@@ -73,6 +75,11 @@ pub fn get_similar(
             Some(SimilarTrack {
                 title: t["name"].as_str()?.to_string(),
                 artist: t["artist"]["name"].as_str()?.to_string(),
+                // Number or numeric string, per the API's mood. An absent/
+                // unparseable match collapses to 0.0 and dies at the
+                // consumer's floor — deliberate: an unscored similar is
+                // indistinguishable from mush, and dropping it is the safe
+                // read.
                 score: t["match"]
                     .as_f64()
                     .or_else(|| t["match"].as_str().and_then(|s| s.parse().ok()))
