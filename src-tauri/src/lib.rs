@@ -463,6 +463,8 @@ pub fn run() {
             history::history_thumb_url,
             spotify_connect,
             spotify::spotify_status,
+            spotify::spotify_now,
+            spotify::spotify_set_liked,
             spotify::spotify_disconnect,
             spotify::spotify_queue,
             spotify::spotify_play_now,

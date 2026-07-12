@@ -22,7 +22,7 @@ import {
   onSpotifyStatus,
   onUpNextChanged,
 } from "./lib/backend";
-import type { HistoryEntry, NowPlaying, QueueTrack } from "./types";
+import type { HistoryEntry, NowPlaying, QueueTrack, SpotifyStatus } from "./types";
 
 const HISTORY_PAGE = 30;
 /** Row height — the drag math's grid (swap threshold ±26 = just past half). */
@@ -35,10 +35,14 @@ export const POPOVER_GAP = 12;
 
 // ---- data hooks ----
 
+export function useSpotifyStatus(): SpotifyStatus {
+  const [status, setStatus] = useState<SpotifyStatus>({ connected: false, library: false });
+  useEffect(() => onSpotifyStatus(setStatus), []);
+  return status;
+}
+
 export function useSpotifyConnected(): boolean {
-  const [connected, setConnected] = useState(false);
-  useEffect(() => onSpotifyStatus((s) => setConnected(s.connected)), []);
-  return connected;
+  return useSpotifyStatus().connected;
 }
 
 export function useUpNext(): QueueTrack[] {

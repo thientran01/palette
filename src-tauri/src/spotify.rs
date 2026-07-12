@@ -40,8 +40,10 @@ const SPOTIFY_CLIENT_ID: &str = "3f82e7a35eea45ddab8625819a79d1de";
 const REDIRECT_PORT: u16 = 43117;
 /// read = queue/currently-playing; modify = add-to-queue/skip (play-now and
 /// the up-next feeder, PR 3+) — requested up front so PR 3 needs no
-/// re-consent.
-const SCOPES: &str = "user-read-playback-state user-modify-playback-state";
+/// re-consent. library = the like/unlike heart (added 2026-07-11): tokens
+/// granted before then lack it — the heart gates on the PERSISTED scope
+/// string (has_library_scope), never on discovering a 403 at click time.
+const SCOPES: &str = "user-read-playback-state user-modify-playback-state user-library-read user-library-modify";
 const UA: &str = "Pulse/0.1 (https://github.com/thientran01/pulse)";
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// How long the loopback listener waits for the browser consent round-trip.
@@ -95,11 +97,30 @@ struct Inner {
     tokens: Option<Tokens>,
     /// (fetched_at unix ms, result) — the QUEUE_CACHE_MS response cache.
     queue_cache: Option<(i64, QueueResult)>,
+    /// The current-track cache behind the "spotify-now" event — written only
+    /// by update_now (settled enrichment reads, verified jump landings) and
+    /// the like toggle; cleared with the tokens. The frontend matches it
+    /// against its own now-playing identity before trusting `liked`.
+    now: Option<NowTrack>,
 }
 
 #[derive(Serialize, Clone)]
 pub struct SpotifyStatus {
     pub connected: bool,
+    /// The persisted token grant includes the library (like/unlike) scopes —
+    /// false for pre-2026-07-11 tokens until a re-consent.
+    pub library: bool,
+}
+
+/// The Spotify-side identity of what's playing now — "spotify-now" event +
+/// spotify_now seed. Fed by the same settled enrichment path that stamps
+/// history (update_now); never polled for.
+#[derive(Serialize, Clone)]
+pub struct NowTrack {
+    pub uri: String,
+    pub title: String,
+    pub artist: String,
+    pub liked: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -180,6 +201,16 @@ pub fn connected(app: &AppHandle) -> bool {
     inner.tokens.is_some()
 }
 
+/// The persisted grant carries the library scopes. Checking `-modify` alone
+/// is deliberate: both were added together, and modify is the one the heart's
+/// writes need.
+fn has_library_scope(inner: &Inner) -> bool {
+    inner
+        .tokens
+        .as_ref()
+        .is_some_and(|t| t.scope.contains("user-library-modify"))
+}
+
 /// True while a play_now jump is skipping through the queue — upnext::tick
 /// suspends its fed-pop bookkeeping for the duration.
 pub fn jump_active(app: &AppHandle) -> bool {
@@ -190,8 +221,12 @@ pub fn jump_active(app: &AppHandle) -> bool {
 /// derived state and every transition flows through here (tray, frontend
 /// command, background invalid_grant), so it can never go stale.
 fn emit_status(app: &AppHandle) {
-    let connected = connected(app);
-    let _ = app.emit("spotify-status", SpotifyStatus { connected });
+    let (connected, library) = {
+        let auth = app.state::<SpotifyAuth>();
+        let inner = lock(&auth);
+        (inner.tokens.is_some(), has_library_scope(&inner))
+    };
+    let _ = app.emit("spotify-status", SpotifyStatus { connected, library });
     narrate(app, if connected { "Disconnect Spotify" } else { "Connect Spotify" });
 }
 
@@ -208,12 +243,17 @@ fn save_tokens(inner: &Inner) {
 /// Drop tokens + file; callers follow with emit_status.
 fn clear_tokens(app: &AppHandle) {
     let auth = app.state::<SpotifyAuth>();
-    let mut inner = lock(&auth);
-    if let Some(dir) = &inner.dir {
-        let _ = std::fs::remove_file(tokens_path(dir));
+    {
+        let mut inner = lock(&auth);
+        if let Some(dir) = &inner.dir {
+            let _ = std::fs::remove_file(tokens_path(dir));
+        }
+        inner.tokens = None;
+        inner.queue_cache = None;
+        inner.now = None;
     }
-    inner.tokens = None;
-    inner.queue_cache = None;
+    // The heart must not keep showing a liked state for a dead session.
+    let _ = app.emit("spotify-now", Option::<NowTrack>::None);
 }
 
 /// Shared by the command and the tray click.
@@ -850,9 +890,10 @@ fn jump(app: &AppHandle, target: &str) -> &'static str {
     let Some(t) = landing else {
         return "diverged"; // concurrent user action — stopped, not forced
     };
-    // The verified landing is trustworthy — enrich here (mid-jump reads
-    // deliberately don't).
-    crate::history::enrich_uri(app, &t.title, &t.artist, &t.uri);
+    // The verified landing is trustworthy — enrich + publish here (mid-jump
+    // reads deliberately don't), so the heart follows a jump without waiting
+    // for the next settled enrich.
+    update_now(app, &t);
     if !requeued_ok {
         return "partial";
     }
@@ -868,6 +909,61 @@ fn requeue(app: &AppHandle, items: &[QueueTrack]) -> bool {
         std::thread::sleep(Duration::from_millis(120));
     }
     ok
+}
+
+// ---- the current-track cache (history enrichment + the like heart) ----
+
+fn track_id(uri: &str) -> Option<&str> {
+    uri.strip_prefix("spotify:track:")
+}
+
+/// GET /me/tracks/contains for one track. None = couldn't ask (offline,
+/// non-track uri) — callers keep the previous answer or default false.
+fn fetch_liked(app: &AppHandle, uri: &str) -> Option<bool> {
+    let id = track_id(uri)?;
+    let v = api_call(
+        app,
+        "GET",
+        &format!("https://api.spotify.com/v1/me/tracks/contains?ids={}", urlenc(id)),
+    )
+    .ok()??;
+    v.as_array()?.first()?.as_bool()
+}
+
+/// The single writer of the current-track cache: stamp history's candidate,
+/// fetch liked (one contains GET — only when the track actually changed and
+/// the library scope exists), publish "spotify-now". Callers hand it a track
+/// they TRUST: a settled currently-playing read (enrich_now) or a verified
+/// jump landing — never a mid-jump snapshot. Blocking; call on the pool.
+fn update_now(app: &AppHandle, t: &QueueTrack) {
+    crate::history::enrich_uri(app, &t.title, &t.artist, &t.uri);
+    let auth = app.state::<SpotifyAuth>();
+    let (prev_liked, library) = {
+        let inner = lock(&auth);
+        (
+            inner.now.as_ref().filter(|n| n.uri == t.uri).map(|n| n.liked),
+            has_library_scope(&inner),
+        )
+    };
+    let liked = match prev_liked {
+        Some(l) => l, // same track — a repeat enrich must not re-hit the API
+        None => library && fetch_liked(app, &t.uri).unwrap_or(false),
+    };
+    let now = NowTrack {
+        uri: t.uri.clone(),
+        title: t.title.clone(),
+        artist: t.artist.clone(),
+        liked,
+    };
+    {
+        let mut inner = lock(&auth);
+        // A disconnect can race this in-flight read — its clear must win.
+        if inner.tokens.is_none() {
+            return;
+        }
+        inner.now = Some(now.clone());
+    }
+    let _ = app.emit("spotify-now", Some(now));
 }
 
 // ---- history enrichment + uri resolution ----
@@ -894,7 +990,7 @@ pub fn enrich_now(app: &AppHandle) {
         if let Ok(Some(v)) = api_call(&app, "GET", "https://api.spotify.com/v1/me/player/currently-playing")
         {
             if let Some(t) = parse_track(&v["item"]) {
-                crate::history::enrich_uri(&app, &t.title, &t.artist, &t.uri);
+                update_now(&app, &t);
             }
         }
         app.state::<SpotifyAuth>().enrich_in_flight.store(false, Ordering::SeqCst);
@@ -948,7 +1044,64 @@ pub async fn spotify_resolve_uri(
 
 #[tauri::command]
 pub async fn spotify_status(app: AppHandle) -> SpotifyStatus {
-    SpotifyStatus { connected: connected(&app) }
+    let auth = app.state::<SpotifyAuth>();
+    let inner = lock(&auth);
+    SpotifyStatus {
+        connected: inner.tokens.is_some(),
+        library: has_library_scope(&inner),
+    }
+}
+
+/// Seed for the "spotify-now" event — the cached current track, if any.
+#[tauri::command]
+pub async fn spotify_now(app: AppHandle) -> Option<NowTrack> {
+    let auth = app.state::<SpotifyAuth>();
+    let inner = lock(&auth);
+    inner.now.clone()
+}
+
+/// PUT/DELETE /me/tracks — the like heart. "ok" | "disconnected" | "offline".
+/// Callers gate on SpotifyStatus.library, so the ambiguous-403 path
+/// (api_call maps it to "disconnected") is never the discovery mechanism.
+#[tauri::command]
+pub async fn spotify_set_liked(app: AppHandle, uri: String, liked: bool) -> String {
+    tauri::async_runtime::spawn_blocking(move || set_liked(&app, &uri, liked).to_string())
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("spotify set_liked task panicked: {e}");
+            "offline".into()
+        })
+}
+
+fn set_liked(app: &AppHandle, uri: &str, liked: bool) -> &'static str {
+    let Some(id) = track_id(uri) else {
+        return "offline"; // non-track uri (episode) — nothing to like
+    };
+    let method = if liked { "PUT" } else { "DELETE" };
+    let url = format!("https://api.spotify.com/v1/me/tracks?ids={}", urlenc(id));
+    match api_call(app, method, &url) {
+        Ok(_) => {
+            // Reflect into the cache + re-emit so every consumer converges —
+            // but only when the cached now is still this track (a track
+            // change can race the write).
+            let updated = {
+                let auth = app.state::<SpotifyAuth>();
+                let mut inner = lock(&auth);
+                match inner.now.as_mut() {
+                    Some(n) if n.uri == uri => {
+                        n.liked = liked;
+                        Some(n.clone())
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(n) = updated {
+                let _ = app.emit("spotify-now", Some(n));
+            }
+            "ok"
+        }
+        Err(e) => e,
+    }
 }
 
 #[tauri::command]
