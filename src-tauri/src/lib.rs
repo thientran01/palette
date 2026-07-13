@@ -145,7 +145,7 @@ async fn media_lyrics(
     // Join error = the fetch panicked; degrade to a miss, not a dead IPC
     // call — but say so, or a release build swallows the panic invisibly.
     .unwrap_or_else(|e| {
-        eprintln!("lyrics fetch panicked: {e}");
+        log::error!("lyrics fetch panicked: {e}");
         lyrics::Lyrics::default()
     })
 }
@@ -421,7 +421,7 @@ fn spawn_update_check(app: &AppHandle, feedback: Option<tauri::menu::MenuItem<ta
                 }
             }
             Err(e) => {
-                eprintln!("update check failed: {e}");
+                log::warn!("update check failed: {e}");
                 if let Some(item) = &feedback {
                     set_menu_label(&app, item, "Update failed", false);
                 }
@@ -475,6 +475,26 @@ pub fn run() {
                 }
             });
         }))
+        // Release logging (registered early so later plugins/setup can log):
+        // main.rs sets windows_subsystem="windows", so stderr is discarded and
+        // panics + eprintln! diagnostics vanish. Route them to a rotating file
+        // in the app log dir (%LOCALAPPDATA%\<id>\logs\pulse.log) instead. Dev
+        // builds also keep a Stdout target so `tauri dev` still prints inline.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                // Bound disk use: rotate at 5 MB, keep one old file.
+                .max_file_size(5_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("pulse".into()),
+                    }),
+                    #[cfg(debug_assertions)]
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                ])
+                .build(),
+        )
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -571,6 +591,30 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // Panic hook: in a release build stderr is discarded, so an
+            // uncaught panic (any thread — the media loop, presence watcher,
+            // blocking-pool tasks) otherwise vanishes with no trace. Log the
+            // payload + location + a captured backtrace through the file logger
+            // (initialized above), then chain to the default hook so dev builds
+            // still print to the console. Installed here in setup, after the
+            // log plugin has registered the global logger.
+            let default_panic_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                let location = info
+                    .location()
+                    .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                    .unwrap_or_else(|| "unknown location".to_string());
+                let payload = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("<non-string panic payload>");
+                let backtrace = std::backtrace::Backtrace::force_capture();
+                log::error!("panic at {location}: {payload}\n{backtrace}");
+                default_panic_hook(info);
+            }));
+
             // Tray: Show/Hide + Quit.
             let show_hide = MenuItem::with_id(app, "toggle", "Show / Hide", true, None::<&str>)?;
             // Manual re-dock (bottom-right). Launch snapping already heals
@@ -631,6 +675,10 @@ pub fn run() {
             }
             let update_check =
                 MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?;
+            // Reveal the log dir so a user hitting a crash / failed refresh can
+            // grab pulse.log to send (see the log plugin above). Seated next to
+            // "Check for updates" — both are supportability affordances.
+            let open_logs = MenuItem::with_id(app, "logs", "Open logs", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Pulse", true, None::<&str>)?;
             // Dev-only conceal test affordance: fullscreen apps are awkward
             // to summon on demand; this feeds the presence loop a synthetic
@@ -649,13 +697,23 @@ pub fn run() {
                     &spotify_item,
                     &sim_fs,
                     &update_check,
+                    &open_logs,
                     &quit,
                 ],
             )?;
             #[cfg(not(debug_assertions))]
             let menu = Menu::with_items(
                 app,
-                &[&show_hide, &reset, &autostart, &companion, &spotify_item, &update_check, &quit],
+                &[
+                    &show_hide,
+                    &reset,
+                    &autostart,
+                    &companion,
+                    &spotify_item,
+                    &update_check,
+                    &open_logs,
+                    &quit,
+                ],
             )?;
             let autostart_item = autostart.clone();
             let companion_item = companion.clone();
@@ -676,7 +734,7 @@ pub fn run() {
                             al.enable()
                         };
                         if let Err(e) = result {
-                            eprintln!("autostart toggle failed: {e}");
+                            log::warn!("autostart toggle failed: {e}");
                         }
                         // The menu item flips itself on click; re-sync it to
                         // the registry's actual state so a failed toggle
@@ -717,6 +775,17 @@ pub fn run() {
                         let _ = update_item.set_text("Checking…");
                         let _ = update_item.set_enabled(false);
                         spawn_update_check(app, Some(update_item.clone()));
+                    }
+                    "logs" => {
+                        // Open the log dir in the file manager (the log plugin
+                        // writes pulse.log here). Direct Rust call — bypasses
+                        // the webview capability layer, so no capability
+                        // change is needed. Best-effort: nothing to recover if
+                        // the folder can't be opened.
+                        use tauri_plugin_opener::OpenerExt;
+                        if let Ok(dir) = app.path().app_log_dir() {
+                            let _ = app.opener().open_path(dir.to_string_lossy(), None::<&str>);
+                        }
                     }
                     "quit" => app.exit(0),
                     _ => {}
@@ -773,7 +842,7 @@ pub fn run() {
                     }
                 });
                 if let Err(e) = result {
-                    eprintln!("hotkey {hk} failed to register: {e}");
+                    log::warn!("hotkey {hk} failed to register: {e}");
                 }
             }
 

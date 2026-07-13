@@ -86,7 +86,7 @@ pub async fn focus_open(app: AppHandle) {
             // the flag (quick-review catch; Ctrl+Alt+M carries a recovery
             // path regardless).
             if win.show().is_err() {
-                eprintln!("focus: show failed — aborting the takeover");
+                log::error!("focus: show failed — aborting the takeover");
                 let _ = win.destroy();
                 return;
             }
@@ -95,7 +95,7 @@ pub async fn focus_open(app: AppHandle) {
             apply_visibility(&app);
         }
         Err(e) => {
-            eprintln!("focus: window create failed: {e}");
+            log::error!("focus: window create failed: {e}");
         }
     }
 }

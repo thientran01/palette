@@ -184,7 +184,7 @@ fn log_path(dir: &Path) -> PathBuf {
 /// logging to a surprise location.
 pub fn init(app: &AppHandle) {
     let Ok(dir) = app.path().app_data_dir() else {
-        eprintln!("history: app data dir unavailable — history disabled this run");
+        log::warn!("history: app data dir unavailable — history disabled this run");
         return;
     };
     let index = load_index(&log_path(&dir));
@@ -364,7 +364,7 @@ impl Inner {
                 Some(entry)
             }
             Err(e) => {
-                eprintln!("history: append failed ({e}) — entry dropped");
+                log::warn!("history: append failed ({e}) — entry dropped");
                 None
             }
         }

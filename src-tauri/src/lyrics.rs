@@ -338,7 +338,7 @@ pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_
                 }
                 evict_old(cache_dir);
             }
-            Err(e) => eprintln!("lyrics cache dir unavailable ({e}) — running uncached"),
+            Err(e) => log::warn!("lyrics cache dir unavailable ({e}) — running uncached"),
         }
     }
     lyrics

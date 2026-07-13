@@ -76,7 +76,7 @@ pub fn init(app: &AppHandle) {
             }
         }
         Err(e) => {
-            eprintln!("palette: window create failed ({e}) — summon disabled this run");
+            log::error!("palette: window create failed ({e}) — summon disabled this run");
         }
     }
 }

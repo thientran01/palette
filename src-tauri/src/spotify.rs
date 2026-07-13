@@ -159,7 +159,7 @@ fn tokens_path(dir: &std::path::Path) -> PathBuf {
 /// Load the token file (if any) and remember the app-data dir. Setup-time.
 pub fn init(app: &AppHandle) {
     let Ok(dir) = app.path().app_data_dir() else {
-        eprintln!("spotify: app data dir unavailable — adapter disabled this run");
+        log::warn!("spotify: app data dir unavailable — adapter disabled this run");
         return;
     };
     let tokens = std::fs::read_to_string(tokens_path(&dir))
@@ -209,9 +209,10 @@ fn emit_status(app: &AppHandle) {
 fn save_tokens(inner: &Inner) {
     let (Some(dir), Some(tokens)) = (&inner.dir, &inner.tokens) else { return };
     if let Ok(json) = serde_json::to_string(tokens) {
-        let _ = std::fs::create_dir_all(dir);
-        if let Err(e) = std::fs::write(tokens_path(dir), json) {
-            eprintln!("spotify: token save failed: {e}");
+        // Atomic replace: a crash mid-write must not blank a valid session to
+        // default (which reads as "disconnected" and forces a re-consent).
+        if let Err(e) = crate::settings::write_atomic(&tokens_path(dir), json.as_bytes()) {
+            log::warn!("spotify: token save failed: {e}");
         }
     }
 }
@@ -317,7 +318,7 @@ pub fn start_connect(app: &AppHandle) {
         match outcome {
             Ok(()) => emit_status(&app),
             Err(msg) => {
-                eprintln!("spotify connect failed: {msg}");
+                log::warn!("spotify connect failed: {msg}");
                 narrate(&app, "Spotify connect failed — retry");
             }
         }
@@ -568,7 +569,7 @@ fn ensure_access(app: &AppHandle) -> Result<String, &'static str> {
         // here also heals the "stale tokens presented as connected forever"
         // restart state.
         Err(e) if e.starts_with("token endpoint 4") => {
-            eprintln!("spotify refresh rejected: {e}");
+            log::warn!("spotify refresh rejected: {e}");
             clear_tokens(app);
             emit_status(app);
             Err("disconnected")
@@ -576,7 +577,7 @@ fn ensure_access(app: &AppHandle) -> Result<String, &'static str> {
         // Transport failure or 5xx: the session may be fine — hand back the
         // old token and let the caller treat a repeat 401 as offline.
         Err(e) => {
-            eprintln!("spotify refresh unavailable: {e}");
+            log::warn!("spotify refresh unavailable: {e}");
             Ok(old_access)
         }
     }
@@ -1108,7 +1109,7 @@ pub async fn spotify_resolve_uri(
     tauri::async_runtime::spawn_blocking(move || search_track(&app, &title, &artist))
         .await
         .unwrap_or_else(|e| {
-            eprintln!("spotify resolve task panicked: {e}");
+            log::error!("spotify resolve task panicked: {e}");
             None
         })
 }
@@ -1130,7 +1131,7 @@ pub async fn spotify_queue(app: AppHandle) -> QueueResult {
     tauri::async_runtime::spawn_blocking(move || queue(&app))
         .await
         .unwrap_or_else(|e| {
-            eprintln!("spotify queue task panicked: {e}");
+            log::error!("spotify queue task panicked: {e}");
             QueueResult::bare("offline")
         })
 }
@@ -1145,7 +1146,7 @@ pub async fn spotify_play_now(app: AppHandle, uri: String) -> String {
     tauri::async_runtime::spawn_blocking(move || play_now(&app, &uri).to_string())
         .await
         .unwrap_or_else(|e| {
-            eprintln!("spotify play_now task panicked: {e}");
+            log::error!("spotify play_now task panicked: {e}");
             "offline".into()
         })
 }
@@ -1170,7 +1171,7 @@ pub async fn spotify_search(app: AppHandle, query: String, limit: Option<u32>) -
     })
     .await
     .unwrap_or_else(|e| {
-        eprintln!("spotify search task panicked: {e}");
+        log::error!("spotify search task panicked: {e}");
         SearchResult { status: "offline".into(), tracks: Vec::new() }
     })
 }
