@@ -414,7 +414,10 @@ const BreakRow = memo(function BreakRow({
       data-cascade
       {...(anchor ? { "data-anchor": true } : {})}
       style={{ "--cascade-delay": `${cascadeDelayMs}ms` } as React.CSSProperties}
-      className={`flex h-8 items-center gap-1.5 rounded-md px-3 py-1 text-left ${
+      // gap-1 (4px, the pill cluster's rhythm): two-thirds the 6px dot, so
+      // the five read as one countdown unit rather than five separate marks
+      // (an equal dot/gap ratio was too loose to feel intentional).
+      className={`flex h-8 items-center gap-1 rounded-md px-3 py-1 text-left ${
         seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
