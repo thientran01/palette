@@ -672,10 +672,6 @@ const SNAP_WINDOW_MS = 300;
  * shouldn't sit under the metadata forever. The reserved slot keeps its
  * height, so the fade moves nothing. */
 const NO_LYRICS_CAPTION_MS = 4000;
-/** Entrance delay on the entering view so the exit visibly leads — the
- * overlap reads as one gesture (off the DUR scale deliberately: it's an
- * offset between beats, not a duration). */
-const EXIT_LEAD_MS = 40;
 
 /**
  * Expanded mode: big-art fallback while lyrics fetch, karaoke view once they
@@ -773,151 +769,143 @@ function ExpandedView({
     return () => window.clearTimeout(t);
   }, [lyrics.status, trackKey]);
 
-  const swap = {
-    initial: reducedMotion ? {} : { opacity: 0 },
-    animate: { opacity: 1, filter: "blur(0px)" },
-    transition: {
-      duration: reducedMotion ? 0 : DUR[3] / 1000,
-      delay: reducedMotion ? 0 : EXIT_LEAD_MS / 1000,
-      ease: [...EASE.out] as [number, number, number, number],
-    },
-  };
-  const exitFast = {
-    duration: reducedMotion ? 0 : DUR[2] / 1000,
-    ease: [...EASE.out] as [number, number, number, number],
-  };
+  // Which of the three peer views owns the surface. They crossfade IN PLACE
+  // under a fixed header — switching content, never a panel over a panel.
+  const active: "lyrics" | "album" | "queue" = queueOpen
+    ? "queue"
+    : showLyrics
+      ? "lyrics"
+      : "album";
+  // The header is shown for lyrics + queue (identical markup, so crossing
+  // between them never moves it); the album view is the one headerless
+  // surface (its big cover is the identity), so the header fades only there.
+  const headerShown = active !== "album";
+
+  // Peer-layer visibility: opaque, same footprint, OPACITY-ONLY crossfade —
+  // in 200ms / out 140ms EASE.out, visibility deferred past the fade so a
+  // hidden layer neither eats clicks nor ghosts. No scale/transform: a scale
+  // exhale reads as a panel opening and lets the layer behind peek at the
+  // edges (both were live bugs, 2026-07-12). `inert` drops the inactive
+  // layers from hit-testing and the a11y tree. (prefers-reduced-motion is
+  // handled by the global transition kill in index.css.)
+  const layer = (on: boolean): string =>
+    on
+      ? "opacity-100 [transition:opacity_200ms_var(--ease-out-tk)]"
+      : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),visibility_0s_140ms]";
 
   return (
     // pb-0.5 (+ the shell's 1px border) seats the h-8 transport row's center
     // on the 25px control centerline (see ModeCluster) — 2px less than the
     // card's pb-1 because this transport row is 4px taller.
     <div className="relative flex h-full flex-col gap-2 px-3 pb-0.5 pt-3">
+      {/* The content surface: one box, three peer views (lyrics · album ·
+          queue) crossfading IN PLACE beneath a fixed header — only which
+          layer is opaque changes, so a swap reads as switching content, never
+          a panel sliding over (the queue used to be a scale-overlay: it read
+          as a panel opening AND let the view behind peek at the edges). */}
       <div className="relative min-h-0 flex-1">
-        <AnimatePresence initial={false}>
-          {showLyrics ? (
-            <motion.div
-              // Keyed per TRACK: a fast resolve landing inside the previous
-              // lyrics view's 140ms exit window would otherwise re-adopt the
-              // exiting fiber — stale LyricsPanel state (entrance, anchored
-              // transition) would animate a slide to the new track's offset.
-              key={`lyrics:${lyrics.key}`}
-              {...swap}
-              // pointerEvents dies at exit start — a stray click during the
-              // reverse fade must not seek the NEW track to a dead line.
-              exit={{ opacity: 0, pointerEvents: "none", transition: exitFast }}
-              className="absolute inset-0 flex flex-col gap-2"
-            >
-              {/* pr-8 clears the hover-revealed ViewToggle seat — a long
-                  title/artist must not run under the incoming button. */}
-              <div className="flex items-center gap-2.5 pr-8">
-                <Art url={artUrl} size={44} radiusPx={6} />
-                <div className="min-w-0 flex-1">
-                  {/* The living instance rides the TITLE, matching the card
-                      and the pill — the capsules are a now-playing pulse and
-                      belong to the song, one grammar across views (Thien,
-                      2026-07-10). Flex row, not inline flow: a long title
-                      truncates in its own box while the waveform keeps its
-                      seat right after the clipped text — inline, it rode the
-                      string's full width into the clip edge. ml-1 on top of
-                      the waveform's mx-1.5 = the same 10px gap as the card. */}
-                  <div className="flex min-w-0 items-center">
-                    <TruncateTip text={np.title} className="text-[15px] font-medium text-fg" />
-                    <span className="ml-1 flex shrink-0 items-center">
-                      <Waveform size="md" trailing />
-                    </span>
-                  </div>
-                  <TruncateTip text={np.artist} className="text-[13px] text-muted" />
-                </div>
-              </div>
-              <LyricsPanel
-                lines={lyrics.lines}
-                seekable={seekable}
-                leadMs={VOCAL_LEAD_MS[np.player]}
-                entrance={celebrate}
-              />
-            </motion.div>
-          ) : (
-            <motion.div
-              key="art"
-              {...swap}
-              // The art dissolves IN PLACE — the house exit language (blur +
-              // opacity, zero transforms; the art never moves, even to leave).
-              exit={{
-                opacity: 0,
-                filter: reducedMotion ? "blur(0px)" : "blur(1.5px)",
-                transition: exitFast,
-              }}
-              className="absolute inset-0 flex flex-col items-center justify-center gap-3"
-            >
-              <Art url={artUrl} size={190} radiusPx={12} />
-              <div className="min-w-0 self-stretch text-center">
-                <p className="truncate text-sm font-medium text-fg">{np.title}</p>
-                <p className="truncate text-xs text-muted">
-                  {np.artist}
-                  {np.album && <SeparatorDot />}
-                  {np.album}
-                </p>
-                {/* Height-reserved caption slot: the caption fading in must
-                    not re-center the column and shift the art (it did — every
-                    lyrics miss nudged the 190px cover ~7px). "Finding
-                    lyrics…" waits 400ms so fast fetches never flash it, and
-                    turns the eventual arrival into an answered question. The
-                    miss caption fades back out once read (captionExpired) —
-                    the disabled toggle seat keeps carrying the answer;
-                    aria-hidden goes with it, since opacity 0 alone would
-                    leave AT announcing a caption sighted users can't see. */}
-                <p className="mt-0.5 h-[15px] text-[10px] text-muted">
-                  {lyrics.status !== "synced" && (
-                    <span
-                      key={lyrics.status}
-                      aria-hidden={captionExpired || undefined}
-                      className={`inline-block ${
-                        captionExpired
-                          ? "animate-[caption-out_260ms_var(--ease-out-tk)_both]"
-                          : `animate-[caption-in_200ms_var(--ease-out-tk)_both] ${
-                              lyrics.status === "loading" ? "[animation-delay:400ms]" : ""
-                            }`
-                      }`}
-                    >
-                      {lyrics.status === "loading" ? "Finding lyrics…" : "No synced lyrics"}
-                    </span>
-                  )}
-                </p>
-              </div>
-              {/* The living separator at hero size, filling the dead zone
-                  between the metadata and the transport. The metadata line
-                  above keeps a static middot so the reactive surface isn't
-                  on screen twice. mt-3 centers it in that dead zone: the
-                  fixed 380x440 window plus this centered column puts half
-                  the margin back below, landing ~24px on both sides. */}
-              <div className="mt-3">
-                <Waveform size="lg" />
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-        {/* The 11a queue surface — ALWAYS mounted (scroll position and the
-            history feed survive toggling), cross-faded over art/lyrics: in
-            200ms EASE.out with the .98 scale exhale, out 140ms opacity-only,
-            visibility deferred past the fade so a hidden surface neither
-            eats clicks nor drops out of the DOM. Sits under the top-right
-            toggle (z-10) and above the base views. */}
+        {/* Fixed now-playing header — ABSOLUTE, so it never reflows the bodies
+            (a flex-flow header shifted the album column ~50px on every swap:
+            the "content starts ~20px down then jumps up" bug). Carries the one
+            living md waveform. Shown for lyrics + queue (headerShown holds
+            across that swap, so it doesn't even fade); fades only for the
+            album view. pr-8 clears the hover-revealed ViewToggle seat. */}
         <div
-          inert={!queueOpen}
-          onMouseDown={(e) => e.stopPropagation()}
-          className={`absolute inset-0 z-[5] flex flex-col bg-surface ${
-            queueOpen
-              ? "visible scale-100 opacity-100 [transition:opacity_200ms_var(--ease-out-tk),scale_200ms_var(--ease-out-tk)]"
-              : "invisible scale-[0.98] opacity-0 [transition:opacity_140ms_var(--ease-out-tk),scale_140ms_var(--ease-out-tk),visibility_0s_140ms]"
-          }`}
+          inert={!headerShown}
+          className={`absolute inset-x-0 top-0 z-10 flex items-center gap-2.5 pr-8 ${layer(headerShown)}`}
         >
-          <div className="flex items-center gap-2.5 pb-2 pr-8">
-            <Art url={artUrl} size={44} radiusPx={6} />
-            <div className="min-w-0 flex-1">
+          <Art url={artUrl} size={44} radiusPx={6} />
+          <div className="min-w-0 flex-1">
+            {/* The living instance rides the TITLE, matching the card and the
+                pill — the capsules are a now-playing pulse and belong to the
+                song (Thien, 2026-07-10). Flex row, not inline flow: a long
+                title truncates in its own box while the waveform keeps its
+                seat right after the clipped text. ml-1 over the waveform's
+                mx-1.5 = the same 10px gap as the card. */}
+            <div className="flex min-w-0 items-center">
               <TruncateTip text={np.title} className="text-[15px] font-medium text-fg" />
-              <TruncateTip text={np.artist} className="text-[13px] text-muted" />
+              <span className="ml-1 flex shrink-0 items-center">
+                <Waveform size="md" trailing />
+              </span>
             </div>
+            <TruncateTip text={np.artist} className="text-[13px] text-muted" />
           </div>
+        </div>
+
+        {/* Lyrics view — pt-[52px] clears the fixed header. Keyed per track so
+            a change re-anchors fresh instead of sliding the old offset. */}
+        <div
+          inert={active !== "lyrics"}
+          className={`absolute inset-0 flex flex-col bg-surface pt-[52px] ${layer(active === "lyrics")}`}
+        >
+          {lyricsLive && (
+            <LyricsPanel
+              key={lyrics.key}
+              lines={lyrics.lines}
+              seekable={seekable}
+              leadMs={VOCAL_LEAD_MS[np.player]}
+              entrance={celebrate}
+            />
+          )}
+        </div>
+
+        {/* Album view — big cover centered in the full box (headerless, no pt);
+            the identity when lyrics are off or missing. Absolute inset-0, so it
+            never reflows regardless of the header's presence. */}
+        <div
+          inert={active !== "album"}
+          className={`absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface ${layer(active === "album")}`}
+        >
+          <Art url={artUrl} size={190} radiusPx={12} />
+          <div className="min-w-0 self-stretch text-center">
+            <p className="truncate text-sm font-medium text-fg">{np.title}</p>
+            <p className="truncate text-xs text-muted">
+              {np.artist}
+              {np.album && <SeparatorDot />}
+              {np.album}
+            </p>
+            {/* Height-reserved caption slot: the caption fading in must not
+                re-center the column and shift the art (it did — every lyrics
+                miss nudged the 190px cover ~7px). "Finding lyrics…" waits
+                400ms so fast fetches never flash it; the miss caption fades
+                back out once read (captionExpired), aria-hidden going with it
+                so AT doesn't announce a caption sighted users can't see. */}
+            <p className="mt-0.5 h-[15px] text-[10px] text-muted">
+              {lyrics.status !== "synced" && (
+                <span
+                  key={lyrics.status}
+                  aria-hidden={captionExpired || undefined}
+                  className={`inline-block ${
+                    captionExpired
+                      ? "animate-[caption-out_260ms_var(--ease-out-tk)_both]"
+                      : `animate-[caption-in_200ms_var(--ease-out-tk)_both] ${
+                          lyrics.status === "loading" ? "[animation-delay:400ms]" : ""
+                        }`
+                  }`}
+                >
+                  {lyrics.status === "loading" ? "Finding lyrics…" : "No synced lyrics"}
+                </span>
+              )}
+            </p>
+          </div>
+          {/* The living separator at hero size, filling the dead zone between
+              the metadata and the transport. The metadata line keeps a static
+              middot so the reactive surface isn't on screen twice. */}
+          <div className="mt-3">
+            <Waveform size="lg" />
+          </div>
+        </div>
+
+        {/* Queue view — the same fixed header sits above it; the list is the
+            body. Was an always-mounted scale-overlay (that read as a panel
+            opening, and the .98 exhale let the view behind peek at the edges);
+            now a peer layer that crossfades like the others, still always
+            mounted so scroll position and the history feed survive the swap. */}
+        <div
+          inert={active !== "queue"}
+          onMouseDown={(e) => e.stopPropagation()}
+          className={`absolute inset-0 flex flex-col bg-surface pt-[52px] ${layer(active === "queue")}`}
+        >
           <QueuePanel np={np} connected={spotifyConnected} open={queueOpen} />
         </div>
       </div>
