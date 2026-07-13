@@ -35,7 +35,6 @@ import { extractAccent } from "./lib/palette";
 import * as posClock from "./lib/posClock";
 import { initReactive } from "./lib/reactive";
 import { DUR, EASE } from "./lib/tokens";
-import { HeartButton, useSpotifyNow } from "./Heart";
 import { LyricsPanel, lyricsKeyOf, useLyrics } from "./LyricsPanel";
 import { QueuePanel, useSpotifyStatus } from "./Queue";
 import { ProgressBar, Transport } from "./Transport";
@@ -116,15 +115,11 @@ function IdentityStack({
   artUrl,
   caption,
   centered,
-  heart,
 }: {
   np: NowPlaying;
   artUrl: string | null;
   caption: string | null;
   centered: boolean;
-  /** The like heart, seated trailing the title (null when the feature is
-   * hidden — see src/Heart.tsx on the endpoint block). */
-  heart: React.ReactNode;
 }) {
   const align = centered ? "items-center text-center" : "items-start text-left";
   return (
@@ -139,10 +134,7 @@ function IdentityStack({
       {/* Keyed per track: the metadata remounts with the title fade (fast
           and plain — a track change earns no choreography beyond this). */}
       <div key={`${np.title}|${np.artist}`} className="title-in mt-8 w-full min-w-0">
-        <div className={`flex min-w-0 items-center ${centered ? "justify-center" : ""}`}>
-          <p className="min-w-0 truncate text-[40px] font-medium leading-tight text-fg">{np.title}</p>
-          {heart}
-        </div>
+        <p className="truncate text-[40px] font-medium leading-tight text-fg">{np.title}</p>
         <p className="mt-1 truncate text-[22px] leading-7 text-muted">
           {np.artist}
           {np.album && <SeparatorDot />}
@@ -183,7 +175,6 @@ export default function Focus() {
   useEffect(() => initReactive(), []);
   const reducedMotion = useReducedMotion();
   const spotify = useSpotifyStatus();
-  const spotifyNow = useSpotifyNow();
   // The room's queue/history surface — same QueuePanel, this realm's own
   // open bit (the widget's queueOpen is another window's state).
   const [queueOpen, setQueueOpen] = useState(false);
@@ -203,14 +194,6 @@ export default function Focus() {
 
   const seekable = !!np?.can_seek;
   const playing = np?.status === "playing";
-  // Hidden entirely under the endpoint block (src/Heart.tsx) — a control
-  // that flips and reverts is worse than absence.
-  const heartLive =
-    np?.player === "spotify" && spotify.connected && !spotify.library_blocked;
-  const heart =
-    np && heartLive ? (
-      <HeartButton np={np} now={spotifyNow} library={spotify.library} className="ml-2" />
-    ) : null;
   const lyricsLive =
     lyrics.status === "synced" && np !== null && lyrics.key === lyricsKeyOf(np);
   const nothing = !np || np.player === "none";
@@ -296,7 +279,7 @@ export default function Focus() {
                   }}
                   className="absolute inset-0 flex items-start gap-[7%] px-[10%] pt-[7vh]"
                 >
-                  <IdentityStack np={np} artUrl={artUrl} caption={caption} centered={false} heart={heart} />
+                  <IdentityStack np={np} artUrl={artUrl} caption={caption} centered={false} />
                   <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col pb-4">
                     <LyricsPanel
                       lines={lyrics.lines}
@@ -319,7 +302,7 @@ export default function Focus() {
                   }}
                   className="absolute inset-0 flex items-start justify-center pt-[7vh]"
                 >
-                  <IdentityStack np={np} artUrl={artUrl} caption={caption} centered heart={heart} />
+                  <IdentityStack np={np} artUrl={artUrl} caption={caption} centered />
                 </motion.div>
               )}
             </AnimatePresence>

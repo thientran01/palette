@@ -73,24 +73,6 @@ export interface HistoryEntry {
  * Independent of which player is ACTIVE; the queue UI gates on both. */
 export interface SpotifyStatus {
   connected: boolean;
-  /** The persisted grant includes the library (like/unlike) scopes — false
-   * for tokens issued before the scopes were added, until a re-consent. */
-  library: boolean;
-  /** Spotify endpoint-blocks library writes for this app id (dev-mode 403
-   * despite valid scopes — verified live 2026-07-12). The heart HIDES on
-   * this; `library: false` shows it disabled with the reconnect answer. */
-  library_blocked: boolean;
-}
-
-/** The Spotify-side identity of what's playing now ("spotify-now" event +
- * spotify_now seed) — fed by the settled enrichment path, never polled.
- * Match it against the widget's own now-playing identity before trusting
- * `liked`: GSMTC and the Web API are separate streams. */
-export interface NowTrack {
-  uri: string;
-  title: string;
-  artist: string;
-  liked: boolean;
 }
 
 /** One track from the Spotify queue read. */

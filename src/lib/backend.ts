@@ -8,7 +8,6 @@ import {
   IN_TAURI,
   type HistoryEntry,
   type NowPlaying,
-  type NowTrack,
   type PresenceDebug,
   type PresenceState,
   type QueueTrack,
@@ -88,8 +87,6 @@ function mockJumpTo(i: number): void {
     mockUpNext.shift();
     mockUpNextListeners.forEach((cb) => cb([...mockUpNext]));
   }
-  // The heart follows the track like the real settled enrichment does.
-  mockNowChanged();
 }
 
 // ---- play history (history.rs seam) ----
@@ -140,19 +137,11 @@ if (!IN_TAURI) {
 
 /** `?spotify=off` forces the disconnected gate state in preview; the mock is
  * otherwise connected so the queue surface is iterable at plain `/`.
- * `?queue=empty` forces the no_playback answer. `?library=off` mimics a
- * pre-library-scope token (the heart's reconnect tooltip); `?like=fail`
- * makes every like write fail (the optimistic-revert path). */
+ * `?queue=empty` forces the no_playback answer. */
 const SPOTIFY_OFF =
   !IN_TAURI && new URLSearchParams(window.location.search).get("spotify") === "off";
 const QUEUE_EMPTY =
   !IN_TAURI && new URLSearchParams(window.location.search).get("queue") === "empty";
-const LIBRARY_OFF =
-  !IN_TAURI && new URLSearchParams(window.location.search).get("library") === "off";
-const LIBRARY_BLOCKED =
-  !IN_TAURI && new URLSearchParams(window.location.search).get("library") === "blocked";
-const LIKE_FAIL =
-  !IN_TAURI && new URLSearchParams(window.location.search).get("like") === "fail";
 /** `?similar=<status>` forces moreLikeThis to answer that status (no_data /
  * no_key / offline …) so every toast is preview-reachable. */
 const SIMILAR_FORCE = IN_TAURI
@@ -163,34 +152,12 @@ let mockSpotifyConnected = !SPOTIFY_OFF;
 const mockSpotifyListeners = new Set<(s: SpotifyStatus) => void>();
 
 function mockStatus(): SpotifyStatus {
-  return {
-    connected: mockSpotifyConnected,
-    library: mockSpotifyConnected && !LIBRARY_OFF,
-    // `?library=blocked` previews the endpoint-block state (heart hidden).
-    library_blocked: LIBRARY_BLOCKED,
-  };
+  return { connected: mockSpotifyConnected };
 }
 
 function pushMockSpotify(connected: boolean): void {
   mockSpotifyConnected = connected;
   mockSpotifyListeners.forEach((cb) => cb(mockStatus()));
-  mockNowChanged();
-}
-
-// ---- current-track cache ("spotify-now" seam) ----
-
-/** Liked-state store behind the mock heart — per-uri, session-scoped. */
-const mockLiked = new Set<string>();
-const mockNowListeners = new Set<(t: NowTrack | null) => void>();
-
-function mockNowTrack(): NowTrack | null {
-  if (!mockSpotifyConnected) return null;
-  const q = mockQueueTrack(MOCK_TRACKS[mockTrack]);
-  return { uri: q.uri, title: q.title, artist: q.artist, liked: mockLiked.has(q.uri) };
-}
-
-function mockNowChanged(): void {
-  mockNowListeners.forEach((cb) => cb(mockNowTrack()));
 }
 
 /** The palette window was just summoned (palette.rs show) — the webview
@@ -212,29 +179,6 @@ const MOCK_SEARCH_EXTRAS = [
   { title: "About Love", artist: "Red Velvet", album: "Perfect Velvet" },
   { title: "Euphoria", artist: "keshi", album: "Requiem" },
 ];
-
-/** The Spotify-side current track (uri + liked) — seed + event pairing.
- * Null until the first settled enrichment (or while disconnected). */
-export function onSpotifyNow(cb: (t: NowTrack | null) => void): () => void {
-  if (IN_TAURI) {
-    let gotEvent = false;
-    const un = listen<NowTrack | null>("spotify-now", (e) => {
-      gotEvent = true;
-      cb(e.payload);
-    });
-    void invoke<NowTrack | null>("spotify_now").then((t) => {
-      if (!gotEvent) cb(t);
-    });
-    return () => {
-      un.then((f) => f());
-    };
-  }
-  cb(mockNowTrack());
-  mockNowListeners.add(cb);
-  return () => {
-    mockNowListeners.delete(cb);
-  };
-}
 
 function mockQueueTrack(t: { title: string; artist: string; album: string }) {
   return {
@@ -863,19 +807,6 @@ export const commands = {
       return candidates.length ? `ok:${candidates.length}` : "no_data";
     }
     return invoke<string>("more_like_this", { title, artist });
-  },
-  /** Like/unlike a track (PUT/DELETE /me/tracks). "ok" | "disconnected" |
-   * "offline" — callers flip optimistically and revert on non-ok. */
-  async spotifySetLiked(uri: string, liked: boolean): Promise<string> {
-    if (!IN_TAURI) {
-      if (!mockSpotifyConnected) return "disconnected";
-      if (LIKE_FAIL) return "offline";
-      if (liked) mockLiked.add(uri);
-      else mockLiked.delete(uri);
-      mockNowChanged();
-      return "ok";
-    }
-    return invoke<string>("spotify_set_liked", { uri, liked });
   },
   /** Search-resolve a uri for a history row that was never enriched
    * (pre-enrichment entries, Apple Music listens). Null = no match. */

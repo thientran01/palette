@@ -15,7 +15,6 @@ import {
   type DockCorner,
 } from "./lib/backend";
 import { VOCAL_LEAD_MS } from "./lib/lrc";
-import { HeartButton, useSpotifyNow } from "./Heart";
 import { PlayPauseButton, ProgressBar, Transport, useProgressDom } from "./Transport";
 import { LyricsPanel, lyricsKeyOf, useLyrics, type LyricsState } from "./LyricsPanel";
 import { extractAccent } from "./lib/palette";
@@ -35,7 +34,6 @@ import { SeparatorDot, Waveform } from "./Waveform";
 import {
   IN_TAURI,
   type NowPlaying,
-  type NowTrack,
   type PresenceDebug,
   type PresenceState,
 } from "./types";
@@ -703,9 +701,6 @@ function ExpandedView({
   queueOpen,
   onCloseQueue,
   spotifyConnected,
-  spotifyNow,
-  spotifyLibrary,
-  heartLive,
 }: {
   np: NowPlaying;
   artUrl: string | null;
@@ -718,11 +713,6 @@ function ExpandedView({
   queueOpen: boolean;
   onCloseQueue: () => void;
   spotifyConnected: boolean;
-  spotifyNow: NowTrack | null;
-  spotifyLibrary: boolean;
-  /** Computed once in App: spotify session + connected + not endpoint-
-   * blocked — every heart seat keys off it. */
-  heartLive: boolean;
 }) {
   const reducedMotion = useReducedMotion();
   // Key-stamped gate: never render the new track's header over the old
@@ -835,14 +825,6 @@ function ExpandedView({
                     <span className="ml-1 flex shrink-0 items-center">
                       <Waveform size="md" trailing />
                     </span>
-                    {heartLive && (
-                      <HeartButton
-                        np={np}
-                        now={spotifyNow}
-                        library={spotifyLibrary}
-                        className="ml-auto pl-1"
-                      />
-                    )}
                   </div>
                   <TruncateTip text={np.artist} className="text-[13px] text-muted" />
                 </div>
@@ -869,22 +851,7 @@ function ExpandedView({
             >
               <Art url={artUrl} size={190} radiusPx={12} />
               <div className="min-w-0 self-stretch text-center">
-                {/* The heart is always in layout (opacity reveal) so its
-                    arrival never re-centers the title; the invisible spacer
-                    mirrors its box so the title's optical center stays on
-                    the artist line's (quick-review catch). */}
-                <div className="flex min-w-0 items-center justify-center">
-                  {heartLive && <span aria-hidden className="mr-0.5 w-[26px] shrink-0" />}
-                  <p className="min-w-0 truncate text-sm font-medium text-fg">{np.title}</p>
-                  {heartLive && (
-                    <HeartButton
-                      np={np}
-                      now={spotifyNow}
-                      library={spotifyLibrary}
-                      className="ml-0.5"
-                    />
-                  )}
-                </div>
+                <p className="truncate text-sm font-medium text-fg">{np.title}</p>
                 <p className="truncate text-xs text-muted">
                   {np.artist}
                   {np.album && <SeparatorDot />}
@@ -1148,12 +1115,6 @@ function App() {
   }, [nothing]);
   const spotify = useSpotifyStatus();
   const spotifyConnected = spotify.connected;
-  const spotifyNow = useSpotifyNow();
-  // The heart exists only for a connected Spotify session — the exact gate
-  // class every other Spotify action uses (AM listens can't be liked; a
-  // resolve-based like on another service would be dishonest).
-  const heartLive =
-    np?.player === "spotify" && spotifyConnected && !spotify.library_blocked;
   // Jump-intermediate suppression for the pill's announcement layer.
   const announceSuppressed = isAnnounceSuppressed(np);
   // Backend-initiated jumps (the queue-aware skip: transport next /
@@ -1492,14 +1453,6 @@ function App() {
                   <span className="ml-1 flex shrink-0 items-center">
                     <Waveform size="md" trailing />
                   </span>
-                  {heartLive && (
-                    <HeartButton
-                      np={np}
-                      now={spotifyNow}
-                      library={spotify.library}
-                      className="ml-auto pl-1"
-                    />
-                  )}
                 </div>
                 <p className="truncate text-xs leading-4 text-muted">
                   {np.artist}
@@ -1523,9 +1476,6 @@ function App() {
             queueOpen={queueOpen}
             onCloseQueue={() => setQueueOpen(false)}
             spotifyConnected={spotifyConnected}
-            spotifyNow={spotifyNow}
-            spotifyLibrary={spotify.library}
-            heartLive={heartLive}
           />
         )}
         </ModeContent>

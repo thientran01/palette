@@ -36,7 +36,7 @@ export const POPOVER_GAP = 12;
 // ---- data hooks ----
 
 export function useSpotifyStatus(): SpotifyStatus {
-  const [status, setStatus] = useState<SpotifyStatus>({ connected: false, library: false, library_blocked: false });
+  const [status, setStatus] = useState<SpotifyStatus>({ connected: false });
   useEffect(() => onSpotifyStatus(setStatus), []);
   return status;
 }
