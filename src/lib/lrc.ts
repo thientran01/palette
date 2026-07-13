@@ -48,6 +48,11 @@ export function parseLrc(lrc: string, durationMs: number): LyricLine[] {
   }
   lines.sort((a, b) => a.t - b.t);
   markers.sort((a, b) => a - b);
+  // Pathological-upload guard: the caller caps the OUTPUT at 600 rows, but
+  // synthesis cost is input-shaped (markers.find per line) — bound it here
+  // so a thousands-of-stamps file can't stall the main thread first.
+  lines.length = Math.min(lines.length, 600);
+  markers.length = Math.min(markers.length, 600);
   return withBreaks(lines, markers, durationMs);
 }
 
@@ -86,23 +91,28 @@ function withBreaks(lines: LyricLine[], markers: number[], durationMs: number): 
 /** Filled dots (0..BREAK_DOTS) for a break row at `positionMs`. The first
  * dot lights the moment the break starts (the countdown announces itself)
  * and each further dot at another fifth — the fifth lands at 80%, so the
- * full ladder has a beat on screen before the vocal returns. */
-export function breakDotsFilled(line: LyricLine, positionMs: number): number {
+ * full ladder has a beat on screen before the vocal returns. `leadMs` is
+ * the same VOCAL_LEAD table value currentLineIndex uses — threaded as a
+ * parameter so the dots and the row's `current` flag can never disagree
+ * (dot 1 lands exactly when the row goes current, the handoff exactly when
+ * it stops). */
+export function breakDotsFilled(line: LyricLine, positionMs: number, leadMs: number): number {
   if (line.end === undefined) return 0;
+  const p = positionMs + leadMs;
   const seg = (line.end - line.t) / BREAK_DOTS;
   if (seg <= 0) return BREAK_DOTS;
-  return Math.min(Math.max(Math.floor((positionMs - line.t) / seg) + 1, 0), BREAK_DOTS);
+  return Math.min(Math.max(Math.floor((p - line.t) / seg) + 1, 0), BREAK_DOTS);
 }
 
 /** Ms of 1x playback until the next dot fills, or null when all are lit.
  * Shares breakDotsFilled's math so the scheduler and the render can never
  * disagree about a breakpoint (the msUntilNextLine discipline). */
-export function msUntilNextDot(line: LyricLine, positionMs: number): number | null {
+export function msUntilNextDot(line: LyricLine, positionMs: number, leadMs: number): number | null {
   if (line.end === undefined) return null;
-  const filled = breakDotsFilled(line, positionMs);
+  const filled = breakDotsFilled(line, positionMs, leadMs);
   if (filled >= BREAK_DOTS) return null;
   const seg = (line.end - line.t) / BREAK_DOTS;
-  return Math.max(line.t + filled * seg - positionMs, 0);
+  return Math.max(line.t + filled * seg - leadMs - positionMs, 0);
 }
 
 /** The highlight leads the vocal by this much — SMTC positions lag what the

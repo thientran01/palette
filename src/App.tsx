@@ -111,18 +111,28 @@ function useLyricIndex(lines: LyricLine[], leadMs: number): number {
  * event (seek, pause, accepted push), so a seek into the middle of a break
  * catches the dots up instantly and a pause freezes them. Inactive rows
  * (not current) schedule nothing. */
-function useBreakDots(line: LyricLine, active: boolean): number {
-  const [filled, setFilled] = useState(0);
+function useBreakDots(line: LyricLine, leadMs: number, active: boolean): number {
+  // Lazy init like useLyricIndex — a row that mounts (or re-activates) mid-
+  // break must paint the right count on its first frame, not flash 0 until
+  // the post-paint effect corrects it.
+  const [filled, setFilled] = useState(() =>
+    active ? breakDotsFilled(line, posClock.now(), leadMs) : 0,
+  );
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      // Park at 0 so a LATER re-activation (a seek back into this break)
+      // can't flash the previous stint's stale count for a frame.
+      setFilled(0);
+      return;
+    }
     let timer: number | undefined;
     const sync = () => {
       window.clearTimeout(timer);
       timer = undefined;
       const pos = posClock.now();
-      setFilled(breakDotsFilled(line, pos)); // same value → React bails
+      setFilled(breakDotsFilled(line, pos, leadMs)); // same value → React bails
       if (!posClock.isPlaying()) return; // clock frozen — anchor event re-arms
-      const delay = msUntilNextDot(line, pos);
+      const delay = msUntilNextDot(line, pos, leadMs);
       if (delay === null) return; // all five lit — nothing left to schedule
       // Cap long waits and re-verify on fire, against timer throttling.
       timer = window.setTimeout(sync, Math.min(delay, 30_000));
@@ -133,7 +143,7 @@ function useBreakDots(line: LyricLine, active: boolean): number {
       unsubscribe();
       window.clearTimeout(timer);
     };
-  }, [line, active]);
+  }, [line, leadMs, active]);
   return active ? filled : 0;
 }
 
@@ -372,6 +382,7 @@ const BreakRow = memo(function BreakRow({
   index,
   current,
   seekable,
+  leadMs,
   cascadeDelayMs,
   anchor,
 }: {
@@ -379,10 +390,11 @@ const BreakRow = memo(function BreakRow({
   index: number;
   current: boolean;
   seekable: boolean;
+  leadMs: number;
   cascadeDelayMs: number;
   anchor: boolean;
 }) {
-  const filled = useBreakDots(line, current);
+  const filled = useBreakDots(line, leadMs, current);
   const Tag = seekable ? "button" : "div";
   return (
     <Tag
@@ -390,7 +402,10 @@ const BreakRow = memo(function BreakRow({
         ? {
             type: "button" as const,
             "data-line": index,
-            "aria-label": "Seek to instrumental break",
+            // Timestamped: a track can hold several break rows and AT
+            // browse mode exposes them all — identical labels would be
+            // indistinguishable (lyric rows differentiate by their text).
+            "aria-label": `Seek to instrumental break at ${fmt(line.t)}`,
             tabIndex: -1,
           }
         : // Nothing to read: dots are decoration; the row only speaks when
@@ -411,12 +426,17 @@ const BreakRow = memo(function BreakRow({
           // that's the one the shorthand names (the IconButton precedent).
           // A fill is instant at the breakpoint; the 220ms sweep + grow is
           // how "instant" stays smooth (the retint timing, EASE.out).
+          // Opacity floors: the CURRENT row's unlit dots carry state (which
+          // fifth you're in) — 75% keeps bg-muted above the 3:1 non-text
+          // contrast floor in BOTH themes (60% sat at ~3.1 dark / under it
+          // light). Non-current rows are inert placeholders and may recede
+          // like read lyric text, but 40% was near-invisible on light.
           className={`h-[6px] w-[6px] rounded-full [transition:background-color_220ms_var(--ease-out-tk),scale_220ms_var(--ease-out-tk),opacity_220ms_var(--ease-out-tk)] ${
             current && i < filled
               ? "scale-100 bg-accent opacity-100"
               : current
-                ? "scale-90 bg-muted opacity-60"
-                : "scale-90 bg-muted opacity-40"
+                ? "scale-90 bg-muted opacity-75"
+                : "scale-90 bg-muted opacity-50"
           }`}
         />
       ))}
@@ -567,6 +587,7 @@ function LyricsPanel({
               index={i}
               current={i === idx}
               seekable={seekable}
+              leadMs={leadMs}
               anchor={anchor}
               cascadeDelayMs={cascadeDelayMs}
             />
