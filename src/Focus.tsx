@@ -328,17 +328,20 @@ export default function Focus() {
               the swap (never remounts; the lastAlive crossfade hazard never
               applies). It runs the track-change announcement: the pill is
               hidden behind this takeover, so the horizon is the only
-              now-playing pulse on screen. */}
-          <div className="flex shrink-0 items-center justify-center">
+              now-playing pulse on screen. my-[3.5vh] gives the instrument
+              air on both sides — lyrics above and console below — so the
+              three bands read as deliberately spaced, not stacked (Thien,
+              2026-07-12). */}
+          <div className="my-[3.5vh] flex shrink-0 items-center justify-center">
             <Waveform size="room" announceKey={lyricsKeyOf(np) ?? undefined} />
           </div>
 
           {/* THE CONSOLE — persistent (a summoned takeover shows its
               required controls; the P3/P4 lesson is binding), sharing the
               instrument's exact width so they read as one machine. */}
-          <div className="mx-auto w-[1170px] max-w-[92vw] shrink-0 pb-12 pt-2">
+          <div className="mx-auto w-[1170px] max-w-[92vw] shrink-0 pb-[6vh] pt-[1vh]">
             <ProgressBar np={np} size="lg" />
-            <div className="mt-3 flex items-center justify-center">
+            <div className="mt-4 flex items-center justify-center">
               <Transport np={np} seekable={seekable} playing={playing} room />
             </div>
           </div>

@@ -140,9 +140,13 @@ const SCALE = {
     row: "px-6 py-3 text-[44px] leading-[1.27] tracking-[-0.01em]",
     marker: "h-9 w-[5px]",
     anchor: 0.46,
-    mask: "[mask-image:linear-gradient(transparent,black_120px,black_calc(100%-240px),transparent)]",
-    chipTop: "top-36",
-    chipBottom: "bottom-64",
+    // Deeper fade on both edges than the first cut (~half a row more each,
+    // compounding with the horizon's new margins): the room reads as fewer,
+    // calmer lines — "a sentence, not a page" — roughly one line trimmed
+    // top and bottom (Thien, 2026-07-12). The knob if it wants more/less.
+    mask: "[mask-image:linear-gradient(transparent,black_160px,black_calc(100%-280px),transparent)]",
+    chipTop: "top-44",
+    chipBottom: "bottom-72",
   },
 } as const satisfies Record<LyricsScale, unknown>;
 
@@ -276,6 +280,34 @@ export function LyricsPanel({
   const [anchored, setAnchored] = useState(false);
   useEffect(() => setAnchored(true), []);
 
+  // Head/tail scroll room so the FIRST and LAST lines can rise to the anchor
+  // band instead of jamming against the top/bottom frame with nothing past
+  // them (Thien, 2026-07-12 — focus mode pinned the opening/closing lines to
+  // the edges). Sized to the anchor: padTop lets the first line rest where
+  // every other current line does; padBottom lets the last line reach it. The
+  // offset clamp still forbids over-scroll, so the ends stop exactly at the
+  // anchor. Focus only — the compact expanded view (≈296px) is too short to
+  // spend ~46% of itself on lead-in; it keeps the tight 16px ends. Re-measured
+  // on resize (the fullscreen room can change monitors). */
+  const [pad, setPad] = useState<{ top: number; bottom: number }>({ top: 16, bottom: 16 });
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    if (scale !== "focus") {
+      setPad({ top: 16, bottom: 16 });
+      return;
+    }
+    const measure = () => {
+      const h = viewport.clientHeight;
+      const anchor = h * SCALE.focus.anchor;
+      setPad({ top: Math.round(anchor), bottom: Math.round(h - anchor) });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(viewport);
+    return () => ro.disconnect();
+  }, [scale]);
+
   const maxOffset = (): number => {
     const viewport = viewportRef.current;
     const list = listRef.current;
@@ -295,7 +327,7 @@ export function LyricsPanel({
     const raw = idx < 0 ? 0 : line.offsetTop + line.offsetHeight / 2 - anchor;
     setAutoOffset(Math.round(Math.min(Math.max(raw, 0), maxOffset())));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, lines, scale]);
+  }, [idx, lines, scale, pad.top, pad.bottom]);
 
   useEffect(() => () => window.clearTimeout(resumeTimer.current), []);
 
@@ -359,10 +391,10 @@ export function LyricsPanel({
           commands.seekAbs(Math.max(line.t - leadMs, 0));
           relatch(); // hand control back to auto-follow
         }}
-        className={`flex flex-col gap-1 py-4 will-change-transform ${
+        className={`flex flex-col gap-1 will-change-transform ${
           browsing || !anchored ? "" : "[transition:transform_220ms_var(--ease-in-out-tk)]"
         } ${entering ? "lyrics-entering" : ""}`}
-        style={{ transform: `translateY(${-offset}px)` }}
+        style={{ transform: `translateY(${-offset}px)`, paddingTop: pad.top, paddingBottom: pad.bottom }}
       >
         {lines.map((line, i) => (
           <LyricLineRow
