@@ -90,9 +90,9 @@ fn persist(inner: &Inner) {
     let Some(dir) = &inner.dir else { return };
     let p = Persisted { v: 1, fed: inner.fed.clone(), list: inner.list.clone() };
     if let Ok(json) = serde_json::to_string(&p) {
-        let _ = std::fs::create_dir_all(dir);
-        if let Err(e) = std::fs::write(store_path(dir), json) {
-            eprintln!("upnext: persist failed: {e}");
+        // Atomic replace: a crash mid-write must not blank the list to default.
+        if let Err(e) = crate::settings::write_atomic(&store_path(dir), json.as_bytes()) {
+            log::warn!("upnext: persist failed: {e}");
         }
     }
 }
@@ -104,7 +104,7 @@ fn emit_list(app: &AppHandle, list: &[QueueTrack]) {
 /// Load the persisted list. Setup-time.
 pub fn init(app: &AppHandle) {
     let Ok(dir) = app.path().app_data_dir() else {
-        eprintln!("upnext: app data dir unavailable — up-next disabled this run");
+        log::warn!("upnext: app data dir unavailable — up-next disabled this run");
         return;
     };
     let loaded = std::fs::read_to_string(store_path(&dir))
@@ -284,7 +284,7 @@ pub fn tick(app: &AppHandle, np: &NowPlaying) {
                 inner.fed = Some(front.uri);
                 persist(&inner);
             } else {
-                eprintln!("upnext: front changed mid-feed — {} leaked to Spotify's queue", front.uri);
+                log::warn!("upnext: front changed mid-feed — {} leaked to Spotify's queue", front.uri);
             }
         }
         upnext.feed_in_flight.store(false, Ordering::SeqCst);

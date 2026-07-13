@@ -23,6 +23,12 @@ tauri-plugin-window-state = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
+# Release logging: main.rs sets windows_subsystem="windows" (no console), so
+# stderr is discarded — panics and eprintln! diagnostics vanish. Route them to
+# a rotating file in the app log dir instead so a user who hits a crash or a
+# failed token refresh has something to send.
+tauri-plugin-log = "2"
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"

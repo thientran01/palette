@@ -396,7 +396,7 @@ pub fn spawn(app: AppHandle) {
             {
                 let mut last = presence.last.lock().unwrap_or_else(PoisonError::into_inner);
                 if *last != Some(state) {
-                    eprintln!(
+                    log::info!(
                         "presence: fullscreen={} concealed={} (fg={} rect={} quns={})",
                         state.fullscreen,
                         state.concealed,

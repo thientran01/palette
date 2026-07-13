@@ -125,7 +125,7 @@ fn open_loopback(
     // cpal panics INSIDE the audio callback on a type mismatch — degrade to
     // "no visuals" instead for the rare non-F32 shared-mode mix format.
     if config.sample_format() != cpal::SampleFormat::F32 {
-        eprintln!("audio loopback: unsupported sample format {:?}", config.sample_format());
+        log::warn!("audio loopback: unsupported sample format {:?}", config.sample_format());
         return None;
     }
     let sample_rate = config.sample_rate().0 as f32;
@@ -148,7 +148,7 @@ fn open_loopback(
                     ring.push_frame(mean);
                 }
             },
-            |e| eprintln!("audio loopback stream error: {e}"),
+            |e| log::warn!("audio loopback stream error: {e}"),
             None,
         )
         .ok()?;
@@ -279,7 +279,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                     active = Some((Capture::Process(cap, aumid), rate, ring));
                 } else if let Some((stream, rate)) = open_loopback(ring.clone(), frames.clone()) {
                     if !aumid.is_empty() {
-                        eprintln!("audio: no process-loopback join for {aumid:?} — device-mix fallback");
+                        log::warn!("audio: no process-loopback join for {aumid:?} — device-mix fallback");
                     }
                     last_upgrade = std::time::Instant::now();
                     active = Some((Capture::Device(stream), rate, ring));
@@ -329,7 +329,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                             last_progress = std::time::Instant::now();
                         }
                         if last_progress.elapsed() > Duration::from_secs(2) {
-                            eprintln!("audio loopback stalled — reopening against current default device");
+                            log::warn!("audio loopback stalled — reopening against current default device");
                             Act::Reopen
                         } else if last_upgrade.elapsed() > UPGRADE_RETRY {
                             last_upgrade = std::time::Instant::now();
@@ -351,7 +351,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                         continue;
                     }
                     Act::Demote(aumid) => {
-                        eprintln!("audio: process capture for {aumid:?} never delivered — device-mix fallback");
+                        log::warn!("audio: process capture for {aumid:?} never delivered — device-mix fallback");
                         demoted = Some(aumid);
                         active = None; // reopens demoted (Device) next iteration
                         continue;
@@ -376,7 +376,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                                     last_frames = frames.load(Ordering::Relaxed);
                                     last_progress = std::time::Instant::now();
                                 } else {
-                                    eprintln!("audio: process activation failed for {aumid:?} — staying on device mix");
+                                    log::warn!("audio: process activation failed for {aumid:?} — staying on device mix");
                                     demoted = Some(aumid);
                                 }
                             }

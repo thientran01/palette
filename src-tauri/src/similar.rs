@@ -40,7 +40,7 @@ pub async fn more_like_this(app: AppHandle, title: String, artist: String) -> St
     tauri::async_runtime::spawn_blocking(move || run(&app, &title, &artist))
         .await
         .unwrap_or_else(|e| {
-            eprintln!("more_like_this task panicked: {e}");
+            log::error!("more_like_this task panicked: {e}");
             IN_FLIGHT.store(false, Ordering::SeqCst);
             "offline".into()
         })
