@@ -1,11 +1,15 @@
 /*
  * Presence engine: senses ONE thing — settled fullscreen foreground
- * content — and takes ONE action: the courtesy conceal. Settled fullscreen
- * hides the native window via lib.rs's VisIntent/apply_visibility; the
- * episode ending restores it exactly as it was (manual intent always wins;
- * the tray "Hide on fullscreen" switch stops the action, sensing
- * continues). Input-idleness sensing and the behaviors that rode it were
- * removed 2026-07-11 — see CLAUDE.md's Presence paragraph.
+ * content — with two consumers acting on that same fact. The courtesy
+ * conceal: settled fullscreen hides the native window via lib.rs's
+ * VisIntent/apply_visibility; the episode ending restores it exactly as it
+ * was (manual intent always wins; the tray "Hide on fullscreen" switch
+ * stops the action, sensing continues). The fullscreen seat context: a
+ * separately-settled, WIDGET-MONITOR-scoped verdict feeds
+ * dock::set_fullscreen_context so the widget re-seats against the monitor
+ * rect for the episode (see dock.rs's module doc). Input-idleness sensing
+ * and the behaviors that rode it were removed 2026-07-11 — see CLAUDE.md's
+ * Presence paragraph.
  * docs/presence-signal-matrix.md is the source of truth for what Windows
  * reports — no behavior ships on an unmeasured signal.
  *

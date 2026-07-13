@@ -182,6 +182,16 @@ pub struct Dock {
     /// The remembered fullscreen seat (settings.json "fsSeat"). None →
     /// first episode defaults to the same corner against the monitor rect.
     fs_seat: Mutex<Option<FsSeat>>,
+    /// Serializes sync_seat end to end: it's reachable from the presence
+    /// tick AND from apply_visibility (hotkey/tray/any thread), and two
+    /// callers both past the want==seated check would double-capture
+    /// desktop_return — the second one reading a position the first
+    /// already moved (3-agent quick-review convergence, 2026-07-12).
+    seat_gate: Mutex<()>,
+    /// A "desktopReturn" persisted by a quit mid-episode, stashed by init
+    /// (logical px) for set_window_size to settle instead of the
+    /// window-state position — which IS the fullscreen seat in that case.
+    launch_pos: Mutex<Option<(f64, f64)>>,
 }
 
 impl Default for Dock {
@@ -197,6 +207,8 @@ impl Default for Dock {
             seated_fs: AtomicBool::new(false),
             desktop_return: Mutex::new(None),
             fs_seat: Mutex::new(None),
+            seat_gate: Mutex::new(()),
+            launch_pos: Mutex::new(None),
         }
     }
 }
@@ -549,16 +561,29 @@ fn settle_release(window: &WebviewWindow) {
     animate_to(window, (pos.x, pos.y), target);
 }
 
-/// Load the persisted fullscreen seat. Call once from setup.
+/// Load the persisted fullscreen seat, and consume any "desktopReturn"
+/// left by a quit mid-episode — window-state persisted the FULLSCREEN
+/// position then, and settling that as the launch position would silently
+/// replace a free desktop placement. Call once from setup (file IO belongs
+/// here, not in the sync set_window_size command — main-thread rule).
 pub fn init(app: &AppHandle) {
+    let dock = app.state::<Dock>();
     if let Some(seat) = crate::settings::get_value(app, "fsSeat")
         .as_ref()
         .and_then(FsSeat::from_json)
     {
-        *app.state::<Dock>()
-            .fs_seat
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(seat);
+        *dock.fs_seat.lock().unwrap_or_else(PoisonError::into_inner) = Some(seat);
+    }
+    if let Some(v) = crate::settings::get_value(app, "desktopReturn") {
+        if let (Some(x), Some(y)) = (
+            v.get("x").and_then(Value::as_f64),
+            v.get("y").and_then(Value::as_f64),
+        ) {
+            *dock.launch_pos.lock().unwrap_or_else(PoisonError::into_inner) = Some((x, y));
+        }
+        if !v.is_null() {
+            crate::settings::set_value(app, "desktopReturn", Value::Null);
+        }
     }
 }
 
@@ -582,6 +607,8 @@ pub fn set_fullscreen_context(app: &AppHandle, on: bool) {
 pub fn sync_seat(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else { return };
     let dock = app.state::<Dock>();
+    // One reconciler at a time — see the seat_gate field doc.
+    let _gate = dock.seat_gate.lock().unwrap_or_else(PoisonError::into_inner);
     let want = dock.want_fs.load(Ordering::SeqCst);
     if want == dock.seated_fs.load(Ordering::SeqCst) {
         return;
@@ -607,12 +634,25 @@ pub fn sync_seat(app: &AppHandle) {
             .desktop_return
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(((pos.x, pos.y), cur_corner));
+        // Mirror it to disk (logical px) for the quit-mid-episode case:
+        // window-state would persist the FULLSCREEN position as the launch
+        // position, silently replacing a free desktop placement — init +
+        // set_window_size consume this instead.
+        crate::settings::set_value(
+            app,
+            "desktopReturn",
+            json!({ "x": pos.x as f64 / scale, "y": pos.y as f64 / scale }),
+        );
         let Some(rect) = space_rect(&window, Space::Fullscreen) else { return };
         match *dock.fs_seat.lock().unwrap_or_else(PoisonError::into_inner) {
             Some(s) => {
                 let seat = corner_origin(s.corner, &rect, w, h, margin);
-                let x = seat.0 + (s.dx * scale).round() as i32;
-                let y = seat.1 + (s.dy * scale).round() as i32;
+                // saturating: dx/dy come from a hand-editable file — a huge
+                // value must clamp on-screen below, not overflow-panic here
+                // (the float→int cast saturates, but the ADD would panic in
+                // dev builds and kill the presence thread).
+                let x = seat.0.saturating_add((s.dx * scale).round() as i32);
+                let y = seat.1.saturating_add((s.dy * scale).round() as i32);
                 (s.corner, clamp_origin((x, y), &rect, w, h))
             }
             None => (cur_corner, corner_origin(cur_corner, &rect, w, h, margin)),
@@ -630,6 +670,8 @@ pub fn sync_seat(app: &AppHandle) {
             dock.seated_fs.store(false, Ordering::SeqCst);
             return; // nothing to restore (never actually seated)
         };
+        // The episode ended cleanly — the persisted copy has done its job.
+        crate::settings::set_value(app, "desktopReturn", Value::Null);
         (rcorner, clamp_origin((rx, ry), &rect, w, h))
     };
 
@@ -665,10 +707,21 @@ pub fn set_window_size(window: WebviewWindow, dock: State<Dock>, width: f64, hei
     let w = (width * scale).round() as i32;
     let h = (height * scale).round() as i32;
     let margin = (MARGIN_LOGICAL * scale).round() as i32;
-    let (corner, (x, y)) = match window.outer_position() {
+    // A quit mid-fullscreen-episode persisted the FULLSCREEN position as the
+    // window-state position; init stashed the true desktop seat — prefer it.
+    let launch_pos = dock
+        .launch_pos
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .map(|(x, y)| ((x * scale).round() as i32, (y * scale).round() as i32));
+    let restored = launch_pos.map(Ok).unwrap_or_else(|| {
+        window.outer_position().map(|p| (p.x, p.y)).map_err(|_| ())
+    });
+    let (corner, (x, y)) = match restored {
         Ok(pos) => {
-            let center = footprint_center(&window, (pos.x, pos.y), (w, h));
-            settle_target(center, (pos.x, pos.y), (w, h), &wa, scale)
+            let center = footprint_center(&window, pos, (w, h));
+            settle_target(center, pos, (w, h), &wa, scale)
         }
         Err(_) => (
             Corner::BottomRight,
