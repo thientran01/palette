@@ -462,9 +462,10 @@ export function LyricsPanel({
     return Math.max(list.scrollHeight - viewport.clientHeight, 0);
   };
 
-  // Anchor the current line 40% from the top via a compositor-friendly
-  // translate. Rounded — fractional offsets put text off the pixel grid.
-  useLayoutEffect(() => {
+  // Anchor the current line SCALE.anchor down the viewport via a
+  // compositor-friendly translate. Rounded — fractional offsets put text off
+  // the pixel grid.
+  const applyAnchor = () => {
     const viewport = viewportRef.current;
     const list = listRef.current;
     if (!viewport || !list) return;
@@ -473,8 +474,27 @@ export function LyricsPanel({
     const anchor = viewport.clientHeight * SCALE[scale].anchor;
     const raw = idx < 0 ? 0 : line.offsetTop + line.offsetHeight / 2 - anchor;
     setAutoOffset(Math.round(Math.min(Math.max(raw, 0), maxOffset())));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, lines, scale, pad.top, pad.bottom]);
+  };
+  const applyAnchorRef = useRef(applyAnchor);
+  applyAnchorRef.current = applyAnchor;
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => applyAnchorRef.current(), [idx, lines, scale, pad.top, pad.bottom]);
+
+  // Re-anchor on any list-height change too, not just line advance. A break
+  // row opens/closes over 260ms (grid-rows glide); anchoring only at the
+  // advance would measure that mid-animation — scrollHeight short by the
+  // break's height — and never recompute, stranding the break's dots
+  // off-screen for its whole duration (worst at the outro, where the break
+  // is the last row). The observer keeps autoOffset glued to the settling
+  // layout; manualOffset still wins the displayed offset while browsing.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const ro = new ResizeObserver(() => applyAnchorRef.current());
+    ro.observe(list);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => () => window.clearTimeout(resumeTimer.current), []);
 
