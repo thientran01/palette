@@ -508,14 +508,33 @@ export default function Prefs() {
   }, [capturing]);
 
   // ---- action handlers ----
+  // Persist the Last.fm key debounced, but flush the pending value on blur, on
+  // Test, and before close so a paste-then-close within the debounce window
+  // isn't lost (the window destroys on close — no time for a late timer).
   const lastfmDebounce = useRef<number | undefined>(undefined);
+  const lastfmPending = useRef<string | null>(null);
+  const flushLastfm = useCallback(() => {
+    if (lastfmPending.current === null) return;
+    window.clearTimeout(lastfmDebounce.current);
+    commands.setSetting("lastfm_api_key", lastfmPending.current);
+    lastfmPending.current = null;
+  }, []);
   const onLastfmInput = (v: string) => {
     setLastfmKey(v);
     setTestLabel("Test key");
+    lastfmPending.current = v;
     window.clearTimeout(lastfmDebounce.current);
-    lastfmDebounce.current = window.setTimeout(() => commands.setSetting("lastfm_api_key", v), 400);
+    lastfmDebounce.current = window.setTimeout(() => {
+      commands.setSetting("lastfm_api_key", v);
+      lastfmPending.current = null;
+    }, 400);
+  };
+  const closePrefs = () => {
+    flushLastfm();
+    commands.closePrefs();
   };
   const testKey = async () => {
+    flushLastfm();
     setTestLabel("Checking…");
     const r = await commands.testLastfmKey(lastfmKey);
     if (r === "ok") {
@@ -659,6 +678,7 @@ export default function Prefs() {
               <input
                 value={lastfmKey}
                 onChange={(e) => onLastfmInput(e.target.value)}
+                onBlur={flushLastfm}
                 placeholder="API key"
                 spellCheck={false}
                 autoComplete="off"
@@ -937,7 +957,7 @@ export default function Prefs() {
 
       {/* DETAIL */}
       <div className="prefs-scroll relative min-w-0 flex-1 overflow-y-auto">
-        <CloseX onClick={() => commands.closePrefs()} />
+        <CloseX onClick={closePrefs} />
         <div className="px-[30px] pb-10 pt-[26px]">{detail[section]}</div>
       </div>
 
