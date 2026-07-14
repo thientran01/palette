@@ -151,17 +151,20 @@ function barClass(phase: Phase, i: number, size: Size): string {
 /** Outside-in stagger for the settle collapse. Each dropped dot's fade is
  * delayed by how FAR IN it is from the outermost — normalized to the drop
  * beat (DROP_MS) so the whole sweep takes the same wall-clock no matter how
- * many bars a size has: outermost pair leads at 0, the d=2 pair lands a full
- * DROP_MS later (right as the "one" beat drops the inner d=1 pair), and the
- * dots in between fill the gap evenly. sm (5 bars, maxD 2) collapses to the
- * old two-beat feel — d=2 leads on "three", d=1 on "one"; md/lg/room fan the
- * former single-beat drop into a real cascade.
+ * many bars a size has: outermost pair leads at 0, the d=2 pair lands just
+ * under a full DROP_MS later (near the "one" beat that drops the inner d=1
+ * pair), and the dots in between fill the gap evenly. sm (5 bars, maxD 2)
+ * collapses to the old two-beat feel — d=2 leads on "three", d=1 on "one";
+ * md/lg/room fan the former single-beat drop into a real cascade.
  *
- * Only the hiding phases stagger, and only for the outer dots (d≥2, dropped
- * on "three"): "alive"/"dots" carry no delay (the rAF loop and the retraction
- * own those), the inner pair (d<2) needs none — the "one" beat IS its stagger,
- * and the bloom/announcement never drop outer dots at a size where this fires
- * (the announcement runs sm-only), so their timing is untouched. */
+ * Applied to the outer dots (d≥2, dropped on "three") in the hiding phases:
+ * "alive"/"dots" carry no delay (the rAF loop and the retraction own those)
+ * and the inner pair (d<2) needs none — the "one" beat IS its stagger. The
+ * CALLER additionally gates this to the SETTLE ladder (settlingRef): the
+ * announce/bloom ladders reuse these phase names on the faster BLOOM/
+ * ANNOUNCE_MS beats — and the announcement fires at room's 41 bars too
+ * (Focus.tsx), where a DROP_MS-normalized stagger would overrun their window —
+ * so those collapse plainly, matching their "glanced at, not watched" cadence. */
 function dropDelayMs(phase: Phase, i: number, size: Size): number {
   if (phase !== "three" && phase !== "one" && phase !== "rest") return 0;
   const n = BAR_BINS[size].length;
@@ -192,6 +195,13 @@ export function Waveform({
   const [phase, setPhase] = useState<Phase>(lastAlive ? "alive" : "rest");
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
+  // True only while the SETTLE ladder is choreographing — the gate for the
+  // outside-in drop stagger (dropDelayMs). The announce/bloom ladders reuse
+  // the same phase names on faster beats (and the announcement runs at room's
+  // 41 bars in focus mode, Focus.tsx), where a DROP_MS-normalized stagger
+  // would overrun their window — so they collapse plainly. Read in render;
+  // set imperatively before each phase change, so the render sees it.
+  const settlingRef = useRef(false);
   // Render-visible half of the announce ladder: while true the bars paint
   // muted, so clearing it at the final beat lets the existing 220ms
   // background-color transition BE the accent ignition (color lands last —
@@ -279,6 +289,9 @@ export function Waveform({
           setPhase("rest");
           return;
         }
+        // Arm the drop stagger: this is the watched settle, the one ladder
+        // that earns the outside-in cascade (dropDelayMs).
+        settlingRef.current = true;
         setPhase("dots");
         seqTimers.push(window.setTimeout(() => setPhase("three"), DOTS_MS));
         seqTimers.push(window.setTimeout(() => setPhase("one"), DOTS_MS + DROP_MS));
@@ -289,6 +302,7 @@ export function Waveform({
         seqTimers.push(
           window.setTimeout(() => {
             seqTimers.splice(0);
+            settlingRef.current = false;
             setPhase("rest");
           }, DOTS_MS + DROP_MS + DOTS_MS),
         );
@@ -349,6 +363,10 @@ export function Waveform({
     const unsub = subscribeBands((b) => {
       latest = b;
       if (b.level > WAKE_LEVEL) {
+        // Any wake abandons an in-flight settle (snap-back, or a bloom that
+        // reveals plainly) — disarm the drop stagger so a later announce/bloom
+        // collapse can't inherit a stale settle flag.
+        settlingRef.current = false;
         if (sleepTimer !== null) {
           window.clearTimeout(sleepTimer);
           sleepTimer = null;
@@ -478,9 +496,10 @@ export function Waveform({
         }`}
       >
         {bins.map((_, i) => {
-          // Per-bar collapse stagger (settle only). undefined at delay 0 so
-          // the alive/dots states carry no transition-delay at all.
-          const delay = dropDelayMs(phase, i, size);
+          // Per-bar collapse stagger — gated to the settle ladder (settlingRef;
+          // the announce/bloom collapse plainly). undefined at delay 0 so the
+          // alive/dots states carry no transition-delay at all.
+          const delay = settlingRef.current ? dropDelayMs(phase, i, size) : 0;
           return (
             <span
               key={i}
