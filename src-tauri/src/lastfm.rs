@@ -19,7 +19,7 @@ use std::time::Duration;
 use crate::spotify::urlenc;
 
 const TIMEOUT: Duration = Duration::from_secs(15);
-const UA: &str = "Pulse/0.1 (https://github.com/thientran01/pulse)";
+const UA: &str = "Palette/0.1 (https://github.com/thientran01/palette)";
 
 pub struct SimilarTrack {
     pub title: String,

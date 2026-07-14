@@ -52,7 +52,7 @@ pub async fn focus_open(app: AppHandle) {
         LABEL,
         WebviewUrl::App("index.html?window=focus".into()),
     )
-    .title("Pulse Focus")
+    .title("Palette Focus")
     .decorations(false)
     // UNLIKE the widget/palette (chromeless floating surfaces that skip the
     // taskbar), focus mode is a fullscreen view the user actively works in
