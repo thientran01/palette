@@ -20,7 +20,7 @@ import {
 import { chordById } from "./lib/chords";
 import { Keycaps } from "./Keycaps";
 import { IntroBubble } from "./IntroBubble";
-import { WidgetMenu } from "./WidgetMenu";
+import { WidgetMenu, WIDGET_MENU_W, WIDGET_MENU_H } from "./WidgetMenu";
 import { VOCAL_LEAD_MS } from "./lib/lrc";
 import { PlayPauseButton, ProgressBar, Transport, useProgressDom } from "./Transport";
 import { LyricsPanel, lyricsKeyOf, useLyrics, type LyricsState } from "./LyricsPanel";
@@ -1721,7 +1721,13 @@ function App() {
       {introOpen && (
         <IntroBubble
           corner={corner}
-          anchorPx={MODE_SIZES[mode][1] - SHELL_GUTTER_PX + 6 + POPOVER_GAP}
+          // Sit just off the shell's far edge — but clamp so the bubble stays
+          // fully on-screen in EXPANDED, where the shell fills the window and
+          // the raw offset (446) would push it off (a burned one-shot hint).
+          anchorPx={Math.min(
+            MODE_SIZES[mode][1] - SHELL_GUTTER_PX + 6 + POPOVER_GAP,
+            WINDOW_MAX[1] - 210,
+          )}
           searchChord={searchChord}
           showhideChord={showhideChord}
           onDismiss={() => setIntroOpen(false)}
@@ -1730,12 +1736,12 @@ function App() {
       {menu && (
         <WidgetMenu
           style={{
-            ...(corner.endsWith("right")
-              ? { right: WINDOW_MAX[0] - menu.x }
-              : { left: menu.x }),
-            ...(corner.startsWith("bottom")
-              ? { bottom: WINDOW_MAX[1] - menu.y }
-              : { top: menu.y }),
+            // Anchor at the cursor, clamped so the whole menu stays inside the
+            // fixed window at ANY corner — the cursor can sit far from the
+            // docked corner on a wide shell, where corner-derived growth alone
+            // would push the menu off the far window edge.
+            left: Math.max(4, Math.min(menu.x, WINDOW_MAX[0] - WIDGET_MENU_W - 4)),
+            top: Math.max(4, Math.min(menu.y, WINDOW_MAX[1] - WIDGET_MENU_H - 4)),
           }}
           spotifyConnected={spotifyConnected}
           showhideChord={showhideChord}

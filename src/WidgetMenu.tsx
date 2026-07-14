@@ -13,6 +13,11 @@ import type { CSSProperties } from "react";
 import { commands } from "./lib/backend";
 import { Keycaps } from "./Keycaps";
 
+/** Box dims (mirror the w-[204px] class + ~5 items) so App can clamp the
+ * cursor-anchored position to keep the whole menu inside the fixed window. */
+export const WIDGET_MENU_W = 204;
+export const WIDGET_MENU_H = 200;
+
 function Item({
   label,
   onClick,
@@ -27,6 +32,7 @@ function Item({
   return (
     <button
       type="button"
+      role="menuitem"
       onClick={onClick}
       className={`flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left text-[12.5px] [transition:background-color_var(--transition-duration-2)] hover:bg-fg/[0.08] ${
         muted ? "text-muted" : "text-fg"

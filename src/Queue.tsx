@@ -457,11 +457,21 @@ export function QueuePanel({
   const [hasKey, setHasKey] = useState(false);
   useEffect(() => {
     let alive = true;
-    void commands.lastfmHasKey().then((k) => {
-      if (alive) setHasKey(k);
-    });
+    void commands
+      .lastfmHasKey()
+      .then((k) => {
+        if (alive) setHasKey(k);
+      })
+      .catch(() => {}); // a rejection just leaves more-like-this hidden (safe default)
     const un = onSettingsChanged(({ key }) => {
-      if (key === "lastfm_api_key") void commands.lastfmHasKey().then(setHasKey);
+      if (key === "lastfm_api_key") {
+        void commands
+          .lastfmHasKey()
+          .then((k) => {
+            if (alive) setHasKey(k);
+          })
+          .catch(() => {});
+      }
     });
     return () => {
       alive = false;

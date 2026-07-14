@@ -49,7 +49,7 @@ export function IntroBubble({
       role="dialog"
       aria-label="Welcome to Palette"
       onMouseDown={(e) => e.stopPropagation()}
-      className="absolute z-40 w-[300px] rounded-xl border border-border/12 bg-surface p-4 shadow-xl shadow-black/50 [transition:opacity_140ms_var(--ease-out-tk)]"
+      className="absolute z-40 w-[300px] rounded-xl border border-border/12 bg-surface p-4 shadow-xl shadow-black/50 [transition:opacity_var(--transition-duration-2)_var(--ease-out-tk)]"
       style={pos}
     >
       <div className="mb-3 flex items-start gap-2">

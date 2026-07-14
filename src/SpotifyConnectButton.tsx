@@ -43,6 +43,11 @@ export function SpotifyConnectButton({
         if (s.connected) {
           setState("connected");
           setMsg(null);
+        } else {
+          // Revert a stale "Connected ✓" (disabled) if the session drops while
+          // this instance stays mounted — the un-gated bubble button; the gated
+          // ones unmount on connect. Leave a live "connecting" alone.
+          setState((prev) => (prev === "connected" ? "idle" : prev));
         }
       }),
     [],
@@ -78,7 +83,7 @@ export function SpotifyConnectButton({
         {text}
       </button>
       {state === "error" && msg && (
-        <span className="text-[11px]" style={{ color: "rgb(214,142,116)" }}>
+        <span aria-live="polite" className="text-[11px]" style={{ color: "rgb(214,142,116)" }}>
           {msg}
         </span>
       )}
