@@ -703,7 +703,7 @@ export default function Prefs() {
             </button>
           </div>
           <p className="mt-1.5 mb-5 text-[13px] text-muted">
-            Click a shortcut to rebind it. Global shortcuts work anywhere, even when Pulse is hidden.
+            Click a shortcut to rebind it. Global shortcuts work anywhere, even when Palette is hidden.
           </p>
           <div className="overflow-hidden rounded-xl border border-border/[0.08]">
             {hotkeys.map((h, i) => {
@@ -792,7 +792,7 @@ export default function Prefs() {
 
       playback: (
         <>
-          <SectionHeader title="Playback" desc="How Pulse behaves while music plays." />
+          <SectionHeader title="Playback" desc="How Palette behaves while music plays." />
           <Row
             label="Audio-reactive separator"
             desc="The waveform that pulses to the music. The only thing that moves on its own."
@@ -810,7 +810,7 @@ export default function Prefs() {
               ]}
             />
           </Row>
-          <Row label="Default launch mode" desc="The size Pulse opens at." last>
+          <Row label="Default launch mode" desc="The size Palette opens at." last>
             <Segmented
               value={launch}
               onPick={pickLaunch}
@@ -827,7 +827,7 @@ export default function Prefs() {
       general: (
         <>
           <SectionHeader title="General" desc="System behavior and startup." />
-          <Row label="Start at login" desc="Launch Pulse when you sign in.">
+          <Row label="Start at login" desc="Launch Palette when you sign in.">
             <Toggle on={startLogin} onClick={toggleStartLogin} label="Start at login" />
           </Row>
           <Row label="Hide on fullscreen" desc="Tuck away when another app goes fullscreen.">
@@ -841,11 +841,11 @@ export default function Prefs() {
 
       about: (
         <>
-          <SectionHeader title="About" desc="Pulse — a quiet now-playing companion." />
+          <SectionHeader title="About" desc="Palette — the now-playing player Windows should've had." />
           <Row label="Version" desc={`${version || "…"} · up to date`}>
             <Ghost onClick={checkUpdates}>Check for updates</Ghost>
           </Row>
-          <Row label="Source" desc="github.com/thientran01/pulse">
+          <Row label="Source" desc="github.com/thientran01/palette">
             <Ghost onClick={() => commands.openRepo()}>Open repo</Ghost>
           </Row>
           <Row label="License" desc="MIT" last>
@@ -856,7 +856,7 @@ export default function Prefs() {
 
       data: (
         <>
-          <SectionHeader title="Data" desc="Everything Pulse stores lives on your machine." />
+          <SectionHeader title="Data" desc="Everything Palette stores lives on your machine." />
           <Row label="Open logs" desc="Diagnostic output for troubleshooting.">
             <Ghost onClick={() => commands.openLogs()}>Open</Ghost>
           </Row>
@@ -952,7 +952,7 @@ export default function Prefs() {
           );
         })}
         <div className="flex-1" />
-        <p className="mx-2 text-[11px] tabular-nums text-fg/32">Pulse {version || "…"}</p>
+        <p className="mx-2 text-[11px] tabular-nums text-fg/32">Palette {version || "…"}</p>
       </div>
 
       {/* DETAIL */}

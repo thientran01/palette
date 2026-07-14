@@ -1,6 +1,6 @@
-# Pulse
+# Palette
 
-A Raycast/Linear-grade mini music player for Windows. Apple Music's own miniplayer minimizes on every click and feels dead — so Pulse is an always-on-top widget that never minimizes and controls whatever's playing.
+A Raycast/Linear-grade mini music player for Windows. Apple Music's own miniplayer minimizes on every click and feels dead — so Palette is an always-on-top widget that never minimizes and controls whatever's playing.
 
 It reads and controls any player that speaks the Windows system media API (GSMTC) — Apple Music, Spotify, browsers — with synced lyrics, album-art adaptive theming, audio-reactive visuals, and ±10s seek.
 
@@ -15,7 +15,7 @@ It reads and controls any player that speaks the Windows system media API (GSMTC
 - **Four-corner docking** with free placement — drag anywhere, a corner magnet snaps it home, and it stays out of the way
 - **Fullscreen focus-mode takeover** — a room-scale now-playing view with lyrics or the visualizer
 - **Summon search palette** (`Ctrl+Alt+S`) — search and play, queue, or resurface tracks from history
-- **Managed up-next queue + play history** — a Pulse-kept queue and a full log of everything it displayed
+- **Managed up-next queue + play history** — a Palette-kept queue and a full log of everything it displayed
 - **"More like this"** discovery from the current track
 - **Hide on fullscreen** — a courtesy conceal that ducks the widget out of games and fullscreen video, then restores it exactly
 - **Global hotkeys** for transport, seek, show/hide, and the palette
@@ -23,7 +23,7 @@ It reads and controls any player that speaks the Windows system media API (GSMTC
 
 ## Install
 
-Grab `Pulse_x.y.z_x64-setup.exe` from the [latest release](https://github.com/thientran01/pulse/releases/latest) and run it. Per-user install, no admin required. Pulse lives in the system tray; the widget docks to a corner of your screen and stays on top.
+Grab `Palette_x.y.z_x64-setup.exe` from the [latest release](https://github.com/thientran01/palette/releases/latest) and run it. Per-user install, no admin required. Palette lives in the system tray; the widget docks to a corner of your screen and stays on top.
 
 The installer is unsigned, so on first run Windows SmartScreen shows a **"Windows protected your PC"** dialog. To run it:
 
@@ -53,7 +53,7 @@ Show / Hide · Reset position · Start at login · Hide on fullscreen · Connect
 What each player actually honors over GSMTC is **measured, not assumed** — the results live in [docs/smtc-support-matrix.md](docs/smtc-support-matrix.md). The headlines:
 
 - **Spotify** supports seek natively over SMTC — ±10s lands in ~50ms, both directions.
-- **Apple Music** has no working programmatic seek path (SMTC seek is silently ignored, keyboard accelerators are swallowed, UIA value writes revert). Pulse ships AM with a display-only progress bar and the seek buttons gated off. Position and lyric sync still work.
+- **Apple Music** has no working programmatic seek path (SMTC seek is silently ignored, keyboard accelerators are swallowed, UIA value writes revert). Palette ships AM with a display-only progress bar and the seek buttons gated off. Position and lyric sync still work.
 
 ## Spotify & Last.fm (optional)
 

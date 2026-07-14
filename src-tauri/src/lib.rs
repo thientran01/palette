@@ -119,7 +119,7 @@ fn hotkey_defs() -> [HotkeyDef; 7] {
         },
         HotkeyDef {
             id: "showhide",
-            label: "Show / hide Pulse",
+            label: "Show / hide Palette",
             default_chord: HK_TOGGLE,
             action: toggle_widget,
         },
@@ -1040,7 +1040,7 @@ pub fn run() {
             // grab pulse.log to send (see the log plugin above). Seated next to
             // "Check for updates" — both are supportability affordances.
             let open_logs = MenuItem::with_id(app, "logs", "Open logs", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Pulse", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit Palette", true, None::<&str>)?;
             // Dev-only conceal test affordance: fullscreen apps are awkward
             // to summon on demand; this feeds the presence loop a synthetic
             // fullscreen verdict for 10s (hysteresis still applies).
@@ -1091,7 +1091,7 @@ pub fn run() {
             let update_item = update_check.clone();
             TrayIconBuilder::with_id("pulse-tray")
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Pulse")
+                .tooltip("Palette")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |app, event| match event.id.as_ref() {

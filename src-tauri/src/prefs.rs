@@ -55,7 +55,7 @@ pub fn open(app: &AppHandle, section: Option<String>) {
         None => "index.html?window=prefs".to_string(),
     };
     let result = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(url.into()))
-        .title("Pulse — Preferences")
+        .title("Palette — Preferences")
         .inner_size(W, H)
         // Frameless + opaque + a normal window (NOT the widget's transparent,
         // click-through, always-on-top model): it belongs in the taskbar and
@@ -209,5 +209,5 @@ pub async fn open_data_folder(app: AppHandle) {
 pub async fn open_repo(app: AppHandle) {
     let _ = app
         .opener()
-        .open_url("https://github.com/thientran01/pulse", None::<&str>);
+        .open_url("https://github.com/thientran01/palette", None::<&str>);
 }

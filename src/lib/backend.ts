@@ -557,7 +557,7 @@ const MOCK_HOTKEYS: HotkeyInfo[] = [
   { id: "seekfwd", label: "Seek forward", chord: "ctrl+alt+right", registered: false },
   { id: "next", label: "Next track", chord: "ctrl+alt+n", registered: true },
   { id: "prev", label: "Previous track", chord: "ctrl+alt+p", registered: true },
-  { id: "showhide", label: "Show / hide Pulse", chord: "ctrl+alt+m", registered: true },
+  { id: "showhide", label: "Show / hide Palette", chord: "ctrl+alt+m", registered: true },
   { id: "palette", label: "Summon palette", chord: "ctrl+alt+s", registered: true },
 ];
 
@@ -1053,7 +1053,7 @@ export const commands = {
   /** Open the source repo in the browser. */
   openRepo(): void {
     if (IN_TAURI) void invoke("open_repo");
-    else window.open("https://github.com/thientran01/pulse", "_blank", "noopener");
+    else window.open("https://github.com/thientran01/palette", "_blank", "noopener");
   },
   /** On-demand update check. "uptodate" | "dev" | "busy" | "failed" (an
    * installed update replaces the process and never returns). */

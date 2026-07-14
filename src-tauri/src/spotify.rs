@@ -47,7 +47,7 @@ const REDIRECT_PORT: u16 = 43117;
 /// scopes (verified live; the dev-mode blocking family). Don't re-add
 /// without re-verifying the endpoints answer.
 const SCOPES: &str = "user-read-playback-state user-modify-playback-state";
-const UA: &str = "Pulse/0.1 (https://github.com/thientran01/pulse)";
+const UA: &str = "Palette/0.1 (https://github.com/thientran01/palette)";
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// How long the loopback listener waits for the browser consent round-trip.
 const AUTH_DEADLINE: Duration = Duration::from_secs(300);
@@ -456,7 +456,7 @@ fn wait_for_callback(listener: &TcpListener, want_state: &str) -> Result<String,
                 respond(
                     &mut stream,
                     "200 OK",
-                    &consent_page("Pulse is connected — you can close this tab."),
+                    &consent_page("Palette is connected — you can close this tab."),
                 );
                 return code.ok_or_else(|| "callback carried no code".into());
             }
