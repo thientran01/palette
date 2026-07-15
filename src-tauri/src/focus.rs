@@ -109,8 +109,12 @@ pub async fn focus_close(app: AppHandle) {
     }
 }
 
-/// The Destroyed-event cleanup (called from lib.rs's window-event handler).
+/// The Destroyed-event cleanup (called from lib.rs's window-event handler,
+/// which runs on the main thread). Clear focus_open on the spot, but run the
+/// restoring apply_visibility OFF the main thread — it does emit_now → GSMTC
+/// `.get()`, which must never block the message pump (the Application-Hang
+/// class). See lib.rs defer_main_action.
 pub fn on_destroyed(app: &AppHandle) {
     app.state::<VisIntent>().focus_open.store(false, Ordering::Relaxed);
-    apply_visibility(app);
+    crate::defer_main_action(app, apply_visibility);
 }
