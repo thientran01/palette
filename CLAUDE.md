@@ -203,11 +203,19 @@ src-tauri/src/
                 intent. The media loop's `visible` and the audio capture
                 gate widen to main-OR-focus (main hides behind the
                 takeover; ungated, the player froze). Frontend:
-                src/Focus.tsx (skeleton — composition reserved for the
-                design panel), two views on the mic⇄note grammar (lyrics
-                at the LyricsPanel "focus" type scale / the
-                src/Visualizer.tsx room-scale instrument — NOT a fourth
-                Waveform size; one reactive surface per view holds).
+                src/Focus.tsx, two views, one reactive surface each: the
+                lyrics view (LyricsPanel "focus" type scale, identity
+                column vertically centered with an xl Waveform riding the
+                song block — the house grammar; a full-width horizon band
+                there read as a second timeline, recomposed 2026-07-14)
+                and the no-lyrics fallback (centered identity over the
+                room-size Waveform horizon, that view's hero). Every track
+                change exits through the fetch interlude (lyricsLive flips
+                false while lyrics re-key), so per-track state remounts and
+                the crossfade + title-in ARE the change choreography; the
+                Waveform announcement fires only on a surface mounted
+                across the change (the fallback horizon,
+                instrumental→instrumental).
                 This is the removed P3's want with the correct trigger:
                 invoked, never guessed
   audio.rs      audio capture → FFT → smoothed auto-gained band energies at
