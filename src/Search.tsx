@@ -400,7 +400,7 @@ export default function Search() {
           {!spotify.connected ? (
             <div className="flex flex-col items-start gap-1.5 px-2.5 py-2.5">
               <SpotifyConnectButton />
-              <p className="m-0 text-[12px] text-muted/70">Connect Spotify to search and play.</p>
+              <p className="m-0 text-[12px] text-muted/85">Connect Spotify to search and play.</p>
             </div>
           ) : offline ? (
             <p className="m-0 px-2.5 py-2.5 text-[13px] text-muted">Spotify unreachable</p>

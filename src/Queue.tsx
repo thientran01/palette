@@ -816,7 +816,7 @@ export function QueuePanel({
       {!connected ? (
         <div className="flex flex-col items-start gap-1 px-2 pb-1.5 pt-0.5">
           <SpotifyConnectButton />
-          <p className="m-0 text-[11px] text-muted/70">Up next &amp; playback need Spotify.</p>
+          <p className="m-0 text-[11px] text-muted/85">Up next &amp; playback need Spotify.</p>
         </div>
       ) : gateProse ? (
         <p className="m-0 px-2 pb-1 text-xs text-muted">{gateProse}</p>
