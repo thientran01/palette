@@ -192,7 +192,13 @@ pub(crate) fn register_all(app: &AppHandle) {
         let action = def.action;
         let result = gs.on_shortcut(chord.as_str(), move |app, _s, event| {
             if event.state() == ShortcutState::Pressed {
-                action(app);
+                // Hotkey dispatch runs on the MAIN/STA thread (the plugin's
+                // WM_HOTKEY WndProc). The transport actions block on GSMTC
+                // `.get()`, and showhide → apply_visibility → emit_now does too;
+                // running them inline froze the message pump whenever a media
+                // player was slow to answer, which Windows reports as an
+                // "Application Hang". Defer off-main.
+                defer_main_action(app, action);
             }
         });
         let registered = result.is_ok();
@@ -412,6 +418,68 @@ pub(crate) fn emit_now(app: &AppHandle) -> media::NowPlaying {
         *last = Some(stamped.now);
     }
     np
+}
+
+// ── Main-thread liveness ─────────────────────────────────────────────────
+// Every historical "Application Hang" in this app was a blocking call landing
+// on the main/STA thread and freezing the Win32 message pump — GSMTC `.get()`
+// reached from a hotkey/tray action (which dispatch ON the main thread), or a
+// lock / cross-thread window op. Two guards live here:
+//   1. defer_main_action — runs those actions OFF the main thread, the same
+//      off-main discipline the async transport commands and the single-instance
+//      handler already use.
+//   2. spawn_main_thread_watchdog — logs a UI-pump stall BEFORE Windows
+//      force-closes, so any future regression names itself in pulse.log instead
+//      of vanishing silently (a hang bypasses the panic hook — nothing is
+//      logged otherwise).
+
+static MAIN_TICK_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Run a main-window / GSMTC action OFF the main/STA thread. Hotkey dispatch
+/// (the plugin's WM_HOTKEY WndProc) and tray menu events run on the main
+/// thread; the actions they trigger do blocking WinRT `.get()` (transport) and
+/// apply_visibility → emit_now, which froze the message pump and produced an
+/// "Application Hang" whenever a media player was slow to answer. spawn_blocking
+/// (the dedicated blocking pool) because the work is synchronous blocking WinRT
+/// — a spammed hotkey must not starve the cooperative async workers.
+pub(crate) fn defer_main_action(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || f(&app));
+}
+
+/// Watch the main/UI thread's liveness. Queues a heartbeat onto the event loop
+/// each second (a non-blocking UserEvent); a stalled pump can't run it, so the
+/// tick goes stale and we log the stall + its duration before Windows reports
+/// the hang. The `.run()` closure also bumps the tick, so real events keep it
+/// fresh when idle.
+fn spawn_main_thread_watchdog(app: AppHandle) {
+    MAIN_TICK_MS.store(now_ms(), Ordering::Relaxed);
+    std::thread::spawn(move || {
+        let mut warned = false;
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let _ = app.run_on_main_thread(|| {
+                MAIN_TICK_MS.store(now_ms(), Ordering::Relaxed);
+            });
+            let stalled = now_ms().saturating_sub(MAIN_TICK_MS.load(Ordering::Relaxed));
+            if stalled >= 4000 {
+                if !warned {
+                    log::error!(
+                        "main-thread watchdog: UI pump stalled {stalled}ms — a blocking call is on the main/STA thread (GSMTC .get, a lock, or a cross-thread window op); Windows reports this as an Application Hang."
+                    );
+                    warned = true;
+                }
+            } else {
+                warned = false;
+            }
+        }
+    });
 }
 
 /// Visibility INTENT — the single owner of WHY the MAIN window is shown or
@@ -1095,8 +1163,12 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "toggle" => toggle_widget(app),
-                    "reset" => dock::reset_position(app),
+                    // toggle/reset/companion reach apply_visibility → emit_now
+                    // (GSMTC) and sync_seat; on_menu_event runs on the main
+                    // thread, so run them OFF it (see defer_main_action) — this
+                    // is what kept the tray from freezing the pump.
+                    "toggle" => defer_main_action(app, toggle_widget),
+                    "reset" => defer_main_action(app, dock::reset_position),
                     "prefs" => prefs::open(app, None),
                     "shortcuts" => prefs::open(app, Some("hotkeys".to_string())),
                     // Toggle from the registry's actual state, through the
@@ -1106,10 +1178,10 @@ pub fn run() {
                         let on = !app.autolaunch().is_enabled().unwrap_or(false);
                         set_autostart(app, on);
                     }
-                    "companion" => {
+                    "companion" => defer_main_action(app, |app| {
                         let on = !app.state::<VisIntent>().companion.load(Ordering::Relaxed);
                         set_companion(app, on);
-                    }
+                    }),
                     "spotify" => {
                         if spotify::connected(app) {
                             spotify::disconnect(app);
@@ -1178,6 +1250,11 @@ pub fn run() {
             // Presence engine (P0: sense-only) → "presence" events. Keeps
             // sensing while the widget is hidden — that's the point.
             presence::spawn(app.handle().clone());
+
+            // Main-thread liveness watchdog: logs a UI-pump stall before Windows
+            // force-closes it (the "Application Hang" class), so any future
+            // regression is diagnosable from pulse.log instead of vanishing.
+            spawn_main_thread_watchdog(app.handle().clone());
 
             // Audio-reactive capture switch: on ONLY while visible AND playing
             // (plan M4 — a hidden or paused widget does zero audio work).
@@ -1299,6 +1376,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| {
+            // Main-thread heartbeat (see spawn_main_thread_watchdog): every
+            // RunEvent proves the pump is alive, so an idle app never trips the
+            // stall watchdog.
+            MAIN_TICK_MS.store(now_ms(), Ordering::Relaxed);
             // Quit mid-song still logs the listen — the tracker's in-flight
             // candidate finalizes on the way out.
             if let tauri::RunEvent::Exit = event {
