@@ -1,6 +1,6 @@
-# Pulse
+# Palette
 
-A Raycast/Linear-grade mini music player for Windows. Apple Music's own miniplayer minimizes on every click and feels dead — so Pulse is an always-on-top widget that never minimizes and controls whatever's playing.
+A Raycast/Linear-grade mini music player for Windows. Apple Music's own miniplayer minimizes on every click and feels dead — so Palette is an always-on-top widget that never minimizes and controls whatever's playing.
 
 It reads and controls any player that speaks the Windows system media API (GSMTC) — Apple Music, Spotify, browsers — with synced lyrics, album-art adaptive theming, audio-reactive visuals, and ±10s seek.
 
@@ -14,16 +14,16 @@ It reads and controls any player that speaks the Windows system media API (GSMTC
 - **±10s seek** where the player supports it (Spotify natively; see player support below)
 - **Four-corner docking** with free placement — drag anywhere, a corner magnet snaps it home, and it stays out of the way
 - **Fullscreen focus-mode takeover** — a room-scale now-playing view with lyrics or the visualizer
-- **Summon search palette** (`Ctrl+Alt+S`) — search and play, queue, or resurface tracks from history
-- **Managed up-next queue + play history** — a Pulse-kept queue and a full log of everything it displayed
+- **Search** (`Ctrl+Alt+S`) — search and play, queue, or resurface tracks from history
+- **Managed up-next queue + play history** — a Palette-kept queue and a full log of everything it displayed
 - **"More like this"** discovery from the current track
 - **Hide on fullscreen** — a courtesy conceal that ducks the widget out of games and fullscreen video, then restores it exactly
-- **Global hotkeys** for transport, seek, show/hide, and the palette
+- **Global hotkeys** for transport, seek, show/hide, and search
 - **Self-updating installer** — installed copies check for updates at launch and update themselves
 
 ## Install
 
-Grab `Pulse_x.y.z_x64-setup.exe` from the [latest release](https://github.com/thientran01/pulse/releases/latest) and run it. Per-user install, no admin required. Pulse lives in the system tray; the widget docks to a corner of your screen and stays on top.
+Grab `Palette_x.y.z_x64-setup.exe` from the [latest release](https://github.com/thientran01/palette/releases/latest) and run it. Per-user install, no admin required. Palette lives in the system tray; the widget docks to a corner of your screen and stays on top.
 
 The installer is unsigned, so on first run Windows SmartScreen shows a **"Windows protected your PC"** dialog. To run it:
 
@@ -40,7 +40,7 @@ That's a one-time prompt — SmartScreen won't warn again once the app is instal
 | `Ctrl+Alt+←` / `Ctrl+Alt+→` | Seek −10s / +10s |
 | `Ctrl+Alt+N` / `Ctrl+Alt+P` | Next / previous track |
 | `Ctrl+Alt+M` | Show / hide the widget |
-| `Ctrl+Alt+S` | Summon the search palette |
+| `Ctrl+Alt+S` | Summon search |
 
 Transport commands route to whatever Windows considers the current media session — which it re-points to whichever app played most recently.
 
@@ -53,7 +53,7 @@ Show / Hide · Reset position · Start at login · Hide on fullscreen · Connect
 What each player actually honors over GSMTC is **measured, not assumed** — the results live in [docs/smtc-support-matrix.md](docs/smtc-support-matrix.md). The headlines:
 
 - **Spotify** supports seek natively over SMTC — ±10s lands in ~50ms, both directions.
-- **Apple Music** has no working programmatic seek path (SMTC seek is silently ignored, keyboard accelerators are swallowed, UIA value writes revert). Pulse ships AM with a display-only progress bar and the seek buttons gated off. Position and lyric sync still work.
+- **Apple Music** has no working programmatic seek path (SMTC seek is silently ignored, keyboard accelerators are swallowed, UIA value writes revert). Palette ships AM with a display-only progress bar and the seek buttons gated off. Position and lyric sync still work.
 
 ## Spotify & Last.fm (optional)
 
@@ -61,7 +61,7 @@ The core widget works for **everyone, with zero setup** — now-playing, play/pa
 
 A few power features are Spotify-powered and opt-in. Connect Spotify from the tray to unlock:
 
-- the palette's play-now and queue actions,
+- Search's play-now and queue actions,
 - the managed up-next queue,
 - "more like this" discovery,
 - play-now from history.

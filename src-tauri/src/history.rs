@@ -394,7 +394,7 @@ impl Inner {
         // Fill-to-limit, newest→oldest: skip non-music rows and keep scanning
         // rather than taking a fixed window, so a page short of `limit` means
         // "reached the start" — the exhausted signal both consumers rely on
-        // (Palette RESURFACE scan, Queue loadMore). Deliberately uncapped: the
+        // (Search RESURFACE scan, Queue loadMore). Deliberately uncapped: the
         // cursor advances past the oldest RETURNED row each loadMore, so rows
         // above it are never re-read — total work is O(index) across a full
         // scroll, not per-call. A scan cap would be wrong here: returning
@@ -421,7 +421,7 @@ impl Inner {
     }
 }
 
-/// Music gate for the READ surfaces (palette + queue). Conservative: only a
+/// Music gate for the READ surfaces (search + queue). Conservative: only a
 /// POSITIVE video/image kind is dropped, so a music app that mislabels its
 /// PlaybackType as Unknown is never lost. "" is the pre-feature legacy row
 /// (no media_kind persisted) — those fall back to the player bucket, which
@@ -456,6 +456,32 @@ pub async fn history_page(
     limit: u32,
 ) -> Result<Vec<HistoryEntry>, ()> {
     Ok(lock(&tracker).page(before_started_at_ms, (limit as usize).min(200)))
+}
+
+/// Wipe all play history: the JSONL log, the thumbnail cache, and the
+/// in-memory index — and drop any in-flight candidate so it can't re-append
+/// the track the user just erased. Non-destructive to anything else in
+/// app-data (settings, tokens, up-next). Emits "history-cleared" so live feed
+/// surfaces (queue/search) can reset. Returns false only if app-data was
+/// never resolved (history disabled this run).
+#[tauri::command]
+pub async fn clear_history(app: AppHandle) -> bool {
+    let tracker = app.state::<Tracker>();
+    let dir = {
+        let mut inner = lock(&tracker);
+        inner.candidate = None;
+        inner.index.clear();
+        inner.dir.clone()
+    };
+    let Some(dir) = dir else {
+        return false;
+    };
+    let _ = std::fs::remove_file(log_path(&dir));
+    if let Some(td) = thumbs_dir(&app) {
+        let _ = std::fs::remove_dir_all(&td);
+    }
+    let _ = app.emit("history-cleared", ());
+    true
 }
 
 // ---- thumbs: a bounded disk cache of ~96px covers keyed by the identity

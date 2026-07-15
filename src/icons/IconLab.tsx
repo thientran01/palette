@@ -203,7 +203,7 @@ export function IconLab() {
     <main className="min-h-screen bg-surface p-8 text-fg">
       <div className="flex max-w-3xl flex-col gap-10">
         <header>
-          <h1 className="text-lg font-medium">Pulse icon lab</h1>
+          <h1 className="text-lg font-medium">Palette icon lab</h1>
           <p className="text-xs text-muted">
             3 strokes × 2 cubics per glyph — any icon morphs into any other.
           </p>

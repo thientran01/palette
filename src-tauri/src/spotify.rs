@@ -47,7 +47,7 @@ const REDIRECT_PORT: u16 = 43117;
 /// scopes (verified live; the dev-mode blocking family). Don't re-add
 /// without re-verifying the endpoints answer.
 const SCOPES: &str = "user-read-playback-state user-modify-playback-state";
-const UA: &str = "Pulse/0.1 (https://github.com/thientran01/pulse)";
+const UA: &str = "Palette/0.1 (https://github.com/thientran01/palette)";
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// How long the loopback listener waits for the browser consent round-trip.
 const AUTH_DEADLINE: Duration = Duration::from_secs(300);
@@ -319,6 +319,15 @@ pub fn start_connect(app: &AppHandle) {
             Ok(()) => emit_status(&app),
             Err(msg) => {
                 log::warn!("spotify connect failed: {msg}");
+                // Surface the failure IN-APP too (not just the tray label):
+                // the prefs Connectors card and any gate point listen for
+                // this. A user-canceled consent isn't an error to alarm over.
+                let user_msg = if msg.starts_with("consent denied") {
+                    "Connection canceled."
+                } else {
+                    "Couldn't connect to Spotify — please try again."
+                };
+                let _ = app.emit("spotify-auth-error", serde_json::json!({ "message": user_msg }));
                 narrate(&app, "Spotify connect failed — retry");
             }
         }
@@ -447,7 +456,7 @@ fn wait_for_callback(listener: &TcpListener, want_state: &str) -> Result<String,
                 respond(
                     &mut stream,
                     "200 OK",
-                    &consent_page("Pulse is connected — you can close this tab."),
+                    &consent_page("Palette is connected — you can close this tab."),
                 );
                 return code.ok_or_else(|| "callback carried no code".into());
             }
@@ -844,7 +853,7 @@ pub fn play_now(app: &AppHandle, uri: &str) -> &'static str {
 /// Start playback of `uri` from SILENCE. play_now's never-PUT-play-uris rule
 /// exists to protect a live playlist context — from no_playback there is no
 /// context to kill, and the bare-uris PUT on the best available device is
-/// exactly right (the palette's headline case: summon, type, play, with
+/// exactly right (the search window's headline case: summon, type, play, with
 /// nothing running). "ok" | "no_device" | "disconnected" | "offline".
 fn start_playback(app: &AppHandle, uri: &str) -> &'static str {
     let devices = match api_call(app, "GET", "https://api.spotify.com/v1/me/player/devices") {
@@ -898,7 +907,7 @@ fn jump(app: &AppHandle, target: &str) -> &'static str {
     match q.status.as_str() {
         "ok" => {}
         // Nothing playing = nothing to jump within — start from silence
-        // instead (see start_playback; this is the palette's core promise).
+        // instead (see start_playback; this is the search window's core promise).
         "no_playback" => return start_playback(app, target),
         "disconnected" => return "disconnected",
         _ => return "offline",
@@ -933,7 +942,7 @@ fn jump(app: &AppHandle, target: &str) -> &'static str {
         };
 
     // Arm the pill's announcement suppression in EVERY realm before skipping.
-    // The queue UI arms its own realm frontend-side, but a palette-initiated
+    // The queue UI arms its own realm frontend-side, but a search-initiated
     // play runs in a different webview — the pill's realm only hears about
     // it through this event (same payload as upnext's queue-aware skip).
     let _ = app.emit(
@@ -1043,7 +1052,7 @@ pub fn enrich_now(app: &AppHandle) {
     });
 }
 
-/// Raw ranked track search — the palette's list and the fielded resolvers'
+/// Raw ranked track search — the search window's list and the fielded resolvers'
 /// substrate. Ok(empty) = the API answered with no hits.
 pub fn search_tracks(
     app: &AppHandle,
@@ -1119,6 +1128,26 @@ pub async fn spotify_status(app: AppHandle) -> SpotifyStatus {
     SpotifyStatus { connected: connected(&app) }
 }
 
+/// The connected account's display name (prefs "Connected as {name}"), via a
+/// GET /me. Falls back to the account id, then None. Blocking HTTP on the
+/// dedicated pool. Never destroys tokens (api_call's own 401 path handles a
+/// dead session).
+#[tauri::command]
+pub async fn spotify_display_name(app: AppHandle) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        match api_call(&app, "GET", "https://api.spotify.com/v1/me") {
+            Ok(Some(v)) => v["display_name"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .or_else(|| v["id"].as_str())
+                .map(String::from),
+            _ => None,
+        }
+    })
+    .await
+    .unwrap_or(None)
+}
+
 #[tauri::command]
 pub async fn spotify_disconnect(app: AppHandle) {
     disconnect(&app);
@@ -1158,7 +1187,7 @@ pub struct SearchResult {
     pub tracks: Vec<QueueTrack>,
 }
 
-/// Free-text track search for the palette. Ok + empty list = a real "no
+/// Free-text track search for the search window. Ok + empty list = a real "no
 /// hits" answer.
 #[tauri::command]
 pub async fn spotify_search(app: AppHandle, query: String, limit: Option<u32>) -> SearchResult {

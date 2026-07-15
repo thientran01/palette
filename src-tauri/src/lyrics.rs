@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-const UA: &str = "Pulse/0.1.0 (https://github.com/thientran01/pulse)";
+const UA: &str = "Palette/0.1.0 (https://github.com/thientran01/palette)";
 // LRCLIB normally answers in <1s but degrades to 7-9s first-byte under load
 // (measured 2026-07-07) — a 5s timeout lost every race on a cold cache. The
 // fetch runs off the main thread and the UI shows the big-art fallback while
@@ -44,11 +44,24 @@ struct Offline;
 pub struct Lyrics {
     pub synced: Option<String>,
     pub plain: Option<String>,
+    /// True only when the fetch bailed on a transport failure (offline, DNS,
+    /// timeout) rather than a served "no lyrics" answer — lets the caption
+    /// distinguish "unavailable — offline" from "No synced lyrics". Defaults
+    /// false (served miss / cache hit / success); cache files predating this
+    /// field deserialize to false, which is correct — a cached record is
+    /// never an offline result.
+    #[serde(default)]
+    pub offline: bool,
 }
 
 impl Lyrics {
     fn is_empty(&self) -> bool {
         self.synced.is_none() && self.plain.is_none()
+    }
+
+    /// The transport-failure sentinel returned to the frontend (never cached).
+    fn offline() -> Self {
+        Self { offline: true, ..Self::default() }
     }
 }
 
@@ -66,6 +79,7 @@ impl LrclibRecord {
         Lyrics {
             synced: self.synced_lyrics.filter(|s| !s.trim().is_empty()),
             plain: self.plain_lyrics.filter(|s| !s.trim().is_empty()),
+            offline: false,
         }
     }
 
@@ -321,7 +335,10 @@ pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_
     };
     let record = match lookup() {
         Ok(r) => r,
-        Err(Offline) => return Lyrics::default(),
+        // A transport failure is NOT a "no lyrics" verdict — flag it so the
+        // caption can say "unavailable — offline" instead of "No synced
+        // lyrics", and (as before) don't record a session miss.
+        Err(Offline) => return Lyrics::offline(),
     };
 
     let lyrics = record.map(LrclibRecord::into_lyrics).unwrap_or_default();

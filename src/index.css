@@ -29,7 +29,10 @@
 }
 
 @theme {
-  --font-sans: "Inter Variable", "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  /* Fallbacks fire only if Inter Variable fails to load. "Segoe UI" (present on
+     Win10+11, always a normal weight) — NOT "Segoe UI Variable Display", whose
+     large-optical-size cut renders thin/spindly at UI text sizes. */
+  --font-sans: "Inter Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --color-*: initial;
   --color-surface: rgb(var(--surface));
   --color-surface-2: rgb(var(--surface-2));
@@ -82,12 +85,12 @@ body {
   outline-offset: 2px;
 }
 
-/* The palette's search input is the pane's ONLY focusable element and is
+/* The search window's input is the pane's ONLY focusable element and is
  * focused programmatically on every summon — the global ring (built for
  * 28px buttons) pinned on it permanently as a square orange bar (Thien's
  * live catch, twice). The caret is that input's focus signal. Same
  * specificity as the global rule, later in the cascade — wins outright. */
-.palette-search:focus-visible {
+.search-input:focus-visible {
   outline: none;
 }
 

@@ -39,5 +39,5 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Pulse ${{ github.ref_name }}"
+          releaseName: "Palette ${{ github.ref_name }}"
           releaseBody: "NSIS installer below. Unsigned — Windows SmartScreen will warn on first run (More info → Run anyway). Installed copies self-update from this release."
