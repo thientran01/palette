@@ -200,16 +200,15 @@ const SCALE = {
     // ramp's start).
     anchor: 0.5,
     // Tuned to the ALIGNED box (Focus seats the lyric column's top on the
-    // album's top edge via --art-top, 2026-07-14): the box no longer
-    // reaches the window top, so the ramps are shallow again — ~3 strong +
-    // 1 faint lines above the current line, ~2 strong + 1 faint below
-    // (one cut per side vs the previous round's window, per Thien live).
-    // The knob if it wants more/less. The min() guards keep the stops
-    // from crossing on short viewports (20%+28% ≤ 48% always orders) —
-    // the ramps scale instead of inverting there.
-    mask: "[mask-image:linear-gradient(transparent,black_min(160px,20%),black_calc(100%-min(240px,28%)),transparent)]",
-    chipTop: "top-44",
-    chipBottom: "bottom-64",
+    // album's top edge via --art-top, 2026-07-14): ~2 strong + 1 faint
+    // lines above the current line, ~2 + 1 faint below — Thien's live
+    // rounds settled here ("that line is barely visible anyway, it'd fade
+    // cleaner"). The knob if it wants more/less. The min() guards keep
+    // the stops from crossing on short viewports (26%+34% ≤ 60% always
+    // orders) — the ramps scale instead of inverting there.
+    mask: "[mask-image:linear-gradient(transparent,black_min(240px,26%),black_calc(100%-min(320px,34%)),transparent)]",
+    chipTop: "top-64",
+    chipBottom: "bottom-84",
     // Break-row dots scaled up for the room — bigger dots on a wider gap so
     // the countdown reads at fullscreen distance (the feel knob for the
     // focus break row, 2026-07-13).
