@@ -176,7 +176,7 @@ export type LyricsScale = "base" | "focus";
  * (recession by OPACITY, never size — Apple's fullscreen idiom, and size
  * steps would reflow the translate math), current line anchored slightly
  * deeper (0.46), and The Hang's asymmetric mask grafted on — the deep
- * 240px bottom ramp is what makes the room read "a sentence, not a page". */
+ * bottom ramp is what makes the room read "a sentence, not a page". */
 const SCALE = {
   base: {
     row: "px-3 py-1 text-base leading-normal",
@@ -195,13 +195,14 @@ const SCALE = {
     row: "px-6 py-3 text-[44px] leading-[1.27] tracking-[-0.01em]",
     marker: "h-9 w-[5px]",
     anchor: 0.46,
-    // Deeper fade on both edges than the first cut (~half a row more each,
-    // compounding with the horizon's new margins): the room reads as fewer,
-    // calmer lines — "a sentence, not a page" — roughly one line trimmed
-    // top and bottom (Thien, 2026-07-12). The knob if it wants more/less.
-    mask: "[mask-image:linear-gradient(transparent,black_160px,black_calc(100%-280px),transparent)]",
-    chipTop: "top-44",
-    chipBottom: "bottom-72",
+    // Deep ramps both edges: the lyrics column absorbed the old horizon
+    // band's height (Focus recomposition, 2026-07-14), so without them the
+    // taller viewport showed ~11 lines and the eye had no focal band. Tuned
+    // for ~7 readable lines — "a sentence, not a page". The knob if it
+    // wants more/less.
+    mask: "[mask-image:linear-gradient(transparent,black_260px,black_calc(100%-380px),transparent)]",
+    chipTop: "top-64",
+    chipBottom: "bottom-96",
     // Break-row dots scaled up for the room — bigger dots on a wider gap so
     // the countdown reads at fullscreen distance (the feel knob for the
     // focus break row, 2026-07-13).
@@ -219,7 +220,7 @@ const SCALE = {
  * and the tiers re-settle on re-latch. */
 function focusTone(tier: number, browsing: boolean): string {
   if (browsing) return "text-muted/80";
-  return tier <= 1 ? "text-muted/85" : tier === 2 ? "text-muted/50" : "text-muted/30";
+  return tier <= 1 ? "text-muted/85" : tier === 2 ? "text-muted/40" : "text-muted/15";
 }
 
 /** One lyric line. Memoized so a line advance reconciles the two rows whose

@@ -115,11 +115,17 @@ function IdentityStack({
   artUrl,
   caption,
   centered,
+  waveKey,
 }: {
   np: NowPlaying;
   artUrl: string | null;
   caption: string | null;
   centered: boolean;
+  /** When set, the stack carries the view's reactive surface: an xl
+   * Waveform under the metadata, announcing on this key. The lyrics seat
+   * passes it (capsules ride the song, the house grammar); the fallback
+   * seat doesn't — its surface is the room horizon (one per view). */
+  waveKey?: string;
 }) {
   const align = centered ? "items-center text-center" : "items-start text-left";
   return (
@@ -141,6 +147,11 @@ function IdentityStack({
           {np.album}
         </p>
       </div>
+      {waveKey !== undefined && (
+        <div className="mt-6">
+          <Waveform size="xl" announceKey={waveKey} />
+        </div>
+      )}
       {/* Reserved slot — "Finding lyrics…" answers the wait, the miss stays
           quiet, and the fixed height means resolution never moves the art. */}
       <p className="mt-1 h-7 w-full truncate text-[17px] leading-7 text-muted/70">
@@ -263,13 +274,18 @@ export default function Focus() {
         </div>
       ) : (
         <>
-          {/* THE UPPER ROOM — the only region that swaps (one stack, two
-              seats). Crossfade by opacity; the art never slides. */}
+          {/* THE UPPER ROOM — everything above the console; each view owns
+              its full composition (lyrics: identity column + lyrics; fallback:
+              centered identity over the room horizon). Seats crossfade by
+              opacity; the art never slides. The seat keys are STABLE across
+              track changes — the identity column (and its xl waveform, the
+              announcing surface) must survive them; only the lyrics column
+              remounts per track, on its own scoped crossfade. */}
           <div className="relative min-h-0 flex-1">
             <AnimatePresence initial={false}>
               {lyricsLive ? (
                 <motion.div
-                  key={`split:${lyrics.key}`}
+                  key="split"
                   {...swap}
                   transition={swapTiming}
                   exit={{
@@ -277,17 +293,42 @@ export default function Focus() {
                     pointerEvents: "none" as const,
                     transition: { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: [...EASE.out] as [number, number, number, number] },
                   }}
-                  className="absolute inset-0 flex items-start gap-[7%] px-[10%] pt-[7vh]"
+                  className="absolute inset-0 flex items-stretch gap-[7%] px-[10%]"
                 >
-                  <IdentityStack np={np} artUrl={artUrl} caption={caption} centered={false} />
-                  <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col pb-4">
-                    <LyricsPanel
-                      lines={lyrics.lines}
-                      seekable={seekable}
-                      leadMs={VOCAL_LEAD_MS[np.player]}
-                      entrance={entrance}
-                      scale="focus"
+                  {/* Vertically centered with a small upward bias so the
+                      art's optical center lands near the lyric anchor (the
+                      current line sits at 46% height, not 50%). */}
+                  <div className="flex min-h-0 shrink-0 flex-col justify-center pb-[6vh]">
+                    <IdentityStack
+                      np={np}
+                      artUrl={artUrl}
+                      caption={caption}
+                      centered={false}
+                      waveKey={lyricsKeyOf(np) ?? undefined}
                     />
+                  </div>
+                  <div className="relative min-h-0 min-w-0 flex-1">
+                    <AnimatePresence initial={false}>
+                      <motion.div
+                        key={lyrics.key}
+                        {...swap}
+                        transition={swapTiming}
+                        exit={{
+                          opacity: 0,
+                          pointerEvents: "none" as const,
+                          transition: { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: [...EASE.out] as [number, number, number, number] },
+                        }}
+                        className="absolute inset-0 flex flex-col pb-4"
+                      >
+                        <LyricsPanel
+                          lines={lyrics.lines}
+                          seekable={seekable}
+                          leadMs={VOCAL_LEAD_MS[np.player]}
+                          entrance={entrance}
+                          scale="focus"
+                        />
+                      </motion.div>
+                    </AnimatePresence>
                   </div>
                 </motion.div>
               ) : (
@@ -300,9 +341,21 @@ export default function Focus() {
                     pointerEvents: "none" as const,
                     transition: { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: [...EASE.out] as [number, number, number, number] },
                   }}
-                  className="absolute inset-0 flex items-start justify-center pt-[7vh]"
+                  className="absolute inset-0 flex flex-col"
                 >
-                  <IdentityStack np={np} artUrl={artUrl} caption={caption} centered />
+                  <div className="flex min-h-0 flex-1 items-center justify-center">
+                    <IdentityStack np={np} artUrl={artUrl} caption={caption} centered />
+                  </div>
+                  {/* THE HORIZON — the fallback view's hero and its one
+                      reactive surface (no lyrics to carry the room's life);
+                      it runs the track-change announcement here. In the
+                      lyrics view the capsules ride the song block instead —
+                      a full-width band above the progress bar read as a
+                      second timeline and outweighed the lyrics (Thien,
+                      2026-07-14). */}
+                  <div className="flex shrink-0 items-center justify-center pb-[3.5vh]">
+                    <Waveform size="room" announceKey={lyricsKeyOf(np) ?? undefined} />
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -311,7 +364,10 @@ export default function Focus() {
           {/* The queue/history surface — the widget's QueuePanel wholesale,
               floating over the upper room's right side on the popover shell
               recipe. Always mounted (scroll + feed survive toggling), the
-              expanded-surface visibility grammar. */}
+              expanded-surface visibility grammar. The bottom inset still
+              budgets for the fallback view's horizon band (170px) + console —
+              the lyrics view could reach lower now, but one seat position
+              serves both views without overlapping either. */}
           <div
             inert={!queueOpen}
             className={`absolute right-6 top-16 z-20 flex w-[380px] flex-col rounded-xl border border-border/10 bg-surface p-1.5 shadow-xl shadow-black/40 ${
@@ -324,21 +380,9 @@ export default function Focus() {
             <QueuePanel np={np} connected={spotify.connected} open={queueOpen} />
           </div>
 
-          {/* THE HORIZON — the room's one living reactive surface, OUTSIDE
-              the swap (never remounts; the lastAlive crossfade hazard never
-              applies). It runs the track-change announcement: the pill is
-              hidden behind this takeover, so the horizon is the only
-              now-playing pulse on screen. my-[3.5vh] gives the instrument
-              air on both sides — lyrics above and console below — so the
-              three bands read as deliberately spaced, not stacked (Thien,
-              2026-07-12). */}
-          <div className="my-[3.5vh] flex shrink-0 items-center justify-center">
-            <Waveform size="room" announceKey={lyricsKeyOf(np) ?? undefined} />
-          </div>
-
           {/* THE CONSOLE — persistent (a summoned takeover shows its
-              required controls; the P3/P4 lesson is binding), sharing the
-              instrument's exact width so they read as one machine. */}
+              required controls; the P3/P4 lesson is binding). Fixed below
+              the swap, so a view crossfade never moves it. */}
           <div className="mx-auto w-[1170px] max-w-[92vw] shrink-0 pb-[6vh] pt-[1vh]">
             <ProgressBar np={np} size="lg" />
             <div className="mt-4 flex items-center justify-center">

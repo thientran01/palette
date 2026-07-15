@@ -31,23 +31,26 @@ import { Envelope, subscribeBands } from "./lib/reactive";
  * horizon reads as one intentional instrument (tall bass center, tapered
  * edges) instead of a random picket. Same choreography at every size.
  * boxH/aliveW/restW size the container: sm/md morph width between rest and
- * alive; the HERO footprints (lg, room) are CONSTANT (no width/margin morph,
- * rest keeps the full box) because they sit in centered columns/bands —
+ * alive; the HERO footprints (lg, xl, room) are CONSTANT (no width/margin
+ * morph, rest keeps the full box) because they sit in centered columns/bands —
  * collapsing would re-seat everything around them. */
-type Size = "sm" | "md" | "lg" | "room";
+type Size = "sm" | "md" | "lg" | "xl" | "room";
 const GEOM = {
   sm: { bar: "h-[9px] w-[2px]", dot: "h-[2px] w-[2px]", survivor: "h-[3px] w-[3px]", dropBlur: "blur-[1.5px]", boxH: "h-[11px]", aliveW: "w-[18px]", restW: "w-[5px]" },
   md: { bar: "h-[18px] w-[4px]", dot: "h-[3px] w-[3px]", survivor: "h-[4px] w-[4px]", dropBlur: "blur-[2px]", boxH: "h-[20px]", aliveW: "w-[46px]", restW: "w-[6px]" },
   lg: { bar: "h-[26px] w-[5px]", dot: "h-[5px] w-[5px]", survivor: "h-[7px] w-[7px]", dropBlur: "blur-[3px]", boxH: "h-[30px]", aliveW: "w-[85px]", restW: "w-[85px]" },
+  xl: { bar: "h-[36px] w-[6px]", dot: "h-[6px] w-[6px]", survivor: "h-[8px] w-[8px]", dropBlur: "blur-[3px]", boxH: "h-[40px]", aliveW: "w-[190px]", restW: "w-[190px]" },
   room: { bar: "h-[150px] w-[12px]", dot: "h-[6px] w-[6px]", survivor: "h-[10px] w-[10px]", dropBlur: "blur-[4px]", boxH: "h-[170px]", aliveW: "w-[1170px]", restW: "w-[1170px]" },
 } as const;
 /** The constant-footprint, purely-decorative standalone renditions. */
-const HERO: ReadonlySet<Size> = new Set(["lg", "room"]);
+const HERO: ReadonlySet<Size> = new Set(["lg", "xl", "room"]);
 /** Which spectrum bin each bar rides: center gets the lowest (Apple's
  * tall-middle silhouette); neighbors sit on staggered mids/highs so the
  * bars never bounce in lockstep. md is sm's inner five plus an outer high
  * pair; lg adds one more high pair outside those (15/13 deliberately
- * asymmetric — twin bins would bounce the edges in lockstep). room walks
+ * asymmetric — twin bins would bounce the edges in lockstep). xl extends lg
+ * with two more staggered outer pairs (13 bars — the focus identity-stack
+ * rendition). room walks
  * the same asymmetric pattern out to 41: the center rides bass (bin 1 — the
  * tall middle) and the bins trend toward the highs at the edges (so energy
  * tapers outward WITH the roomPeak envelope), jittered so no two neighbors
@@ -56,6 +59,7 @@ const BAR_BINS = {
   sm: [9, 4, 1, 6, 11],
   md: [12, 9, 4, 1, 6, 11, 14],
   lg: [15, 12, 9, 4, 1, 6, 11, 14, 13],
+  xl: [14, 13, 15, 12, 9, 4, 1, 6, 11, 14, 13, 15, 12],
   room: [
     12, 15, 13, 14, 15, 13, 15, 12, 14, 11, 13, 9, 12, 7, 10, 5, 8, 3, 6, 4, 1,
     3, 5, 7, 6, 9, 8, 11, 9, 13, 11, 14, 12, 15, 13, 15, 14, 13, 15, 14, 15,
