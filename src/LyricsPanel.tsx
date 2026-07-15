@@ -195,16 +195,16 @@ const SCALE = {
     row: "px-6 py-3 text-[44px] leading-[1.27] tracking-[-0.01em]",
     marker: "h-9 w-[5px]",
     anchor: 0.46,
-    // Deep ramps both edges: the lyrics column absorbed the old horizon
-    // band's height (Focus recomposition, 2026-07-14), so without them the
-    // taller viewport showed ~11 lines and the eye had no focal band. Tuned
-    // for ~7 readable lines — "a sentence, not a page". The knob if it
-    // wants more/less. The min() guards keep the stops from crossing on
-    // short viewports (fixed 260+380 needs a 640px column; 30%+40% ≤ 70%
-    // always orders) — below ~867px the ramps scale instead of inverting.
-    mask: "[mask-image:linear-gradient(transparent,black_min(260px,30%),black_calc(100%-min(380px,40%)),transparent)]",
-    chipTop: "top-64",
-    chipBottom: "bottom-96",
+    // One visible line trimmed vs the Soundboard original (160/280 →
+    // 200/320, ~half a row deeper each edge) for a little more white
+    // space — Thien's 2026-07-14 live verdict walked back PR #102's much
+    // deeper cut (260/380 read too sparse). The knob if it wants
+    // more/less. The min() guards keep the stops from crossing on short
+    // viewports (fixed 200+320 needs a 520px column; 25%+35% ≤ 60%
+    // always orders) — the ramps scale instead of inverting there.
+    mask: "[mask-image:linear-gradient(transparent,black_min(200px,25%),black_calc(100%-min(320px,35%)),transparent)]",
+    chipTop: "top-52",
+    chipBottom: "bottom-80",
     // Break-row dots scaled up for the room — bigger dots on a wider gap so
     // the countdown reads at fullscreen distance (the feel knob for the
     // focus break row, 2026-07-13).
@@ -222,7 +222,7 @@ const SCALE = {
  * and the tiers re-settle on re-latch. */
 function focusTone(tier: number, browsing: boolean): string {
   if (browsing) return "text-muted/80";
-  return tier <= 1 ? "text-muted/85" : tier === 2 ? "text-muted/40" : "text-muted/15";
+  return tier <= 1 ? "text-muted/85" : tier === 2 ? "text-muted/50" : "text-muted/30";
 }
 
 /** One lyric line. Memoized so a line advance reconciles the two rows whose
