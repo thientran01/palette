@@ -194,10 +194,10 @@ const SCALE = {
   focus: {
     row: "px-6 py-3 text-[44px] leading-[1.27] tracking-[-0.01em]",
     marker: "h-9 w-[5px]",
-    // 0.5: the current line rides the album's midline — the art centers in
-    // the upper room (Focus's pt-[146px] seats, Thien 2026-07-14), and the
-    // marker pairs with it. Forward context leans on tier-1's brightness
-    // (the next line reads through the ramp's start).
+    // 0.5: the current line rides the room's center (the album sits its
+    // deliberate ~7vh bias below — Focus's seat comment). Forward context
+    // leans on tier-1's brightness (the next line reads through the
+    // ramp's start).
     anchor: 0.5,
     // Two visible lines cut per side vs the first live cut (200/320 →
     // 360/440): at fullscreen the lyric ghosts climbed nearly to the

@@ -302,15 +302,13 @@ export default function Focus() {
                   }}
                   className="absolute inset-0 flex items-stretch gap-[7%] px-[10%]"
                 >
-                  {/* The ART centers, not the stack: pt matches the
-                      metadata+caption block below the art (mt-8 32 + title
-                      50 + artist 32 + caption 32 = 146px), so justify-center
-                      lands the album's halfway point on the room's center —
-                      centering the whole stack sat the art ~115px high, the
-                      metadata dragging it up (Thien, 2026-07-14). Keep in
-                      sync with IdentityStack's text block and the art-cap
-                      guard budget. */}
-                  <div className="flex min-h-0 shrink-0 flex-col justify-center pt-[146px]">
+                  {/* The album's BOTTOM edge sits on the window's vertical
+                      midpoint (Thien's rule, 2026-07-14): pt = 50vh − art,
+                      top-aligned — the artwork hangs above the midline and
+                      the metadata starts right at it. The min() term IS the
+                      IdentityStack width formula (square art: width =
+                      height) — keep the two in sync. */}
+                  <div className="flex min-h-0 shrink-0 flex-col pt-[calc(50vh_-_min(560px,46vh,100vh_-_660px))]">
                     <IdentityStack np={np} artUrl={artUrl} caption={caption} centered={false} />
                   </div>
                   <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col pb-4">
@@ -333,12 +331,12 @@ export default function Focus() {
                     pointerEvents: "none" as const,
                     transition: { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: [...EASE.out] as [number, number, number, number] },
                   }}
-                  className="absolute inset-0 flex items-center justify-center"
+                  className="absolute inset-0 flex items-start justify-center"
                 >
-                  {/* Same pt trick as the lyrics seat (art centers, not the
-                      stack), so the lyrics⇄fallback crossfade holds the art
-                      still on the vertical axis. */}
-                  <div className="pt-[146px]">
+                  {/* Same seat rule as the lyrics view (album bottom on the
+                      window midline), so the lyrics⇄fallback crossfade holds
+                      the art still on the vertical axis. */}
+                  <div className="pt-[calc(50vh_-_min(560px,46vh,100vh_-_660px))]">
                     <IdentityStack np={np} artUrl={artUrl} caption={caption} centered />
                   </div>
                 </motion.div>
