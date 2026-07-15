@@ -221,19 +221,22 @@ pub fn init(app: &AppHandle) {
     };
     let app = app.clone();
     std::thread::spawn(move || {
-        let (built, snapshot_len) = load_index(&path);
+        let (built, boundary) = load_index(&path);
         let tracker = app.state::<Tracker>();
         let mut inner = lock(&tracker);
         if inner.epoch == epoch {
-            // Entries appended while the build ran sit at offsets past the
-            // snapshot (appends only ever grow the file), so they're exactly
-            // the in-memory rows the snapshot missed — keep them, in order,
-            // after the built rows. Anything at a pre-snapshot offset is
-            // already IN the snapshot and would only duplicate.
+            // Entries appended while the build ran sit at offsets >= the
+            // snapshot boundary (appends only ever grow the file), so they're
+            // exactly the in-memory rows the snapshot missed — keep them, in
+            // order, after the built rows. Anything below the boundary is
+            // already IN the snapshot and would only duplicate. The boundary
+            // is end-of-last-good-line (see load_index), so an append caught
+            // torn by the read lands at the boundary and is recovered here
+            // rather than falling into the gap between built and late.
             let late: Vec<IndexEntry> = inner
                 .index
                 .drain(..)
-                .filter(|e| e.offset >= snapshot_len)
+                .filter(|e| e.offset >= boundary)
                 .collect();
             inner.index = built;
             inner.index.extend(late);
@@ -250,14 +253,23 @@ pub fn init(app: &AppHandle) {
 /// Byte-wise on purpose: `read_to_string` would reject the WHOLE file over
 /// one torn multi-byte character (a crash mid-append on a non-ASCII title),
 /// silently emptying the index. Parsing per line bounds that damage to the
-/// torn line — every other entry stays reachable. Also returns the file
-/// length at read time — the merge boundary between this snapshot and any
-/// rows appended while the background build ran.
+/// torn line — every other entry stays reachable. Also returns the merge
+/// boundary: the offset just past the LAST SUCCESSFULLY PARSED line — NOT
+/// total bytes read. The distinction matters when the background build reads
+/// the file mid-append: a torn tail (an in-flight append caught half-written)
+/// fails to parse, and counting its bytes toward the boundary would push it
+/// past the offset the concurrent finalize() recorded for that same entry —
+/// excluding it from BOTH the built snapshot and the "late" merge set, silently
+/// dropping it from the in-memory index until the next restart. Boundary =
+/// end-of-last-good-line keeps that entry in the late set (its offset == the
+/// boundary), so the merge recovers it. A fully-read entry sits below the next
+/// good line's end, so it can't double-count either.
 fn load_index(path: &Path) -> (Vec<IndexEntry>, u64) {
     let Ok(raw) = std::fs::read(path) else {
         return (Vec::new(), 0);
     };
     let mut offset = 0u64;
+    let mut good_end = 0u64;
     let mut out = Vec::new();
     for line in raw.split_inclusive(|b| *b == b'\n') {
         if let Ok(e) = serde_json::from_slice::<HistoryEntry>(line) {
@@ -265,10 +277,11 @@ fn load_index(path: &Path) -> (Vec<IndexEntry>, u64) {
                 started_at_ms: e.started_at_ms,
                 offset,
             });
+            good_end = offset + line.len() as u64;
         }
         offset += line.len() as u64;
     }
-    (out, offset)
+    (out, good_end)
 }
 
 /// Feed one observation (a media-loop snapshot or a hidden-window probe)

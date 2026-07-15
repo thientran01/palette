@@ -135,13 +135,18 @@ export function SeekButton({
   // ref instead of re-listening across the IPC every render. Gated on
   // seekable: the hotkey fires the SMTC call regardless, but for a player
   // that ignores it (Apple Music) a spin would claim a seek that never
-  // happened — the disabled button stays still.
+  // happened — the disabled button stays still. seekable is also read
+  // through a ref inside the callback: listen()/unlisten is promise-based,
+  // so a capability flip to false has a brief async gap before the
+  // subscription actually drops — the fire-time check closes it.
   const tickRef = useRef(tick);
   tickRef.current = tick;
+  const seekableRef = useRef(seekable);
+  seekableRef.current = seekable;
   useEffect(() => {
     if (!seekable) return;
     return onSeekNudge((d) => {
-      if (d === dir) void tickRef.current();
+      if (d === dir && seekableRef.current) void tickRef.current();
     });
   }, [seekable, dir]);
   return (

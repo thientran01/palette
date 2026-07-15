@@ -21,8 +21,9 @@
  * so observability never pollutes the settled stream's diff suppression.
  *
  * Own thread at a 1s cadence (house pattern: one watcher thread per concern).
- * NOT the dock hit watcher: that loop is cursor-cadenced (8-40ms) and skips
- * hidden windows — exactly when presence must keep sensing.
+ * NOT the dock hit watcher: that loop is cursor-cadenced (8-40ms) while
+ * visible and parks entirely while hidden — exactly when presence must keep
+ * sensing.
  */
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};

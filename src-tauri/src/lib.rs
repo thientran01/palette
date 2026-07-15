@@ -642,6 +642,10 @@ pub(crate) fn apply_visibility(app: &AppHandle) {
         // calls back into apply_visibility.
         dock::sync_seat(app);
         let _ = win.show();
+        // The hit watcher parks while hidden — wake it so click-through is
+        // reconciled to the cursor before the first click, not up to a poll
+        // interval later.
+        dock::notify_shown(app);
         // The poll loop skips hidden windows — refresh immediately on show.
         emit_now(app);
     } else if !want && is {
@@ -1366,7 +1370,8 @@ pub fn run() {
                 dock::spawn_hit_watcher(win);
             }
 
-            // Play-history: resolve the log dir + build the line index once.
+            // Play-history: resolve the log dir now, build the line index on a
+            // background thread (off the launch path — history_page waits on it).
             history::init(app.handle());
             // Managed up-next: restore the persisted list + fed marker.
             upnext::init(app.handle());
