@@ -199,8 +199,10 @@ const SCALE = {
     // band's height (Focus recomposition, 2026-07-14), so without them the
     // taller viewport showed ~11 lines and the eye had no focal band. Tuned
     // for ~7 readable lines — "a sentence, not a page". The knob if it
-    // wants more/less.
-    mask: "[mask-image:linear-gradient(transparent,black_260px,black_calc(100%-380px),transparent)]",
+    // wants more/less. The min() guards keep the stops from crossing on
+    // short viewports (fixed 260+380 needs a 640px column; 30%+40% ≤ 70%
+    // always orders) — below ~867px the ramps scale instead of inverting.
+    mask: "[mask-image:linear-gradient(transparent,black_min(260px,30%),black_calc(100%-min(380px,40%)),transparent)]",
     chipTop: "top-64",
     chipBottom: "bottom-96",
     // Break-row dots scaled up for the room — bigger dots on a wider gap so

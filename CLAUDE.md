@@ -209,9 +209,13 @@ src-tauri/src/
                 song block — the house grammar; a full-width horizon band
                 there read as a second timeline, recomposed 2026-07-14)
                 and the no-lyrics fallback (centered identity over the
-                room-size Waveform horizon, that view's hero). Both seats
-                are stable-keyed so the announcing Waveform survives track
-                changes; only the lyrics column remounts per track.
+                room-size Waveform horizon, that view's hero). Every track
+                change exits through the fetch interlude (lyricsLive flips
+                false while lyrics re-key), so per-track state remounts and
+                the crossfade + title-in ARE the change choreography; the
+                Waveform announcement fires only on a surface mounted
+                across the change (the fallback horizon,
+                instrumental→instrumental).
                 This is the removed P3's want with the correct trigger:
                 invoked, never guessed
   audio.rs      audio capture → FFT → smoothed auto-gained band energies at

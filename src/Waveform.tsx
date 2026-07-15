@@ -168,8 +168,9 @@ function barClass(phase: Phase, i: number, size: Size): string {
  * and the inner pair (d<2) needs none — the "one" beat IS its stagger. The
  * CALLER additionally gates this to the SETTLE ladder (settlingRef): the
  * announce/bloom ladders reuse these phase names on the faster BLOOM/
- * ANNOUNCE_MS beats — and the announcement fires at room's 41 bars too
- * (Focus.tsx), where a DROP_MS-normalized stagger would overrun their window —
+ * ANNOUNCE_MS beats — and the announcement fires at the focus renditions too
+ * (xl's 13 / room's 41 bars, Focus.tsx), where a DROP_MS-normalized stagger
+ * would overrun their window —
  * so those collapse plainly, matching their "glanced at, not watched" cadence. */
 function dropDelayMs(phase: Phase, i: number, size: Size): number {
   if (phase !== "three" && phase !== "one" && phase !== "rest") return 0;
@@ -226,8 +227,9 @@ export function Waveform({
   // change so the render sees it). The settle earns the OUTSIDE-IN drop
   // stagger (dropDelayMs); the bloom the INSIDE-OUT rise stagger (riseDelayMs).
   // The announcement reuses these phase names on faster beats — and runs at
-  // room's 41 bars in focus mode (Focus.tsx), where either stagger would
-  // overrun its window — so it collapses/reveals plainly, ungated.
+  // the focus renditions (xl's 13 / room's 41 bars, Focus.tsx), where either
+  // stagger would overrun its window — so it collapses/reveals plainly,
+  // ungated.
   const settlingRef = useRef(false);
   const bloomingRef = useRef(false);
   // Render-visible half of the announce ladder: while true the bars paint
