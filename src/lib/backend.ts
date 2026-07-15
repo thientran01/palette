@@ -27,8 +27,10 @@ const MOCK_DURATION = 204_000;
 const AM_PROFILE = !IN_TAURI && new URLSearchParams(window.location.search).has("am");
 
 /** `?lyrics=<ms>` delays the mock lyric fetch (LRCLIB takes seconds live) and
- * `?lyrics=none` forces a miss — both for exercising the expanded view's
- * art ↔ lyrics arrival transition in preview. */
+ * `?lyrics=none` forces a served miss, `?lyrics=offline` a transport failure
+ * (the honest "unavailable — offline" caption) — both for exercising the
+ * expanded view's art ↔ lyrics arrival transition + caption states in
+ * preview. */
 const LYRICS_PARAM = IN_TAURI ? null : new URLSearchParams(window.location.search).get("lyrics");
 
 /** `?nothing` forces the no-session state (player "none") so the resting
@@ -877,9 +879,12 @@ export const commands = {
     durationMs: number,
   ): Promise<Lyrics> {
     if (!IN_TAURI) {
-      const delayMs = LYRICS_PARAM && LYRICS_PARAM !== "none" ? Number(LYRICS_PARAM) || 0 : 0;
+      const numericParam =
+        LYRICS_PARAM && LYRICS_PARAM !== "none" && LYRICS_PARAM !== "offline";
+      const delayMs = numericParam ? Number(LYRICS_PARAM) || 0 : 0;
       if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
       if (LYRICS_PARAM === "none") return LYRICS_MISS;
+      if (LYRICS_PARAM === "offline") return LYRICS_OFFLINE;
       // Mock: verses on a 4s cadence with real instrumental gaps, so preview
       // exercises karaoke AND every break-synthesis path (parseLrc): a 12s
       // intro, a marker-pinned break (the empty stamp at 64s — the mock's
@@ -1110,6 +1115,7 @@ export const commands = {
  * lyrics". Optional/false everywhere except a genuine offline bail. */
 type Lyrics = { synced: string | null; plain: string | null; offline?: boolean };
 const LYRICS_MISS: Lyrics = { synced: null, plain: null };
+const LYRICS_OFFLINE: Lyrics = { synced: null, plain: null, offline: true };
 
 let lyricsGen = 0;
 

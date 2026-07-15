@@ -392,7 +392,7 @@ export default function Search() {
             className="search-input min-w-0 flex-1 bg-transparent text-[18px] text-fg outline-none placeholder:text-muted focus-visible:[outline:none]"
           />
           {!gated && (
-            <span className="shrink-0 text-[11px] text-muted/60">↵ play · ⇧↵ queue</span>
+            <span className="shrink-0 text-[11px] text-muted/85">↵ play · ⇧↵ queue</span>
           )}
         </div>
 
@@ -400,7 +400,7 @@ export default function Search() {
           {!spotify.connected ? (
             <div className="flex flex-col items-start gap-1.5 px-2.5 py-2.5">
               <SpotifyConnectButton />
-              <p className="m-0 text-[12px] text-muted/70">Connect Spotify to search and play.</p>
+              <p className="m-0 text-[12px] text-muted/85">Connect Spotify to search and play.</p>
             </div>
           ) : offline ? (
             <p className="m-0 px-2.5 py-2.5 text-[13px] text-muted">Spotify unreachable</p>
@@ -488,7 +488,7 @@ export default function Search() {
                         bug. Flush to the right edge; the hover controls slot in
                         to its left. */}
                     {row.reason && (
-                      <span className="shrink-0 text-[11px] text-muted/60">
+                      <span className="shrink-0 text-[11px] text-muted/85">
                         {row.reason}
                       </span>
                     )}
