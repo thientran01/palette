@@ -779,7 +779,7 @@ export function QueuePanel({
         <span className="text-[10px] uppercase tracking-widest text-muted">
           Up next{rows.length > 0 && ` · ${rows.length}`}
         </span>
-        <span className="text-[10px] text-muted/60">
+        <span className="text-[10px] text-muted/85">
           {queueLive ? "Spotify · drag to reorder" : "Spotify"}
         </span>
         {/* aria-live chip: quiet feedback for queue/play actions. */}

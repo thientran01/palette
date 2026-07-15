@@ -96,7 +96,11 @@ function useBreakDots(line: LyricLine, leadMs: number, active: boolean): number 
 }
 
 export type LyricsState =
-  | { status: "loading" | "none" }
+  // "none" = a definitive served miss (LRCLIB has no lyrics for this track);
+  // "offline" = the fetch bailed on a transport failure (offline/DNS/timeout),
+  // NOT recorded as a miss — a distinct, honest caption ("unavailable —
+  // offline" vs "No synced lyrics"). lyrics.rs sets the `offline` flag.
+  | { status: "loading" | "none" | "offline" }
   | { status: "synced"; lines: LyricLine[]; key: string };
 
 /** The track identity a lyric fetch is keyed on. Consumers compare a synced
@@ -130,7 +134,15 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
       // Cap far beyond any real song (~100 lines) — a pathological LRC file
       // shouldn't turn into thousands of DOM nodes.
       const lines = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
-      setState(lines.length > 0 ? { status: "synced", lines, key } : { status: "none" });
+      // A transport failure (l.offline) is NOT a miss — surface it as its own
+      // state so the caption stays honest and a later track can retry.
+      setState(
+        lines.length > 0
+          ? { status: "synced", lines, key }
+          : l.offline
+            ? { status: "offline" }
+            : { status: "none" },
+      );
     });
     return () => {
       alive = false;

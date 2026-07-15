@@ -798,11 +798,12 @@ function ExpandedView({
 
   // The miss caption answers once, then leaves (NO_LYRICS_CAPTION_MS); the
   // timer restarts per track and per status flip so a loading→none resolve
-  // gets its full read window.
+  // gets its full read window. Both terminal non-synced states (miss +
+  // offline) fade the same way.
   const [captionExpired, setCaptionExpired] = useState(false);
   useEffect(() => {
     setCaptionExpired(false);
-    if (lyrics.status !== "none") return;
+    if (lyrics.status !== "none" && lyrics.status !== "offline") return;
     const t = window.setTimeout(() => setCaptionExpired(true), NO_LYRICS_CAPTION_MS);
     return () => window.clearTimeout(t);
   }, [lyrics.status, trackKey]);
@@ -929,7 +930,11 @@ function ExpandedView({
                         }`
                   }`}
                 >
-                  {lyrics.status === "loading" ? "Finding lyrics…" : "No synced lyrics"}
+                  {lyrics.status === "loading"
+                    ? "Finding lyrics…"
+                    : lyrics.status === "offline"
+                      ? "Lyrics unavailable — offline"
+                      : "No synced lyrics"}
                 </span>
               )}
             </p>
@@ -979,7 +984,7 @@ function ExpandedView({
               ? showLyrics
                 ? "note"
                 : "mic"
-              : lyrics.status === "none"
+              : lyrics.status === "none" || lyrics.status === "offline"
                 ? "micOff"
                 : "mic"
         }
@@ -994,7 +999,9 @@ function ExpandedView({
                 : "Show lyrics"
               : lyrics.status === "none"
                 ? "No synced lyrics"
-                : "Finding lyrics…"
+                : lyrics.status === "offline"
+                  ? "Lyrics unavailable — offline"
+                  : "Finding lyrics…"
         }
         disabled={!queueOpen && !lyricsLive}
         onToggle={() => {

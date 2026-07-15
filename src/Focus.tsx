@@ -240,9 +240,11 @@ export default function Focus() {
     ? null
     : lyrics.status === "loading"
       ? "Finding lyrics…"
-      : np && np.player !== "none"
-        ? "No synced lyrics"
-        : null;
+      : lyrics.status === "offline"
+        ? "Lyrics unavailable — offline"
+        : np && np.player !== "none"
+          ? "No synced lyrics"
+          : null;
 
   const swap = {
     initial: { opacity: 0 },

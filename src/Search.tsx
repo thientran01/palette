@@ -392,7 +392,7 @@ export default function Search() {
             className="search-input min-w-0 flex-1 bg-transparent text-[18px] text-fg outline-none placeholder:text-muted focus-visible:[outline:none]"
           />
           {!gated && (
-            <span className="shrink-0 text-[11px] text-muted/60">↵ play · ⇧↵ queue</span>
+            <span className="shrink-0 text-[11px] text-muted/85">↵ play · ⇧↵ queue</span>
           )}
         </div>
 
@@ -488,7 +488,7 @@ export default function Search() {
                         bug. Flush to the right edge; the hover controls slot in
                         to its left. */}
                     {row.reason && (
-                      <span className="shrink-0 text-[11px] text-muted/60">
+                      <span className="shrink-0 text-[11px] text-muted/85">
                         {row.reason}
                       </span>
                     )}
