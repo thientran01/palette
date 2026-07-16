@@ -133,14 +133,11 @@ function IdentityStack({
 }) {
   const align = centered ? "items-center text-center" : "items-start text-left";
   return (
-    // Width caps: 560px design size, 46vh so the square art leaves room
-    // for the stack on normal monitors, 100vh-660px as the short-monitor
-    // guard, and 50vw-582px as the narrow-window guard — the centered
-    // stack's metadata may ride into the horizon's ROW (accepted, Thien's
-    // Figma pass), so this column must end left of the centered 780px
-    // horizon: 192(left inset) + art ≤ (100vw - 780)/2. Keep in sync with
-    // the seats' --stack-top formula in Focus's return.
-    <div className={`flex w-[min(560px,46vh,calc(100vh_-_660px),calc(50vw_-_582px))] flex-col ${align}`}>
+    // Width = var(--art), defined ONCE on each seat in Focus's return
+    // (both seats set it identically) — the seats' stack-top math, this
+    // width, and the lyric column's bottom-alignment all derive from the
+    // same value, which is what makes the aligned edges exact.
+    <div className={`flex w-(--art) flex-col ${align}`}>
       <div className="grid aspect-square w-full place-items-center overflow-hidden rounded-3xl bg-surface-2 text-muted">
         {artUrl ? (
           <img src={artUrl} alt="" className="h-full w-full object-cover" draggable={false} />
@@ -299,25 +296,30 @@ export default function Focus() {
                     pointerEvents: "none" as const,
                     transition: { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: [...EASE.out] as [number, number, number, number] },
                   }}
-                  className="absolute inset-0 flex items-stretch gap-[7%] px-[10%] [--stack-top:calc(50vh_-_min(560px,46vh,100vh_-_660px,50vw_-_582px)/2_-_73px)]"
+                  className="absolute inset-0 flex items-stretch gap-[7%] px-[10%] [--art:min(560px,46vh,100vh_-_660px,50vw_-_582px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)]"
                 >
-                  {/* --stack-top: the identity STACK (art + metadata, 146px
-                      of text below the art) centers on the WINDOW's vertical
-                      midpoint — Thien's Figma verdict 2026-07-14: centering
-                      the block lifts the art up to meet the lyric cluster
-                      and kills the diagonal between the two focal points.
-                      pt = 50vh − (art + 146)/2. The min() term IS the
-                      IdentityStack width formula — keep the two in sync.
-                      The metadata riding into the horizon's ROW at short
-                      heights is accepted (the centered 780px horizon stays
-                      right of this column; the 50vw guard term keeps it
-                      that way at narrow widths). The lyric column is NOT
-                      seated on this — it keeps its own top (pt-[11vh]);
-                      the lyrics' anchor stays put and the art comes to it. */}
+                  {/* --art: the album's size — 560px design size, 46vh so
+                      the square art leaves room on normal monitors,
+                      100vh-660px as the short-monitor guard, 50vw-582px as
+                      the narrow-width guard (this column must end left of
+                      the centered 780px horizon: 192 + art ≤ (100vw-780)/2,
+                      since the metadata riding into the horizon's ROW is
+                      accepted per Thien's Figma pass). --stack-top: the
+                      identity STACK (art + 146px of metadata) centers on
+                      the WINDOW's vertical midpoint — Thien's Figma verdict
+                      2026-07-14: centering the block lifts the art up to
+                      meet the lyric cluster and kills the diagonal between
+                      the two focal points. */}
                   <div className="flex min-h-0 shrink-0 flex-col pt-(--stack-top)">
                     <IdentityStack np={np} artUrl={artUrl} caption={caption} centered={false} />
                   </div>
-                  <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col pb-4 pt-[11vh]">
+                  {/* The lyric column keeps its own top (the ladder Thien
+                      likes; tops can't align now that the art centers) and
+                      its BOTTOM edge aligns with the album's — the explicit
+                      height ends the box at --stack-top + --art, so the
+                      bottom fade dissolves exactly at the art's bottom line
+                      (Thien, 2026-07-14). */}
+                  <div className="flex h-[calc(var(--stack-top)_+_var(--art)_-_11vh)] min-h-0 min-w-0 flex-1 flex-col mt-[11vh]">
                     <LyricsPanel
                       lines={lyrics.lines}
                       seekable={seekable}
@@ -337,7 +339,7 @@ export default function Focus() {
                     pointerEvents: "none" as const,
                     transition: { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: [...EASE.out] as [number, number, number, number] },
                   }}
-                  className="absolute inset-0 flex items-start justify-center [--stack-top:calc(50vh_-_min(560px,46vh,100vh_-_660px,50vw_-_582px)/2_-_73px)]"
+                  className="absolute inset-0 flex items-start justify-center [--art:min(560px,46vh,100vh_-_660px,50vw_-_582px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)]"
                 >
                   {/* Same seat rule as the lyrics view (identity stack
                       centered on the window midline), so the lyrics⇄fallback
