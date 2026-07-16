@@ -166,7 +166,9 @@ src-tauri/src/
   search.rs     the summon Search's window — Palette's FIRST second webview
                 (multi-window pioneer; focus mode reuses the seams). Created
                 ONCE hidden at setup (WebView2 cold-create costs ~100s of
-                ms; a laggy summon is dead), 560×420 born-at-size, shown by
+                ms; a laggy summon is dead), 680×554 born-at-size (H seats the
+                empty state's 7 rows + 2 headers exactly — re-derive from the
+                search.rs comment if row/chrome sizes change), shown by
                 Ctrl+Alt+S centered high on the CURSOR's monitor, hidden on
                 blur (lib.rs Focused(false) handler) / Esc / background
                 click. Its show/hide ledger is deliberately OUTSIDE
@@ -331,7 +333,10 @@ Design rule: chrome stays neutral (house semantic tokens); the album-art palette
 - `Ctrl+Alt+M` show/hide the widget
 - `Ctrl+Alt+S` summon Search (src/Search.tsx — Enter plays now,
   from silence it starts playback outright; Shift+Enter queues to up-next and
-  stays open; Esc/blur dismiss; empty state = resurfacing rows from history)
+  stays open; Esc/blur dismiss; empty state = two sections, "From your
+  history" resurfacing picks + "Something different" Last.fm discoveries
+  [key+Spotify-gated], rotating on a day-part block seed; ↑ at the top slot
+  pull-refreshes both)
 
 Commands route to the OS "current" media session, which Windows re-points to
 whichever app played most recently (pause AM while Spotify plays → next command
