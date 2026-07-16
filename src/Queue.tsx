@@ -20,11 +20,18 @@ import {
   commands,
   onHistoryAppended,
   onSettingsChanged,
+  onSpotifyDevice,
   onSpotifyStatus,
   onUpNextChanged,
 } from "./lib/backend";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
-import type { HistoryEntry, NowPlaying, QueueTrack, SpotifyStatus } from "./types";
+import type {
+  HistoryEntry,
+  NowPlaying,
+  QueueTrack,
+  SpotifyDevice,
+  SpotifyStatus,
+} from "./types";
 
 const HISTORY_PAGE = 30;
 /** Row height — the drag math's grid (swap threshold ±26 = just past half). */
@@ -41,6 +48,14 @@ export function useSpotifyStatus(): SpotifyStatus {
   const [status, setStatus] = useState<SpotifyStatus>({ connected: false });
   useEffect(() => onSpotifyStatus(setStatus), []);
   return status;
+}
+
+/** The active non-PC playback device (or null) — drives the "Playing on
+ * <device>" tag that explains a quiet waveform when the audio is elsewhere. */
+export function useSpotifyDevice(): SpotifyDevice | null {
+  const [device, setDevice] = useState<SpotifyDevice | null>(null);
+  useEffect(() => onSpotifyDevice(setDevice), []);
+  return device;
 }
 
 export function useUpNext(): QueueTrack[] {

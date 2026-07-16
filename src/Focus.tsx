@@ -46,11 +46,12 @@ import { extractAccent } from "./lib/palette";
 import * as posClock from "./lib/posClock";
 import { initReactive } from "./lib/reactive";
 import { DUR, EASE } from "./lib/tokens";
+import { DeviceTag } from "./DeviceTag";
 import { LyricsPanel, lyricsKeyOf, useLyrics } from "./LyricsPanel";
-import { QueuePanel, useSpotifyStatus } from "./Queue";
+import { QueuePanel, useSpotifyDevice, useSpotifyStatus } from "./Queue";
 import { ProgressBar, Transport } from "./Transport";
 import { SeparatorDot, Waveform } from "./Waveform";
-import type { NowPlaying } from "./types";
+import type { NowPlaying, SpotifyDevice } from "./types";
 
 /** Identity fields — the same re-render gate App.tsx uses (position lives
  * in posClock, never in React state). */
@@ -127,6 +128,7 @@ function IdentityStack({
   caption,
   centered,
   waveKey,
+  device,
 }: {
   np: NowPlaying;
   artUrl: string | null;
@@ -137,6 +139,10 @@ function IdentityStack({
    * passes it (capsules ride the song, the house grammar); the fallback
    * seat doesn't — its surface is the room horizon (one per view). */
   waveKey?: string;
+  /** Non-PC playback device (or null) — the "Playing on <device>" tag under
+   * the metadata; the room horizon/xl waveform is at rest because the audio
+   * is elsewhere. Already gated to a live Spotify session. */
+  device: SpotifyDevice | null;
 }) {
   const align = centered ? "items-center text-center" : "items-start text-left";
   return (
@@ -163,6 +169,11 @@ function IdentityStack({
           {np.album && <SeparatorDot />}
           {np.album}
         </p>
+        {device && (
+          <div className="mt-2">
+            <DeviceTag device={device} playing={np.status === "playing"} showName className="text-[15px]" />
+          </div>
+        )}
       </div>
       {waveKey !== undefined && (
         <div className="mt-6">
@@ -203,6 +214,12 @@ export default function Focus() {
   useEffect(() => initReactive(), []);
   const reducedMotion = useReducedMotion();
   const spotify = useSpotifyStatus();
+  // Non-PC playback device (or null), gated to a live Spotify session — the
+  // "Playing on <device>" tag; the room's horizon/waveform rests because the
+  // audio is elsewhere.
+  const activeDevice = useSpotifyDevice();
+  const remoteDevice: SpotifyDevice | null =
+    activeDevice && np?.player === "spotify" ? activeDevice : null;
   // The room's queue/history surface — same QueuePanel, this realm's own
   // open bit (the widget's queueOpen is another window's state).
   const [queueOpen, setQueueOpen] = useState(false);
@@ -327,6 +344,7 @@ export default function Focus() {
                       caption={caption}
                       centered={false}
                       waveKey={lyricsKeyOf(np) ?? undefined}
+                      device={remoteDevice}
                     />
                   </div>
                   <div key={lyrics.key} className="flex h-full min-h-0 min-w-0 flex-1 flex-col pb-4">
@@ -352,7 +370,7 @@ export default function Focus() {
                   className="absolute inset-0 flex flex-col"
                 >
                   <div className="flex min-h-0 flex-1 items-center justify-center">
-                    <IdentityStack np={np} artUrl={artUrl} caption={caption} centered />
+                    <IdentityStack np={np} artUrl={artUrl} caption={caption} centered device={remoteDevice} />
                   </div>
                   {/* THE HORIZON — the fallback view's hero and its one
                       reactive surface (no lyrics to carry the room's life);

@@ -83,6 +83,15 @@ export interface SpotifyStatus {
   connected: boolean;
 }
 
+/** The device Spotify is playing on WHEN it isn't this PC (spotify.rs only
+ * builds it for non-Computer devices). Its presence means "the audio is
+ * elsewhere" — the substrate for the "Playing on <name>" tag that explains a
+ * quiet waveform. null = local / none / not connected. */
+export interface SpotifyDevice {
+  name: string;
+  kind: "phone" | "speaker" | "tv" | "car" | "other";
+}
+
 /** One track from the Spotify queue read. */
 export interface QueueTrack {
   /** Spotify track URI — play-now/re-queue anchor by uri, never by index. */

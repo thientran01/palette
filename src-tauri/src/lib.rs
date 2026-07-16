@@ -1065,6 +1065,7 @@ pub fn run() {
             hide_widget,
             quit_app,
             spotify::spotify_status,
+            spotify::spotify_device,
             spotify::spotify_disconnect,
             spotify::spotify_play_now,
             spotify::spotify_resolve_uri,

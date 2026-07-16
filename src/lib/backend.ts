@@ -12,6 +12,7 @@ import {
   type PresenceState,
   type QueueTrack,
   type SearchResult,
+  type SpotifyDevice,
   type SpotifyStatus,
 } from "../types";
 import * as posClock from "./posClock";
@@ -234,6 +235,44 @@ export function onSpotifyStatus(cb: (s: SpotifyStatus) => void): () => void {
   return () => {
     mockSpotifyListeners.delete(cb);
   };
+}
+
+/** `?device=phone|speaker|tv|car|other` previews the "Playing on <device>" tag
+ *  without a live phone; absent (or `?spotify=off`) → no tag (local). */
+const DEVICE_MOCK: SpotifyDevice | null = (() => {
+  if (IN_TAURI || SPOTIFY_OFF) return null;
+  const raw = new URLSearchParams(window.location.search).get("device");
+  if (!raw) return null;
+  const names: Record<SpotifyDevice["kind"], string> = {
+    phone: "Thien's iPhone",
+    speaker: "Living Room",
+    tv: "Living Room TV",
+    car: "Thien's Car",
+    other: "Spotify Connect",
+  };
+  const kind = (raw in names ? raw : "other") as SpotifyDevice["kind"];
+  return { name: names[kind], kind };
+})();
+
+/** Which non-PC device Spotify is playing on (null = local / none / not
+ *  connected) — seed + event pairing, same shape as onSpotifyStatus. The
+ *  substrate for the "Playing on <device>" tag. */
+export function onSpotifyDevice(cb: (d: SpotifyDevice | null) => void): () => void {
+  if (IN_TAURI) {
+    let gotEvent = false;
+    const un = listen<SpotifyDevice | null>("spotify-device", (e) => {
+      gotEvent = true;
+      cb(e.payload);
+    });
+    void invoke<SpotifyDevice | null>("spotify_device").then((d) => {
+      if (!gotEvent) cb(d);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }
+  cb(DEVICE_MOCK);
+  return () => {};
 }
 
 // ---- Pulse-managed up-next (upnext.rs seam) ----
