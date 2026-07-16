@@ -66,7 +66,19 @@ export function DeviceTag({
   showName?: boolean;
   className?: string;
 }) {
-  const label = `${playing ? "Playing on" : "On"} ${device.name}`;
+  // Screen readers get the device CATEGORY sighted users read from the glyph,
+  // appended only when the name doesn't already carry it ("iPhone" already
+  // says phone; "Kitchen" doesn't say speaker).
+  const kindWord: Record<SpotifyDevice["kind"], string> = {
+    phone: "phone",
+    speaker: "speaker",
+    tv: "TV",
+    car: "car",
+    other: "",
+  };
+  const kw = kindWord[device.kind];
+  const kindSuffix = kw && !device.name.toLowerCase().includes(kw.toLowerCase()) ? ` ${kw}` : "";
+  const label = `${playing ? "Playing on" : "On"} ${device.name}${kindSuffix}`;
   return (
     <span
       className={`inline-flex min-w-0 shrink-0 items-center gap-1 text-muted ${className}`}
