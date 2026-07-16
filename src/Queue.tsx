@@ -150,6 +150,24 @@ const thumbCache = new Map<string, string | null>();
  * runs for days; an uncapped map of base64 JPEGs would only ever grow. */
 const THUMB_CACHE_MAX = 300;
 
+/** Fetch+cache one thumb — shared by useThumb (display) and resolveTrack
+ * (the history-add art). Errors resolve null and stay UNcached so a
+ * transient failure can retry. */
+async function thumbFor(key: string): Promise<string | null> {
+  if (thumbCache.has(key)) return thumbCache.get(key) ?? null;
+  try {
+    const u = await commands.historyThumbUrl(key);
+    if (thumbCache.size >= THUMB_CACHE_MAX) {
+      const oldest = thumbCache.keys().next().value;
+      if (oldest !== undefined) thumbCache.delete(oldest);
+    }
+    thumbCache.set(key, u);
+    return u;
+  } catch {
+    return null;
+  }
+}
+
 function useThumb(key: string): string | null {
   const [url, setUrl] = useState<string | null>(() => thumbCache.get(key) ?? null);
   useEffect(() => {
@@ -158,12 +176,7 @@ function useThumb(key: string): string | null {
       return;
     }
     let alive = true;
-    void commands.historyThumbUrl(key).then((u) => {
-      if (thumbCache.size >= THUMB_CACHE_MAX) {
-        const oldest = thumbCache.keys().next().value;
-        if (oldest !== undefined) thumbCache.delete(oldest);
-      }
-      thumbCache.set(key, u);
+    void thumbFor(key).then((u) => {
       if (alive) setUrl(u);
     });
     return () => {
@@ -218,17 +231,29 @@ async function playTrackNow(t: { uri: string; title: string; artist: string }): 
 
 // ---- rows ----
 
-/** Cover thumb (remote url straight into an img; note glyph fallback) —
- * 26px in the queue rows; the search window passes its own size (same grammar,
- * bigger room). Exported for the search window's result rows. */
+/** Cover thumb (remote url straight into an img; note glyph on a null OR
+ * dead url) — 26px in the queue rows; the search window passes its own size
+ * (same grammar, bigger room). Exported for the search window's result rows. */
 export function RowThumb({ url, size = 26 }: { url: string | null; size?: number }) {
+  // A dead art_url (CDN 403/404) degrades to the glyph — an empty tile reads
+  // as a rendering bug. Failure is keyed to the url itself: RowThumb never
+  // remounts on url flips (useThumb resolves in place), so a reset effect
+  // would flash the glyph a frame; a NEW url simply stops matching and retries.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const showImg = url !== null && url !== failedUrl;
   return (
     <span
       className="grid shrink-0 place-items-center overflow-hidden rounded-md bg-surface-2 text-muted"
       style={{ width: size, height: size }}
     >
-      {url ? (
-        <img src={url} alt="" className="h-full w-full object-cover" draggable={false} />
+      {showImg ? (
+        <img
+          src={url}
+          alt=""
+          className="h-full w-full object-cover"
+          draggable={false}
+          onError={() => setFailedUrl(url)}
+        />
       ) : (
         <MorphIcon name="note" size={Math.round(size / 2)} />
       )}
@@ -406,7 +431,7 @@ const HistoryRow = memo(HistoryRowBase);
 
 // ---- the shared panel (both garments render this) ----
 
-function historyToTrack(e: HistoryEntry): QueueTrack | null {
+function historyToTrack(e: HistoryEntry, art: string | null): QueueTrack | null {
   if (!e.spotify_uri) return null;
   return {
     uri: e.spotify_uri,
@@ -414,7 +439,7 @@ function historyToTrack(e: HistoryEntry): QueueTrack | null {
     artist: e.artist,
     album: e.album,
     duration_ms: e.duration_ms,
-    art_url: null,
+    art_url: art,
   };
 }
 
@@ -428,7 +453,11 @@ const uriCache = new Map<string, string | null>();
 /** The actionable form of a history entry: its enriched uri, a cached or
  * fresh search resolution, or null when Spotify can't find it. */
 async function resolveTrack(entry: HistoryEntry): Promise<QueueTrack | null> {
-  const direct = historyToTrack(entry);
+  // The local 96px thumb IS the art: it matches what the history row shows,
+  // works offline, and resolve returns a bare uri — there is no other art
+  // source on this path. Normally a sync cache hit (the row is on screen).
+  const art = await thumbFor(entry.key);
+  const direct = historyToTrack(entry, art);
   if (direct) return direct;
   let uri: string | null;
   const cached = uriCache.get(entry.key);
@@ -445,7 +474,7 @@ async function resolveTrack(entry: HistoryEntry): Promise<QueueTrack | null> {
         artist: entry.artist,
         album: entry.album,
         duration_ms: entry.duration_ms,
-        art_url: null,
+        art_url: art,
       }
     : null;
 }
