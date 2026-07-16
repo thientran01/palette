@@ -29,11 +29,15 @@ const MATCH_FLOOR: f64 = 0.05;
 /// honors one Retry-After on top.
 const RESOLVE_GAP: Duration = Duration::from_millis(120);
 
-/// discovery_picks fan: at most 2 seed tracks, ≤2 resolved picks each — a
-/// bounded ≤4 Spotify calls, capped so a single summon never storms the API
-/// or the 15s Last.fm timeout twice (a hard error on any seed breaks).
+/// discovery_picks fan: at most 2 seed tracks, ≤2 resolved picks each, and —
+/// because a candidate that MISSES on Spotify still costs a search + gap —
+/// at most TRIES_PER_SEED resolve attempts per seed. Worst case is a bounded
+/// 2×5 = 10 gapped Spotify calls (quick-review catch: the earlier "≤4"
+/// claim only counted successes; a miss-heavy seed walked all FETCH_LIMIT
+/// candidates). A hard Last.fm error on any seed breaks the whole walk.
 const SEED_CAP: usize = 2;
 const PER_SEED: usize = 2;
+const TRIES_PER_SEED: usize = 5;
 
 /// One run at a time (the enrich_in_flight shape) — a double click must not
 /// race two fills into the same list.
@@ -247,10 +251,13 @@ fn discover(app: &AppHandle, seeds: Vec<Seed>, exclude: Vec<String>) -> Discover
             }
         };
         let mut from_seed = 0usize;
+        let mut tried = 0usize;
         for c in ordered(&seed.artist, &similars) {
-            if from_seed >= PER_SEED {
+            if from_seed >= PER_SEED || tried >= TRIES_PER_SEED {
                 break;
             }
+            // Exclusion/dedupe checks are free — only a real resolve attempt
+            // (a Spotify search + gap) counts against TRIES_PER_SEED.
             if excl.contains(&norm_key(&c.artist, &c.title)) {
                 continue;
             }
@@ -258,6 +265,7 @@ fn discover(app: &AppHandle, seeds: Vec<Seed>, exclude: Vec<String>) -> Discover
             if picked_artists.contains(&ca) {
                 continue;
             }
+            tried += 1;
             if resolved_any {
                 std::thread::sleep(RESOLVE_GAP);
             }

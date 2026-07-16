@@ -88,17 +88,26 @@ const DAY_MS = 86_400_000;
  * — the picks feel curated and hold within a sitting, but the list has arcs
  * across the day. Still zero per-summon randomness (a shuffle read as a bug;
  * a dated pick reads as curation). Drives history rotation, discovery seeds,
- * and the discovery cache key — one integer explains all the freshness. */
+ * and the discovery cache key — one integer explains all the freshness.
+ * The day component derives from LOCAL midnight to match the local hour
+ * buckets — a raw epoch-day rolls at UTC midnight (4-5pm PT), which injected
+ * a phantom mid-block reshuffle (quick-review catch, 2026-07-16). */
 function blockSeed(now: number): number {
-  const h = new Date(now).getHours();
-  return Math.floor(now / DAY_MS) * 3 + (h < 12 ? 0 : h < 18 ? 1 : 2);
+  const d = new Date(now);
+  const localDay = Math.floor((now - d.getTimezoneOffset() * 60_000) / DAY_MS);
+  const h = d.getHours();
+  return localDay * 3 + (h < 12 ? 0 : h < 18 ? 1 : 2);
 }
 
 /** The exclude-key contract shared with similar.rs's `norm_key`: a track's
  * dedupe identity is its lowercased, trimmed `artist‹U+0001›title`. Keep the
- * two in lockstep — a drift silently stops "different" from meaning un-played. */
+ * two in lockstep — a drift silently stops "different" from meaning un-played.
+ * The separator is the ESCAPE sequence, never a literal control byte: an
+ * invisible U+0001 in source fooled three review agents into reporting the
+ * contract broken (quick-review, 2026-07-16), and no formatter/copy-paste
+ * can be trusted to preserve it. */
 function discoveryKey(artist: string, title: string): string {
-  return `${artist.trim().toLowerCase()}${title.trim().toLowerCase()}`;
+  return `${artist.trim().toLowerCase()}\u0001${title.trim().toLowerCase()}`;
 }
 
 /** Up to two discovery seeds, rotated by the day-block so suggestions refresh
@@ -344,9 +353,17 @@ export default function Search() {
   // refresh brings genuinely new suggestions, not the same neighbors. Cleared
   // on summon.
   const discoveryShown = useRef<Set<string>>(new Set());
-  // One discovery fetch at a time: a held/mashed Up must not fan out concurrent
-  // fetches (the backend single-flights and would answer the extras "busy").
-  const refreshBusy = useRef(false);
+  // The gen that owns the in-flight discovery fetch (0 = idle) — the Up
+  // handler blocks new pulls while set. A TOKEN, not a boolean: a superseded
+  // run's finally must not clear a newer run's flag (quick-review catch —
+  // a stale clear let a third rapid pull slip the guard, get "busy" from the
+  // backend single-flight, and silently blank the section).
+  const refreshBusy = useRef(0);
+  // The in-flight discoveryPicks promise — new runs AWAIT it before fetching,
+  // so the backend's single-flight never bounces the newer (gen-winning)
+  // request while the older one's result gets gen-discarded anyway
+  // (quick-review catch: a summon during a pull's fetch starved discovery).
+  const discoveryFlight = useRef<Promise<unknown> | null>(null);
   // Last.fm key presence, resolved once per summon (one local IPC) and read
   // SYNCHRONOUSLY by pulls — see the single-commit note in refreshEmptyState.
   const lastfmKeyRef = useRef(false);
@@ -443,7 +460,19 @@ export default function Search() {
     // neighborhood. The pristine block (refreshN 0) is cached so a re-summon
     // inside the block is free; a user-driven refresh always fetches fresh.
     const seed = blockSeed(now) + refreshN;
-    const cached = refreshN === 0 && canDiscover ? discoveryCache.get(seed) : undefined;
+    const playedKeys = new Set(played.map((t) => discoveryKey(t.artist, t.title)));
+    let cached = refreshN === 0 && canDiscover ? discoveryCache.get(seed) : undefined;
+    if (cached) {
+      // Re-validate a same-block hit against what's been played SINCE it was
+      // cached — playing a suggestion then re-summoning must not re-suggest
+      // it (quick-review catch). An emptied hit falls through to a fresh
+      // fetch rather than pinning a dead section for the rest of the block.
+      cached = cached.filter((r) => !playedKeys.has(discoveryKey(r.artist, r.title)));
+      if (!cached.length) {
+        discoveryCache.delete(seed);
+        cached = undefined;
+      }
+    }
     const remember = (list: SearchRow[]) =>
       list.forEach((r) => discoveryShown.current.add(discoveryKey(r.artist, r.title)));
 
@@ -466,17 +495,27 @@ export default function Search() {
     // Exclude EVERY played track (not just the rested seed pool — a track heard
     // in the last day is in `played` but NOT in `pool`) AND everything a prior
     // refresh already surfaced this session, so a pull can't repeat a pick.
-    const exclude = played
-      .map((t) => discoveryKey(t.artist, t.title))
-      .concat([...discoveryShown.current]);
-    refreshBusy.current = true;
+    const exclude = [...playedKeys, ...discoveryShown.current];
+    // Serialize behind any in-flight fetch (its result is gen-discarded, but
+    // racing it would get THIS request bounced "busy" by the backend's
+    // single-flight); re-check gen — a newer run may have started meanwhile.
+    if (discoveryFlight.current) {
+      await discoveryFlight.current.catch(() => {});
+      if (gen !== resurfaceGen.current) return;
+    }
+    refreshBusy.current = gen;
     let res: Awaited<ReturnType<typeof commands.discoveryPicks>> | null;
+    const flight = commands.discoveryPicks(seeds, exclude);
+    discoveryFlight.current = flight;
     try {
-      res = await commands.discoveryPicks(seeds, exclude);
+      res = await flight;
     } catch {
       res = null; // transport hiccup — same silent fallback as a non-ok status
     } finally {
-      refreshBusy.current = false;
+      // Owner-only clears throughout: a superseded run's finally must not
+      // free a newer run's token or flight (the same clobber class twice).
+      if (discoveryFlight.current === flight) discoveryFlight.current = null;
+      if (refreshBusy.current === gen) refreshBusy.current = 0;
       // A stale gen never touches pending — the newer run owns it now.
       if (gen === resurfaceGen.current) setDiscoveryPending(false);
     }
@@ -496,7 +535,10 @@ export default function Search() {
       }));
     remember(rows2);
     setDiscovery(rows2);
-    if (refreshN === 0) discoveryCache.set(seed, rows2);
+    // Cache only a NON-EMPTY pristine set: `if (cached)` treats [] as a hit,
+    // and one pathological empty post-filter would otherwise pin the section
+    // dead for the whole block (quick-review catch).
+    if (refreshN === 0 && rows2.length) discoveryCache.set(seed, rows2);
   }, []);
 
   // Summon signal: refocus, select-all the stale query, fresh empty state.
@@ -669,10 +711,27 @@ export default function Search() {
           />
           {!gated && (
             <span className="shrink-0 text-[11px] text-muted/85">
-              ↵ play · ⇧↵ queue{!hasQuery ? " · ↑ more" : ""}
+              {/* "↑ more" only when there ARE rows to re-roll — the Up guard
+                  requires rows, and an empty-history user was being promised
+                  a no-op (quick-review catch). */}
+              ↵ play · ⇧↵ queue{!hasQuery && rows.length > 0 ? " · ↑ more" : ""}
             </span>
           )}
         </div>
+
+        {/* AT mirror of the states the visuals paint for sighted users (the
+            skeletons are aria-hidden): search-in-flight — a status the old
+            "Searching…" text used to provide — the discovery wait, and the
+            landed suggestion count (quick-review a11y catches, 2026-07-16). */}
+        <span role="status" className="sr-only">
+          {hasQuery && searching && rows.length === 0
+            ? "Searching Spotify"
+            : !hasQuery && discoveryPending
+              ? "Finding suggestions"
+              : !hasQuery && discovery.length > 0
+                ? `${discovery.length} suggestion${discovery.length === 1 ? "" : "s"} added`
+                : ""}
+        </span>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-1.5 [scrollbar-width:none]">
           {!spotify.connected ? (

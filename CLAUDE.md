@@ -324,7 +324,10 @@ Design rule: chrome stays neutral (house semantic tokens); the album-art palette
 - `Ctrl+Alt+M` show/hide the widget
 - `Ctrl+Alt+S` summon Search (src/Search.tsx — Enter plays now,
   from silence it starts playback outright; Shift+Enter queues to up-next and
-  stays open; Esc/blur dismiss; empty state = resurfacing rows from history)
+  stays open; Esc/blur dismiss; empty state = two sections, "From your
+  history" resurfacing picks + "Something different" Last.fm discoveries
+  [key+Spotify-gated], rotating on a day-part block seed; ↑ at the top slot
+  pull-refreshes both)
 
 Commands route to the OS "current" media session, which Windows re-points to
 whichever app played most recently (pause AM while Spotify plays → next command

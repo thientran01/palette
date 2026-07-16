@@ -996,7 +996,7 @@ export const commands = {
     return invoke<string>("more_like_this", { title, artist });
   },
   /** Resolve Last.fm-similar tracks for the given played seeds, minus the
-   * `exclude` set (normalized `artisttitle` keys of the history pool) —
+   * `exclude` set (normalized `artist(U+0001)title` keys of the history pool) —
    * the search window's "Something different" rows. Unlike moreLikeThis this
    * RETURNS the picks (never queues). Statuses: ok | no_key | bad_key |
    * disconnected | offline | no_data | busy. */
@@ -1012,7 +1012,7 @@ export const commands = {
       // ring), minus anything the caller already excluded — the same
       // normalized key the backend/Search.tsx use.
       const norm = (artist: string, title: string) =>
-        `${artist.trim().toLowerCase()}${title.trim().toLowerCase()}`;
+        `${artist.trim().toLowerCase()}\u0001${title.trim().toLowerCase()}`;
       const ex = new Set(exclude);
       const seedTitle = seeds[0]?.title ?? "your library";
       const picks = MOCK_SEARCH_EXTRAS.filter((t) => !ex.has(norm(t.artist, t.title)))
