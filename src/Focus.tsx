@@ -45,11 +45,12 @@ import { extractAccent } from "./lib/palette";
 import * as posClock from "./lib/posClock";
 import { initReactive } from "./lib/reactive";
 import { DUR, EASE } from "./lib/tokens";
+import { DeviceTag } from "./DeviceTag";
 import { LyricsPanel, lyricsKeyOf, useLyrics } from "./LyricsPanel";
-import { QueuePanel, useSpotifyStatus } from "./Queue";
+import { QueuePanel, useSpotifyDevice, useSpotifyStatus } from "./Queue";
 import { ProgressBar, Transport } from "./Transport";
 import { SeparatorDot, Waveform } from "./Waveform";
-import type { NowPlaying } from "./types";
+import type { NowPlaying, SpotifyDevice } from "./types";
 
 /** How long the "No synced lyrics" caption stays before fading out — the
  * expanded view's rule (App.tsx NO_LYRICS_CAPTION_MS, kept in step): it's an
@@ -132,6 +133,7 @@ function IdentityStack({
   caption,
   captionExpired,
   centered,
+  device,
 }: {
   np: NowPlaying;
   artUrl: string | null;
@@ -141,6 +143,10 @@ function IdentityStack({
    * reserved slot's height never moves; aria-hidden goes with it. */
   captionExpired: boolean;
   centered: boolean;
+  /** Non-PC playback device (or null) — the "Playing on <device>" tag under
+   * the metadata; the room horizon is at rest because the audio is
+   * elsewhere. Already gated to a live Spotify session. */
+  device: SpotifyDevice | null;
 }) {
   const align = centered ? "items-center text-center" : "items-start text-left";
   return (
@@ -165,6 +171,11 @@ function IdentityStack({
           {np.album && <SeparatorDot />}
           {np.album}
         </p>
+        {device && (
+          <div className="mt-2">
+            <DeviceTag device={device} playing={np.status === "playing"} showName className="text-[15px]" />
+          </div>
+        )}
       </div>
       {/* Reserved slot — "Finding lyrics…" answers the wait, the miss stays
           quiet, and the fixed height means resolution never moves the art. */}
@@ -205,6 +216,12 @@ export default function Focus() {
   useEffect(() => initReactive(), []);
   const reducedMotion = useReducedMotion();
   const spotify = useSpotifyStatus();
+  // Non-PC playback device (or null), gated to a live Spotify session — the
+  // "Playing on <device>" tag; the room's horizon/waveform rests because the
+  // audio is elsewhere.
+  const activeDevice = useSpotifyDevice();
+  const remoteDevice: SpotifyDevice | null =
+    activeDevice && np?.player === "spotify" ? activeDevice : null;
   // The room's queue/history surface — same QueuePanel, this realm's own
   // open bit (the widget's queueOpen is another window's state).
   const [queueOpen, setQueueOpen] = useState(false);
@@ -343,7 +360,14 @@ export default function Focus() {
                   {/* Seated on the root's --stack-top (see the root div's
                       comment for the full layout-constant story). */}
                   <div className="flex min-h-0 shrink-0 flex-col pt-(--stack-top)">
-                    <IdentityStack np={np} artUrl={artUrl} caption={caption} captionExpired={captionExpired} centered={false} />
+                    <IdentityStack
+                      np={np}
+                      artUrl={artUrl}
+                      caption={caption}
+                      captionExpired={captionExpired}
+                      centered={false}
+                      device={remoteDevice}
+                    />
                   </div>
                   {/* The lyric column keeps its own top (the ladder Thien
                       likes; tops can't align now that the art centers) and
@@ -377,7 +401,7 @@ export default function Focus() {
                       centered on the window midline), so the lyrics⇄fallback
                       crossfade holds the art still on the vertical axis. */}
                   <div className="pt-(--stack-top)">
-                    <IdentityStack np={np} artUrl={artUrl} caption={caption} captionExpired={captionExpired} centered />
+                    <IdentityStack np={np} artUrl={artUrl} caption={caption} captionExpired={captionExpired} centered device={remoteDevice} />
                   </div>
                 </motion.div>
               )}

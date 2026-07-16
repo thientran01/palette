@@ -35,14 +35,17 @@ import {
   POPOVER_GAP,
   POPOVER_W,
   QueuePanel,
+  useSpotifyDevice,
   useSpotifyStatus,
 } from "./Queue";
+import { DeviceTag } from "./DeviceTag";
 import { SeparatorDot, Waveform } from "./Waveform";
 import {
   IN_TAURI,
   type NowPlaying,
   type PresenceDebug,
   type PresenceState,
+  type SpotifyDevice,
 } from "./types";
 
 
@@ -735,6 +738,7 @@ function ExpandedView({
   queueOpen,
   onCloseQueue,
   spotifyConnected,
+  remoteDevice,
 }: {
   np: NowPlaying;
   artUrl: string | null;
@@ -747,6 +751,9 @@ function ExpandedView({
   queueOpen: boolean;
   onCloseQueue: () => void;
   spotifyConnected: boolean;
+  /** Non-PC playback device (or null) — the "Playing on <device>" tag on the
+   * album view's metadata line. Already gated to a live Spotify session. */
+  remoteDevice: SpotifyDevice | null;
 }) {
   const reducedMotion = useReducedMotion();
   // Key-stamped gate: never render the new track's header over the old
@@ -911,6 +918,14 @@ function ExpandedView({
               {np.album && <SeparatorDot />}
               {np.album}
             </p>
+            {/* The device tag, with its name (the album view has room) — the
+                audio is on a non-PC device, which is why the hero waveform
+                below sits at rest. */}
+            {remoteDevice && (
+              <div className="mt-1 flex justify-center">
+                <DeviceTag device={remoteDevice} playing={playing} showName />
+              </div>
+            )}
             {/* Height-reserved caption slot: the caption fading in must not
                 re-center the column and shift the art (it did — every lyrics
                 miss nudged the 190px cover ~7px). "Finding lyrics…" waits
@@ -1196,6 +1211,12 @@ function App() {
   }, [nothing]);
   const spotify = useSpotifyStatus();
   const spotifyConnected = spotify.connected;
+  // The device Spotify is playing on when it isn't this PC (phone/speaker/…) —
+  // gated to a live Spotify session so a stale tag can't linger after a switch
+  // to Apple Music. Explains a quiet waveform: the audio is elsewhere.
+  const activeDevice = useSpotifyDevice();
+  const remoteDevice: SpotifyDevice | null =
+    activeDevice && np?.player === "spotify" ? activeDevice : null;
   // Jump-intermediate suppression for the pill's announcement layer.
   const announceSuppressed = isAnnounceSuppressed(np);
   // Backend-initiated jumps (the queue-aware skip: transport next /
@@ -1631,11 +1652,18 @@ function App() {
                     <Waveform size="md" trailing />
                   </span>
                 </div>
-                <p className="truncate text-xs leading-4 text-muted">
-                  {np.artist}
-                  {np.album && <SeparatorDot />}
-                  {np.album}
-                </p>
+                {/* The device tag rides the metadata line, icon-only (name in
+                    the tooltip) — the fixed card has no room for a third line.
+                    Only when the audio is on a non-PC device (remoteDevice),
+                    so it explains the waveform sitting on its resting dot. */}
+                <div className="flex min-w-0 items-center gap-1">
+                  <p className="min-w-0 flex-1 truncate text-xs leading-4 text-muted">
+                    {np.artist}
+                    {np.album && <SeparatorDot />}
+                    {np.album}
+                  </p>
+                  {remoteDevice && <DeviceTag device={remoteDevice} playing={playing} />}
+                </div>
               </div>
             </div>
             <ProgressBar np={np} />
@@ -1653,6 +1681,7 @@ function App() {
             queueOpen={queueOpen}
             onCloseQueue={() => setQueueOpen(false)}
             spotifyConnected={spotifyConnected}
+            remoteDevice={remoteDevice}
           />
         )}
         </ModeContent>

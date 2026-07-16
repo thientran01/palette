@@ -101,11 +101,50 @@ struct Inner {
     /// once carried a liked flag for the like heart — CUT 2026-07-12:
     /// Spotify endpoint-blocks library writes for this app id.)
     now_uri: Option<String>,
+    /// The active playback device, but ONLY when it's a device that produces
+    /// no local PC audio (a phone/speaker/etc. — never a Computer). Set by
+    /// enrich_now off the same currently-playing read; drives the "Playing on
+    /// <device>" tag that explains a quiet waveform (the audio is elsewhere,
+    /// not paused). None = local/unknown. Cleared with the tokens.
+    active_device: Option<SpotifyDevice>,
 }
 
 #[derive(Serialize, Clone)]
 pub struct SpotifyStatus {
     pub connected: bool,
+}
+
+/// The device playback is running on, when it isn't this PC — the substrate
+/// for the "Playing on <name>" tag. Only ever built for non-Computer devices
+/// (see parse_device), so its presence means "the audio is elsewhere."
+#[derive(Serialize, Clone, PartialEq)]
+pub struct SpotifyDevice {
+    pub name: String,
+    /// Normalized glyph key: "phone" | "speaker" | "tv" | "car" | "other".
+    pub kind: String,
+}
+
+/// The active device from a currently-playing / player body, mapped to a tag —
+/// but ONLY when it produces no local PC audio (anything but a Computer). A
+/// Computer (this PC OR another) is treated as local: None, so the common
+/// local case never earns a false "playing elsewhere" label. A missing device
+/// object or type is also None.
+fn parse_device(v: &serde_json::Value) -> Option<SpotifyDevice> {
+    let d = &v["device"];
+    let name = d["name"].as_str()?.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let kind = match d["type"].as_str()? {
+        "Computer" => return None,
+        "Smartphone" | "Tablet" => "phone",
+        "Speaker" | "AVR" | "STB" | "AudioDongle" | "CastAudio" => "speaker",
+        "TV" | "CastVideo" | "GameConsole" => "tv",
+        "Automobile" => "car",
+        _ => "other",
+    }
+    .to_string();
+    Some(SpotifyDevice { name, kind })
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -220,6 +259,17 @@ fn emit_status(app: &AppHandle) {
             "Connect Spotify"
         },
     );
+    // Every connection transition also re-syncs the device tag — a disconnect
+    // (clear_tokens ran first) emits None, so the tag can never outlive the
+    // session. Per-track updates emit separately from enrich_now.
+    emit_device(app);
+}
+
+/// Emit the current active device (or null) to the frontend. Paired with the
+/// spotify_device seed command for the mount-after-emit race.
+fn emit_device(app: &AppHandle) {
+    let device = lock(&app.state::<SpotifyAuth>()).active_device.clone();
+    let _ = app.emit("spotify-device", device);
 }
 
 fn save_tokens(inner: &Inner) {
@@ -245,6 +295,7 @@ fn clear_tokens(app: &AppHandle) {
         }
         inner.tokens = None;
         inner.now_uri = None;
+        inner.active_device = None;
     }
 }
 
@@ -1076,6 +1127,25 @@ pub fn enrich_now(app: &AppHandle) {
             if let Some(t) = parse_track(&v["item"]) {
                 update_now(&app, &t);
             }
+            // Same read, no extra call: capture WHICH device is playing so the
+            // UI can explain a quiet waveform (audio is elsewhere, not paused).
+            // Computer/local → None. Only emit on a real change; the seed
+            // command covers a frontend that mounts between changes. Guarded
+            // against a racing disconnect exactly like update_now.
+            let device = parse_device(&v);
+            let changed = {
+                let auth = app.state::<SpotifyAuth>();
+                let mut inner = lock(&auth);
+                if inner.tokens.is_some() && inner.active_device != device {
+                    inner.active_device = device;
+                    true
+                } else {
+                    false
+                }
+            };
+            if changed {
+                emit_device(&app);
+            }
         }
         app.state::<SpotifyAuth>()
             .enrich_in_flight
@@ -1154,6 +1224,13 @@ pub async fn spotify_status(app: AppHandle) -> SpotifyStatus {
     SpotifyStatus {
         connected: connected(&app),
     }
+}
+
+/// Seed for the "spotify-device" event — the active non-PC device (or null),
+/// so a window mounting between track changes still gets the current tag.
+#[tauri::command]
+pub async fn spotify_device(app: AppHandle) -> Option<SpotifyDevice> {
+    lock(&app.state::<SpotifyAuth>()).active_device.clone()
 }
 
 /// The connected account's display name (prefs "Connected as {name}"), via a

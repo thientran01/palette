@@ -125,7 +125,16 @@ src-tauri/src/
                 history's candidate — THE path that makes history rows
                 actionable; un-enriched rows (older entries, AM listens)
                 resolve on demand via spotify_resolve_uri (search, cached
-                per key frontend-side)
+                per key frontend-side). The SAME read also captures the
+                active DEVICE (parse_device) when it isn't a Computer —
+                active_device + "spotify-device" event + spotify_device
+                seed — the substrate for the frontend "Playing on <device>"
+                tag (src/DeviceTag.tsx) that explains a quiet waveform when
+                the audio is on a phone/speaker (local capture hears
+                silence; the tag says where). Non-Computer only (a Computer,
+                this PC or another, reads as local — no false tag); refreshes
+                on track change (a mid-track Connect transfer is stale till
+                the next); cleared with the tokens
   upnext.rs     Palette-managed up-next: Spotify's API can't remove/reorder
                 queue items, so Palette keeps its OWN ordered list
                 (app-data/upnext.json, "upnext-changed" + upnext_list seed;
