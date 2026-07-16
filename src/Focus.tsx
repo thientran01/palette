@@ -51,6 +51,12 @@ import { ProgressBar, Transport } from "./Transport";
 import { SeparatorDot, Waveform } from "./Waveform";
 import type { NowPlaying } from "./types";
 
+/** How long the "No synced lyrics" caption stays before fading out — the
+ * expanded view's rule (App.tsx NO_LYRICS_CAPTION_MS, kept in step): it's an
+ * answer to "where are the lyrics", and once read it shouldn't sit under the
+ * metadata forever. The reserved slot keeps its height, so nothing moves. */
+const NO_LYRICS_CAPTION_MS = 4000;
+
 /** Identity fields — the same re-render gate App.tsx uses (position lives
  * in posClock, never in React state). */
 const IDENTITY_FIELDS = [
@@ -124,11 +130,16 @@ function IdentityStack({
   np,
   artUrl,
   caption,
+  captionExpired,
   centered,
 }: {
   np: NowPlaying;
   artUrl: string | null;
   caption: string | null;
+  /** The miss caption answers once, then leaves (the expanded view's
+   * grammar) — when true the span fades out but stays mounted so the
+   * reserved slot's height never moves; aria-hidden goes with it. */
+  captionExpired: boolean;
   centered: boolean;
 }) {
   const align = centered ? "items-center text-center" : "items-start text-left";
@@ -161,8 +172,13 @@ function IdentityStack({
         {caption && (
           <span
             key={caption}
-            className={`inline-block animate-[caption-in_200ms_var(--ease-out-tk)_both] ${
-              caption === "Finding lyrics…" ? "[animation-delay:400ms]" : ""
+            aria-hidden={captionExpired || undefined}
+            className={`inline-block ${
+              captionExpired
+                ? "animate-[caption-out_260ms_var(--ease-out-tk)_both]"
+                : `animate-[caption-in_200ms_var(--ease-out-tk)_both] ${
+                    caption === "Finding lyrics…" ? "[animation-delay:400ms]" : ""
+                  }`
             }`}
           >
             {caption}
@@ -229,6 +245,18 @@ export default function Focus() {
       : np && np.player !== "none"
         ? "No synced lyrics"
         : null;
+
+  // The miss caption answers once, then leaves (the expanded view's rule) —
+  // the timer restarts per track and per status flip so a loading→none
+  // resolve gets its full read window.
+  const trackKey = lyricsKeyOf(np);
+  const [captionExpired, setCaptionExpired] = useState(false);
+  useEffect(() => {
+    setCaptionExpired(false);
+    if (lyrics.status !== "none") return;
+    const t = window.setTimeout(() => setCaptionExpired(true), NO_LYRICS_CAPTION_MS);
+    return () => window.clearTimeout(t);
+  }, [lyrics.status, trackKey]);
 
   const swap = {
     initial: { opacity: 0 },
@@ -313,7 +341,7 @@ export default function Focus() {
                   {/* Seated on the root's --stack-top (see the root div's
                       comment for the full layout-constant story). */}
                   <div className="flex min-h-0 shrink-0 flex-col pt-(--stack-top)">
-                    <IdentityStack np={np} artUrl={artUrl} caption={caption} centered={false} />
+                    <IdentityStack np={np} artUrl={artUrl} caption={caption} captionExpired={captionExpired} centered={false} />
                   </div>
                   {/* The lyric column keeps its own top (the ladder Thien
                       likes; tops can't align now that the art centers) and
@@ -347,7 +375,7 @@ export default function Focus() {
                       centered on the window midline), so the lyrics⇄fallback
                       crossfade holds the art still on the vertical axis. */}
                   <div className="pt-(--stack-top)">
-                    <IdentityStack np={np} artUrl={artUrl} caption={caption} centered />
+                    <IdentityStack np={np} artUrl={artUrl} caption={caption} captionExpired={captionExpired} centered />
                   </div>
                 </motion.div>
               )}
