@@ -207,7 +207,7 @@ src-tauri/src/
                 room (identity column vertically centered on the lyric
                 anchor + LyricsPanel "focus" lines; the no-lyrics fallback
                 centers the same stack), the horizon (room Waveform,
-                RESIZED 2026-07-14 to 15 capsules at 420×100: the original
+                RESIZED 2026-07-14 to 19 capsules at 780×100 (⅔ the console): the original
                 1170px band matched the progress bar and read as a second
                 timeline, and #102's song-block wave was too small — both
                 Thien live verdicts), the console. Horizon + console live

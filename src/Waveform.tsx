@@ -4,7 +4,7 @@
  * five Apple-style accent capsules bouncing on live spectrum bins. On pause
  * it settles in beats: the bars retract into dots, then the dots fade from
  * the outside in — a distance-staggered cascade normalized to the drop beat,
- * so a 5-bar and a 15-bar rendition collapse in the same wall-clock (reverse-
+ * so a 5-bar and a 19-bar rendition collapse in the same wall-clock (reverse-
  * reading as one dot having multiplied) — and the survivor drains to gray as
  * the very last event. The app's ONLY
  * audio-reactive surface. State morphs use the house EASE token; per-frame
@@ -28,9 +28,9 @@ import { Envelope, subscribeBands } from "./lib/reactive";
  * shortest — thin 12px capsules stay capsules at any height. RESIZED
  * 2026-07-14 (Thien's live verdict): the 41-bar 1170×150 band matched the
  * progress bar's width and read as a second timeline, and PR #102's tiny
- * song-block wave overcorrected — now 15 capsules at 780×100 (⅔ the
- * console's width — Thien's Figma pass, 2026-07-14: the 15 stretched on
- * ~43px gaps read calmer than a dense picket), still clearly narrower
+ * song-block wave overcorrected — now 19 capsules at 780×100 (⅔ the
+ * console's width — Thien's Figma pass, 2026-07-14: 19 capsules stretched on
+ * ~31px gaps read calmer than a dense picket), still clearly narrower
  * than the console. Still under the gentle symmetric peak envelope (roomPeak) so it
  * reads as one intentional instrument (tall bass center, tapered edges)
  * instead of a random picket. Same choreography at every size.
@@ -52,7 +52,7 @@ const HERO: ReadonlySet<Size> = new Set(["lg", "room"]);
  * bars never bounce in lockstep. md is sm's inner five plus an outer high
  * pair; lg adds one more high pair outside those (15/13 deliberately
  * asymmetric — twin bins would bounce the edges in lockstep). room extends
- * lg with three more staggered outer pairs (15 bars): the center rides bass
+ * lg with five more staggered outer pairs (19 bars): the center rides bass
  * (bin 1 — the tall middle) and the bins trend toward the highs at the
  * edges (so energy tapers outward WITH the roomPeak envelope), jittered so
  * no two neighbors share a bin and the two halves are never mirror images. */
@@ -60,7 +60,7 @@ const BAR_BINS = {
   sm: [9, 4, 1, 6, 11],
   md: [12, 9, 4, 1, 6, 11, 14],
   lg: [15, 12, 9, 4, 1, 6, 11, 14, 13],
-  room: [13, 14, 12, 15, 12, 9, 4, 1, 6, 11, 14, 13, 15, 12, 14],
+  room: [12, 15, 13, 14, 12, 15, 12, 9, 4, 1, 6, 11, 14, 13, 15, 12, 14, 13, 15],
 } as const;
 /** Minimum bar height while alive, as a fraction of the full bar. */
 const REST = 0.15;
@@ -103,7 +103,7 @@ const SLEEP_MS = 500;
  * alive) on faster beats: the middot warms to accent as the survivor takes
  * over (the color beat leads, loosely mirroring color-leaves-last on the
  * settle — the warm-up overlaps the first multiplication beat), pairs fade in
- * from the inside out — distance-staggered (riseDelayMs) so a 15-bar rendition
+ * from the inside out — distance-staggered (riseDelayMs) so a 19-bar rendition
  * fans in as smoothly as a 5-bar one, the entrance mirror of the settle's
  * outside-in drop — and the dots grow into bars.
  */
@@ -165,7 +165,7 @@ function barClass(phase: Phase, i: number, size: Size): string {
  * and the inner pair (d<2) needs none — the "one" beat IS its stagger. The
  * CALLER additionally gates this to the SETTLE ladder (settlingRef): the
  * announce/bloom ladders reuse these phase names on the faster BLOOM/
- * ANNOUNCE_MS beats — and the announcement fires at room's 15 bars too
+ * ANNOUNCE_MS beats — and the announcement fires at room's 19 bars too
  * (Focus.tsx), where a DROP_MS-normalized stagger would overrun their window —
  * so those collapse plainly, matching their "glanced at, not watched" cadence. */
 function dropDelayMs(phase: Phase, i: number, size: Size): number {
@@ -181,7 +181,7 @@ function dropDelayMs(phase: Phase, i: number, size: Size): number {
  * dropDelayMs. On the bloom's "dots" beat every outer dot (d≥2) un-hides at
  * once; delay each by how FAR OUT it is so the reveal fans from the center
  * (the survivor + its just-revealed inner pair) outward, normalized to the
- * bloom beat (BLOOM_MS) so a 5-bar and a 15-bar rendition fan in the same
+ * bloom beat (BLOOM_MS) so a 5-bar and a 19-bar rendition fan in the same
  * wall-clock. The innermost outer pair (d=2) leads at 0, the outermost lands a
  * full BLOOM_MS later — into the "alive" handoff, where the bars are already
  * growing. d<2 needs none (its pair revealed a beat earlier, on "three") and
@@ -223,7 +223,7 @@ export function Waveform({
   // change so the render sees it). The settle earns the OUTSIDE-IN drop
   // stagger (dropDelayMs); the bloom the INSIDE-OUT rise stagger (riseDelayMs).
   // The announcement reuses these phase names on faster beats — and runs at
-  // room's 15 bars in focus mode (Focus.tsx), where either stagger would
+  // room's 19 bars in focus mode (Focus.tsx), where either stagger would
   // overrun its window — so it collapses/reveals plainly, ungated.
   const settlingRef = useRef(false);
   const bloomingRef = useRef(false);
