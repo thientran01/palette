@@ -37,7 +37,27 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "img-src": "'self' data: https://i.scdn.co https://*.scdn.co https://*.spotifycdn.com",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self'",
+        "script-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "frame-ancestors": "'none'"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "img-src": "'self' data: https://i.scdn.co https://*.scdn.co https://*.spotifycdn.com",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self'",
+        "script-src": "'self' 'unsafe-inline' 'unsafe-eval'",
+        "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:1420 http://localhost:1420",
+        "object-src": "'none'"
+      },
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {
