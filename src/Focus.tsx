@@ -244,7 +244,19 @@ export default function Focus() {
     // Opaque room, one 200ms opacity arrival for the whole surface — chrome
     // gets no theater; the lyrics cascade and the hero's own bloom are the
     // arrival's only choreography.
-    <div className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg">
+    //
+    // --art / --stack-top: the room's two layout constants, defined ONCE
+    // here (every band derives from them — the identity seat, the lyric
+    // box's edges, the horizon's centering). --art = the album's size:
+    // 560px design size, 46vh so the square art leaves room on normal
+    // monitors, 100vh-660px as the short-monitor guard, 50vw-582px as the
+    // narrow-width guard (the identity column must end left of the
+    // centered 780px horizon: 192 + art ≤ (100vw-780)/2 — the metadata
+    // riding into the horizon's ROW is accepted per Thien's Figma pass).
+    // --stack-top centers the identity STACK (art + 146px of metadata) on
+    // the window's vertical midpoint (Thien's Figma verdict, 2026-07-14:
+    // it lifts the art to meet the lyric cluster).
+    <div className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg [--art:min(560px,46vh,100vh_-_660px,50vw_-_582px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)]">
       {/* Corner exit: hover-revealed + the has-[:focus-visible] keyboard
           reveal (the widget's contract). The contract-bracket verb, going
           home. */}
@@ -296,20 +308,10 @@ export default function Focus() {
                     pointerEvents: "none" as const,
                     transition: { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: [...EASE.out] as [number, number, number, number] },
                   }}
-                  className="absolute inset-0 flex items-stretch gap-[7%] px-[10%] [--art:min(560px,46vh,100vh_-_660px,50vw_-_582px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)]"
+                  className="absolute inset-0 flex items-stretch gap-[7%] px-[10%]"
                 >
-                  {/* --art: the album's size — 560px design size, 46vh so
-                      the square art leaves room on normal monitors,
-                      100vh-660px as the short-monitor guard, 50vw-582px as
-                      the narrow-width guard (this column must end left of
-                      the centered 780px horizon: 192 + art ≤ (100vw-780)/2,
-                      since the metadata riding into the horizon's ROW is
-                      accepted per Thien's Figma pass). --stack-top: the
-                      identity STACK (art + 146px of metadata) centers on
-                      the WINDOW's vertical midpoint — Thien's Figma verdict
-                      2026-07-14: centering the block lifts the art up to
-                      meet the lyric cluster and kills the diagonal between
-                      the two focal points. */}
+                  {/* Seated on the root's --stack-top (see the root div's
+                      comment for the full layout-constant story). */}
                   <div className="flex min-h-0 shrink-0 flex-col pt-(--stack-top)">
                     <IdentityStack np={np} artUrl={artUrl} caption={caption} centered={false} />
                   </div>
@@ -339,7 +341,7 @@ export default function Focus() {
                     pointerEvents: "none" as const,
                     transition: { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: [...EASE.out] as [number, number, number, number] },
                   }}
-                  className="absolute inset-0 flex items-start justify-center [--art:min(560px,46vh,100vh_-_660px,50vw_-_582px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)]"
+                  className="absolute inset-0 flex items-start justify-center"
                 >
                   {/* Same seat rule as the lyrics view (identity stack
                       centered on the window midline), so the lyrics⇄fallback
@@ -379,12 +381,15 @@ export default function Focus() {
               screen). RESIZED 2026-07-14 (Thien's live verdict): the 1170px
               band matched the progress bar's width and read as a second
               timeline — now a 780×100 nineteen-capsule instrument (⅔ the
-              console's width), clearly narrower than the console. Margins
-              are ASYMMETRIC per Thien's Figma pass (2026-07-14): the
-              horizon rides up near the lyrics (mt-[3.5vh]) with the big
-              air below it (mb-[10vh]), so the bottom third breathes
-              before the console. */}
-          <div className="mb-[10vh] mt-[3.5vh] flex shrink-0 items-center justify-center">
+              console's width), clearly narrower than the console. Seated
+              EQUIDISTANT between the lyric box's bottom edge (= the art's
+              bottom line, --stack-top + --art) and the console's top
+              (93vh − 92px: 92 = progress row 20 + mt-4 16 + transport 56;
+              keep in sync with the console's classes). In this flex
+              column only the bottom margin positions the box — the flex-1
+              region above absorbs the rest — so mb = half the free space
+              (Thien, 2026-07-14: "even" gaps both sides). */}
+          <div className="mb-[calc((93vh_-_212px_-_var(--stack-top)_-_var(--art))/2)] flex shrink-0 items-center justify-center">
             <Waveform size="room" announceKey={lyricsKeyOf(np) ?? undefined} />
           </div>
 
