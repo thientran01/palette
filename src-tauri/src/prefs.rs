@@ -146,7 +146,6 @@ pub async fn close_prefs(app: AppHandle) {
 pub struct PrefsSeed {
     version: String,
     reactive_separator: bool,
-    seek_amount: i64,
     launch_mode: String,
     start_at_login: bool,
     hide_on_fullscreen: bool,
@@ -162,9 +161,6 @@ pub async fn prefs_seed(app: AppHandle) -> PrefsSeed {
     PrefsSeed {
         version: app.package_info().version.to_string(),
         reactive_separator: settings::get_bool(&app, "reactive_separator", true),
-        seek_amount: settings::get_value(&app, "seek_amount")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(10),
         launch_mode: settings::get_string(&app, "launch_mode")
             .unwrap_or_else(|| "card".to_string()),
         start_at_login: app.autolaunch().is_enabled().unwrap_or(false),
@@ -181,7 +177,7 @@ pub async fn prefs_seed(app: AppHandle) -> PrefsSeed {
 /// The generic persist seam (settings.rs is already atomic). Settings with a
 /// live side effect (autostart, the fullscreen conceal) go through their own
 /// commands so the tray mirror stays in sync; this covers the inert ones
-/// (reactive separator, seek amount, launch mode, the Last.fm key, seenIntro).
+/// (reactive separator, launch mode, the Last.fm key, seenIntro).
 /// The "settings-changed" event lets any other open surface reflect the write.
 #[tauri::command]
 pub async fn set_setting(app: AppHandle, key: String, value: serde_json::Value) {

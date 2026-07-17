@@ -649,7 +649,6 @@ export interface HotkeyInfo {
 export interface PrefsSeed {
   version: string;
   reactive_separator: boolean;
-  seek_amount: number;
   launch_mode: string;
   start_at_login: boolean;
   hide_on_fullscreen: boolean;
@@ -677,7 +676,6 @@ const MOCK_HOTKEYS: HotkeyInfo[] = [
 const mockSettings = {
   version: "0.7.1",
   reactive_separator: true,
-  seek_amount: 10,
   launch_mode: "card",
   start_at_login: false,
   hide_on_fullscreen: true,
@@ -1097,7 +1095,6 @@ export const commands = {
       return {
         version: mockSettings.version,
         reactive_separator: mockSettings.reactive_separator,
-        seek_amount: mockSettings.seek_amount,
         launch_mode: mockSettings.launch_mode,
         start_at_login: mockSettings.start_at_login,
         hide_on_fullscreen: mockSettings.hide_on_fullscreen,
@@ -1109,8 +1106,8 @@ export const commands = {
     }
     return invoke<PrefsSeed>("prefs_seed");
   },
-  /** Persist an inert setting (reactive separator, seek amount, launch mode,
-   * Last.fm key, seenIntro). Side-effect settings use their own commands. */
+  /** Persist an inert setting (reactive separator, launch mode, Last.fm key,
+   * seenIntro). Side-effect settings use their own commands. */
   setSetting(key: string, value: unknown): void {
     if (IN_TAURI) {
       void invoke("set_setting", { key, value });
