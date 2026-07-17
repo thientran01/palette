@@ -21,10 +21,19 @@
  * search window never renders position). Announcement suppression for a play
  * lives in the MAIN realm, armed by the backend's "spotify-jump" emit —
  * never armed from here.
+ *
+ * FULLY MONOCHROME (Thien, 2026-07-17): accent lives where the song is
+ * VISIBLE — widget and focus room render the playing track's identity, so
+ * the song's extracted color has an anchor there; this pane renders no
+ * now-playing content, and a song-colored queue flash arrived with no
+ * referent (tried both the resting hue and a synced song accent — both
+ * read wrong). The queued-row flash is a neutral fg/20 brightening (a
+ * clear pop above the fg/10 selection wash) + the "Queued ·" note; the
+ * realm runs no art→accent pipeline (the --accent var here only ever
+ * holds the resting value, effectively unused).
  */
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { useArt, useArtAccent } from "./lib/artAccent";
-import { commands, onNowPlaying, onSearchShown } from "./lib/backend";
+import { commands, onSearchShown } from "./lib/backend";
 import { initReactive } from "./lib/reactive";
 import { RowThumb, useSpotifyStatus } from "./Queue";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
@@ -437,20 +446,6 @@ export default function Search() {
   // reactive surface, but a realm that never votes would leave the previous
   // default standing for it.
   useEffect(() => initReactive(), []);
-
-  // The song's accent reaches this realm too (Thien, 2026-07-17): the queue
-  // verb flashed the SONG's color in the widget but the resting brand hue
-  // here — the same action, two colors. Art-id only from the now-playing
-  // stream (this window still renders no position; emits are diff-suppressed
-  // and same-value sets don't re-render), then the shared per-realm
-  // fetch + extraction owns this document's --accent. The resting violet
-  // holds when nothing plays or the cover yields no accent.
-  const [artId, setArtId] = useState<string | null>(null);
-  useEffect(
-    () => onNowPlaying((np) => setArtId(np.player === "none" ? null : np.art_id)),
-    [],
-  );
-  useArtAccent(useArt(artId));
 
   const showNote = (msg: string, holdMs = 2400) => {
     setNote(msg);
@@ -915,7 +910,7 @@ export default function Search() {
                     }}
                     onClick={() => void playRow(row)}
                     className={`flex h-[52px] cursor-pointer select-none items-center gap-3 rounded-md px-3.5 [transition:background-color_140ms_var(--ease-out-tk)] ${
-                      flashKeys.has(row.key) ? "bg-accent/15" : i === sel ? "bg-fg/10" : ""
+                      flashKeys.has(row.key) ? "bg-fg/20" : i === sel ? "bg-fg/10" : ""
                     } ${!hasQuery && swapTick > 0 ? "row-swap-in" : ""}`}
                     style={
                       // Stagger is LOCAL to each section's landing moment:
