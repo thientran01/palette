@@ -714,10 +714,12 @@ export default function Search() {
       e.preventDefault();
       // Pull-to-refresh: Up while ALREADY at the top slot rolls a fresh set
       // (the phone gesture). Only in the empty state, with rows to replace,
-      // and never while a fetch is in flight (would answer "busy").
+      // and never while a fetch is in flight (would answer "busy"). No
+      // toast: the skeleton wait + the row-swap ripple ARE the refresh
+      // narration — the "Fresh picks" caption was double-speak (Thien,
+      // 2026-07-17).
       if (!hasQuery && sel === 0 && !gated && rows.length > 0 && !refreshBusy.current) {
         refreshCount.current += 1;
-        showNote("Fresh picks", 1600);
         void refreshEmptyState(refreshCount.current);
         return;
       }
