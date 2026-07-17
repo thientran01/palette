@@ -207,13 +207,17 @@ const SILENCE_AFTER_MS: u64 = 250;
 /// often — the player's audio session often appears a beat after playback
 /// starts, and a missed join at open time shouldn't stick for the session.
 const UPGRADE_RETRY: Duration = Duration::from_secs(5);
-/// A process capture that has NEVER delivered a packet this long into
-/// playback joined the wrong process (multi-profile browsers can alias an
-/// AUMID) — the right join delivers within the first beat of a playing
-/// track. Demote that AUMID to the Device fallback, stickily (re-resolving
-/// would pick the same wrong PID and strand the bars at zero again), until
-/// the playing app changes. A capture that HAS delivered is never demoted:
-/// its later silence is the target really rendering nothing.
+/// A process capture that has NEVER delivered a packet WITH SIGNAL this long
+/// into playback either joined the wrong process (multi-profile browsers can
+/// alias an AUMID) or joined a session that only ever renders SILENCE while
+/// the audible audio goes elsewhere (Apple Music renders through a sibling
+/// agent process, not the GSMTC process our AUMID resolves — loopback.rs's
+/// second quirk). The right join delivers real audio within the first beat of
+/// a playing track. Demote that AUMID to the Device fallback, stickily
+/// (re-resolving would pick the same silent PID and strand the bars at zero
+/// again), until the playing app changes — the whole-mix fallback still hears
+/// the app at the endpoint. A capture that has delivered signal is never
+/// demoted: its later silence is the target really rendering nothing.
 const DEMOTE_AFTER_MS: u64 = 10_000;
 
 /// Owner thread: opens/drops the capture as the switch flips, runs the

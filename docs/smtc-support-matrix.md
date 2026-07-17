@@ -90,6 +90,45 @@ stamp/delivery lag, finding 9) — reproduce the quantization component in a pla
 browser with `npm run dev` → `/?am` (mock switches to the AM profile: floored positions,
 irregular push cadence, pause-era stamp on resume, `can_seek: false`).
 
+## Audio-reactive waveform capture (WASAPI loopback, not SMTC)
+
+The living-separator waveform is fed by WASAPI loopback (audio.rs / loopback.rs),
+independent of SMTC: process-scoped capture of the playing app's process tree, with a
+whole-device-mix loopback fallback. Both are LOOPBACK, and loopback can only tap
+**shared-mode** streams.
+
+| Player | Capture | Notes |
+|---|---|---|
+| Spotify | ✅ reacts | Renders shared-mode PCM in its own process — process capture rides it. |
+| Apple Music (Lossless, shared mode) | ✅ reacts | Only while AM is NOT holding the device exclusively (see below). |
+| Apple Music (Lossless, exclusive mode) | ❌ flat resting dot | See finding 12. |
+
+12. *(2026-07-17)* **Apple Music takes the output device in WASAPI EXCLUSIVE mode for
+    bit-perfect lossless (24-bit/96kHz ALAC), which bypasses the shared audio-engine
+    mix — so NEITHER process-loopback NOR the whole-device-mix fallback can capture it,
+    and the waveform stays a resting dot.** Confirmed live: with the silent-capture
+    demote in place, logs showed `process capture never delivered → device-mix
+    fallback` AND the device-mix was also silent; toggling OFF Windows Sound → output
+    device → Advanced → "Allow apps to take exclusive control of this device"
+    immediately restored the reactive waveform (AM dropped to shared mode). This is a
+    **Windows/WASAPI limitation, not a Palette bug** — "a client can enable loopback
+    mode only for a shared-mode stream; exclusive-mode streams cannot operate in
+    loopback mode." No capture-side fix exists; the honest rendering is the resting dot.
+    - **Workaround (user):** leave "Allow apps to take exclusive control" OFF on the
+      output device → AM plays shared-mode → waveform works (trade-off: the OS mixer
+      touches the audio, so it is no longer bit-perfect). It re-grabs exclusive on a new
+      stream / AM restart, so the toggle-off must persist to keep the waveform live.
+    - **Diagnostic:** `cargo test --lib live_probe -- --ignored --nocapture` (loopback.rs)
+      dumps the render-session topology and directly process-captures each active
+      session, printing a VERDICT (capturable-via-process vs. bypasses-shared-mix).
+    - **Aside (distinct case):** a player that renders SILENT keep-alive packets while
+      its real audio goes elsewhere (e.g. Dolby Atmos / spatial audio, whose PCM is
+      mixed by the system spatial renderer outside the app's process) would keep the
+      process capture's `has_data()` true and strand it — loopback.rs now stamps
+      `last_data_ms` only on real signal (`peak > SILENCE_EPS`) so that case demotes to
+      the device fallback. Exclusive mode is NOT this case: it delivers no packets at
+      all, so the plain `!has_data()` demote already covers it.
+
 ## Raw spike commands
 
 ```
