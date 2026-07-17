@@ -407,12 +407,27 @@ export default function Focus() {
                     pointerEvents: "none" as const,
                     transition: { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: [...EASE.out] as [number, number, number, number] },
                   }}
-                  className="absolute inset-0 flex items-start justify-center"
+                  className="absolute inset-0 flex items-center justify-center"
                 >
-                  {/* Same seat rule as the lyrics view (identity stack
-                      centered on the window midline), so the lyrics⇄fallback
-                      crossfade holds the art still on the vertical axis. */}
-                  <div className="pt-(--stack-top)">
+                  {/* No-lyrics fallback: the identity stack is CENTERED in the
+                      space above the horizon (items-center), not pinned to
+                      --stack-top like the split view. --stack-top centers the
+                      ART on the window midline, which hangs the metadata +
+                      caption ~146px below it — head-on into the horizon's band
+                      (in the split view the metadata is far-left and the
+                      horizon centered, so they clear; centered they collide,
+                      Thien's live catch 2026-07-17). Centering the whole
+                      cluster here seats the wave cleanly between the metadata
+                      and the console at any focus resolution. The
+                      loading⇄synced crossfade already slides the art
+                      center→left (the compositions differ), so this vertical
+                      shift rides the same opacity crossfade, not a new break.
+                      translate-y-[2.5vh]: the horizon (fixed band) sits in a
+                      sub-band below the upper room's center, so a pure center
+                      left the wave ~20-45px toward the console; the nudge
+                      equalizes the metadata→wave / wave→console gaps to within
+                      ~9px across 1080–1440 (measured). */}
+                  <div className="translate-y-[2.5vh]">
                     <IdentityStack np={np} artUrl={artUrl} caption={caption} captionExpired={captionExpired} centered device={remoteDevice} />
                   </div>
                 </motion.div>
