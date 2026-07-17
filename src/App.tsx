@@ -616,8 +616,11 @@ function ViewToggle({
   onToggle: () => void;
 }) {
   return (
+    // right-[7px] = the corner chrome's right rail (ModeCluster/QueueSeat's
+    // documented seat math): this 28px button and the bracket cluster below
+    // it share one vertical line on the right edge — right-2 sat it 1px off.
     <div
-      className="pointer-events-none absolute right-2 top-2 z-10 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100"
+      className="pointer-events-none absolute right-[7px] top-2 z-10 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100"
       onMouseDown={(e) => e.stopPropagation()}
     >
       <button
@@ -882,7 +885,10 @@ function ExpandedView({
                 </span>
               )}
             </div>
-            <TruncateTip text={np.artist} className="text-[13px] text-muted" />
+            {/* text-xs leading-4 = the card's metadata rung exactly, so the
+                artist line holds size through the card⇄expanded morph (the
+                15px title above already does; 13px here visibly stepped). */}
+            <TruncateTip text={np.artist} className="text-xs leading-4 text-muted" />
           </div>
         </div>
 
@@ -920,19 +926,21 @@ function ExpandedView({
             </p>
             {/* The device tag, with its name (the album view has room) — the
                 audio is on a non-PC device, which is why the hero waveform
-                below sits at rest. */}
-            {remoteDevice && (
-              <div className="mt-1 flex justify-center">
-                <DeviceTag device={remoteDevice} playing={playing} showName />
-              </div>
-            )}
+                below sits at rest. The slot is HEIGHT-RESERVED like the
+                caption below: a conditional mount inserted 16px into this
+                justify-center column and shifted the 190px cover 8px on
+                every device flip — the exact failure the caption slot
+                documents ("the art never moves"). */}
+            <div className="mt-1 flex h-3 items-center justify-center">
+              {remoteDevice && <DeviceTag device={remoteDevice} playing={playing} showName />}
+            </div>
             {/* Height-reserved caption slot: the caption fading in must not
                 re-center the column and shift the art (it did — every lyrics
                 miss nudged the 190px cover ~7px). "Finding lyrics…" waits
                 400ms so fast fetches never flash it; the miss caption fades
                 back out once read (captionExpired), aria-hidden going with it
                 so AT doesn't announce a caption sighted users can't see. */}
-            <p className="mt-0.5 h-[15px] text-[10px] text-muted">
+            <p className="mt-0.5 h-4 text-[11px] text-muted">
               {lyrics.status !== "synced" && (
                 <span
                   key={lyrics.status}
@@ -977,7 +985,15 @@ function ExpandedView({
           onMouseDown={(e) => e.stopPropagation()}
           className={`absolute inset-0 flex flex-col bg-surface pt-[52px] ${layer(active === "queue")}`}
         >
-          <QueuePanel np={np} connected={spotifyConnected} open={queueOpen} />
+          {/* -mx-2 cancels the rows'/labels' px-2, seating the row thumbs and
+              section labels on the header art's left line — one vertical
+              line, cover over cover (Thien, 2026-07-16). Hover washes keep
+              their 8px overhang, now bleeding into the px-3 gutter (all
+              bg-surface, no seam). Popover/room garments keep the inset —
+              they have no header art to answer to. */}
+          <div className="-mx-2 flex min-h-0 flex-1 flex-col">
+            <QueuePanel np={np} connected={spotifyConnected} open={queueOpen} />
+          </div>
         </div>
       </div>
       {/* Hoisted chrome, like progress/transport below: the toggle keeps its

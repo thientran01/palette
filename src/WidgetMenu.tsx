@@ -34,7 +34,7 @@ function Item({
       type="button"
       role="menuitem"
       onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left text-[12.5px] [transition:background-color_var(--transition-duration-2)] hover:bg-fg/[0.08] ${
+      className={`flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left text-[12.5px] [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk)] hover:bg-fg/[0.08] ${
         muted ? "text-muted" : "text-fg"
       }`}
     >
@@ -67,11 +67,15 @@ export function WidgetMenu({
     <div
       role="menu"
       onMouseDown={(e) => e.stopPropagation()}
-      className="absolute z-40 w-[204px] rounded-[10px] border border-border/[0.11] bg-surface-2 p-1.5 shadow-xl shadow-black/50"
+      // The popover recipe verbatim (rounded-xl border-border/10 shadow-xl
+      // shadow-black/40, App.tsx) — this menu had drifted into a third
+      // floating-surface recipe (10px/0.11/black-50).
+      className="absolute z-40 w-[204px] rounded-xl border border-border/10 bg-surface-2 p-1.5 shadow-xl shadow-black/40"
       style={style}
     >
       <Item label="Preferences…" onClick={act(() => commands.openPrefs())} />
-      <Item label="Shortcuts" onClick={act(() => commands.openPrefs("hotkeys"))} />
+      {/* Ellipsis: opens the same prefs window "Preferences…" does. */}
+      <Item label="Shortcuts…" onClick={act(() => commands.openPrefs("hotkeys"))} />
       <Item
         label={spotifyConnected ? "Disconnect Spotify" : "Connect Spotify"}
         onClick={act(() => (spotifyConnected ? commands.spotifyDisconnect() : commands.spotifyConnect()))}

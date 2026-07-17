@@ -252,7 +252,7 @@ async function computeResurfaced(
 /** A ghost of one result row — shown where real rows will land while a fetch
  * runs (discovery fill and first search results), so the wait fills its space
  * with the shape of the answer instead of a void. Geometry mirrors the real
- * row exactly (h-52, 32px thumb, gap-3 px-3, reason bar flush right → in-place
+ * row exactly (h-52, 32px thumb, gap-3 px-3.5, reason bar flush right → in-place
  * swap, zero shift); widths stagger so three read as content, not a grid.
  * Opacity-breathing only (.skeleton-pulse): the classic shimmer is a translate
  * sweep, and that motion vocabulary belongs to the waveform. The breathe is
@@ -276,7 +276,7 @@ function SkeletonRow({ index, reason = false }: { index: number; reason?: boolea
   const [titleW, artistW, reasonW] = SKELETON_WIDTHS[index % SKELETON_WIDTHS.length];
   const col = (n: number) => ({ animationDelay: `${n * SKELETON_COL_DELAY_MS}ms` });
   return (
-    <div role="presentation" aria-hidden className="flex h-[52px] items-center gap-3 px-3">
+    <div role="presentation" aria-hidden className="flex h-[52px] items-center gap-3 px-3.5">
       {/* Thumb one tone brighter than the text bars — real rows are bright
           art beside muted text, and a single tone read as a flat gray grid. */}
       <span
@@ -311,6 +311,23 @@ function SearchGlyph() {
       <circle cx="7" cy="7" r="4.4" />
       <path d="M 10.4,10.4 L 13.6,13.6" />
     </svg>
+  );
+}
+
+/** One bright keycap for the search-row hint. The old inline glyphs
+ * ("↵ play · ⇧↵ queue") sat in the same 11px muted run as their labels and
+ * read as compressed noise — you couldn't tell what to press (Thien,
+ * 2026-07-16). Each key gets a cream face (the house neutral-inversion
+ * fill at /90 — a half-step below the prefs Toggle's full bg-fg so three
+ * caps in a row don't outshine the input text; never accent) so the
+ * glyph reads at a glance while the verb labels stay muted text. Geometry
+ * echoes Keycaps sm; a one-off component because these are single GLYPH
+ * caps, not chord strings. */
+function HintKey({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-[4px] bg-fg/90 px-[3px] text-[10px] font-semibold not-italic leading-none text-surface">
+      {children}
+    </kbd>
   );
 }
 
@@ -571,9 +588,13 @@ export default function Search() {
   const hasQuery = query.trim().length > 0;
   // Row-source flips (typing the first char, clearing) restart selection at
   // the top — without this the RAW selected can sit past the new list and
-  // ArrowUp reads as dead until it walks back into range.
+  // ArrowUp reads as dead until it walks back into range. The swap tick
+  // resets with it: after a pull, a type-then-clear round trip re-showed the
+  // SAME rows through the pull ripple — replayed motion for content that
+  // didn't change (unlicensed; the ripple is pull feedback only).
   useEffect(() => {
     setSelected(0);
+    setSwapTick(0);
   }, [hasQuery]);
 
   // Discovery appends BELOW history, so a late-arriving discovery fill never
@@ -710,11 +731,27 @@ export default function Search() {
             className="search-input min-w-0 flex-1 bg-transparent text-[18px] text-fg outline-none placeholder:text-muted focus-visible:[outline:none]"
           />
           {!gated && (
-            <span className="shrink-0 text-[11px] text-muted/85">
+            <span className="flex shrink-0 items-center gap-2.5 text-[11px] text-muted/85">
               {/* "↑ more" only when there ARE rows to re-roll — the Up guard
                   requires rows, and an empty-history user was being promised
-                  a no-op (quick-review catch). */}
-              ↵ play · ⇧↵ queue{!hasQuery && rows.length > 0 ? " · ↑ more" : ""}
+                  a no-op (quick-review catch). Keys as bright caps (HintKey),
+                  verbs as muted labels; the gap does the separating (the old
+                  middots earned their keep between plain-text runs). */}
+              <span className="flex items-center gap-1.5">
+                <HintKey>↵</HintKey>play
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="flex items-center gap-[3px]">
+                  <HintKey>⇧</HintKey>
+                  <HintKey>↵</HintKey>
+                </span>
+                queue
+              </span>
+              {!hasQuery && rows.length > 0 && (
+                <span className="flex items-center gap-1.5">
+                  <HintKey>↑</HintKey>more
+                </span>
+              )}
             </span>
           )}
         </div>
@@ -733,18 +770,23 @@ export default function Search() {
                 : ""}
         </span>
 
+        {/* One left line for the whole pane: the list container's p-1.5 (6px)
+            plus px-3.5 (14px) lands rows, headers, prose, and skeletons on
+            the SAME 20px inset as the search row's px-5 glyph — the input's
+            magnifier, section labels, and row thumbs share one vertical
+            line (the alignment sweep, 2026-07-16). */}
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-1.5 [scrollbar-width:none]">
           {!spotify.connected ? (
-            <div className="flex flex-col items-start gap-1.5 px-2.5 py-2.5">
+            <div className="flex flex-col items-start gap-1.5 px-3.5 py-2.5">
               <SpotifyConnectButton />
               <p className="m-0 text-[12px] text-muted/85">Connect Spotify to search and play.</p>
             </div>
           ) : offline ? (
-            <p className="m-0 px-2.5 py-2.5 text-[13px] text-muted">Spotify unreachable</p>
+            <p className="m-0 px-3.5 py-2.5 text-[13px] text-muted">Spotify unreachable</p>
           ) : (
             <>
               {!hasQuery && rows.length === 0 && (
-                <p className="m-0 px-2.5 py-2.5 text-[13px] text-muted">
+                <p className="m-0 px-3.5 py-2.5 text-[13px] text-muted">
                   Type to search Spotify — tracks you play will gather here.
                 </p>
               )}
@@ -759,7 +801,7 @@ export default function Search() {
                   <SkeletonRow key={i} index={i} />
                 ))}
               {hasQuery && !searching && rows.length === 0 && (
-                <p className="m-0 px-2.5 py-2.5 text-[13px] text-muted">No matches on Spotify</p>
+                <p className="m-0 px-3.5 py-2.5 text-[13px] text-muted">No matches on Spotify</p>
               )}
               <div
                 id="search-list"
@@ -785,7 +827,7 @@ export default function Search() {
                       {header && (
                         <p
                           role="presentation"
-                          className="m-0 px-2.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
+                          className="m-0 px-3.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
                         >
                           {header}
                         </p>
@@ -801,7 +843,7 @@ export default function Search() {
                       if (prev) setSelected(i);
                     }}
                     onClick={() => void playRow(row)}
-                    className={`flex h-[52px] cursor-pointer select-none items-center gap-3 rounded-md px-3 [transition:background-color_140ms_var(--ease-out-tk)] ${
+                    className={`flex h-[52px] cursor-pointer select-none items-center gap-3 rounded-md px-3.5 [transition:background-color_140ms_var(--ease-out-tk)] ${
                       flashKeys.has(row.key) ? "bg-accent/15" : i === sel ? "bg-fg/10" : ""
                     } ${!hasQuery && swapTick > 0 ? "row-swap-in" : ""}`}
                     style={
@@ -848,7 +890,7 @@ export default function Search() {
                   <>
                     <p
                       role="presentation"
-                      className="m-0 px-2.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
+                      className="m-0 px-3.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
                     >
                       Something different
                     </p>

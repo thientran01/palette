@@ -37,9 +37,11 @@ import { chordCaps, tokenCap } from "./lib/chords";
 const SECTIONS = ["connectors", "hotkeys", "playback", "general", "about", "data"] as const;
 type Section = (typeof SECTIONS)[number];
 
-// Desaturated warning literal (doctrine: never red-red, never accent). Not a
-// token — used only for conflict/failure treatments here.
-const WARN = "rgb(214,142,116)";
+// Desaturated warning (doctrine: never red-red, never accent) — reads the
+// --warn token (index.css; promoted from a literal here once a second surface
+// needed it). WARN_TEXT stays a local literal: a brightened text-on-wash
+// variant used only by the erase confirm below.
+const WARN = "rgb(var(--warn))";
 const WARN_TEXT = "rgb(240,205,192)";
 
 const CAP_STYLE = `
@@ -110,13 +112,21 @@ type Capture = { id: string; live: string[]; conflict: string | null; needMod: b
 function SectionHeader({ title, desc }: { title: string; desc: string }) {
   return (
     <>
-      <p className="text-[18px] font-semibold text-fg">{title}</p>
+      {/* leading-[30px] = the close ×'s 30px box: with the detail pane's
+          pt-[14px] (= the ×'s top-3.5) every section title shares the ×'s
+          exact centerline — title, right-aligned section actions, and the ×
+          read as ONE top row (Thien, 2026-07-16). Change one, change all
+          three (pt, this leading, CloseX's top/size). */}
+      <p className="text-[18px] font-semibold leading-[30px] text-fg">{title}</p>
       <p className="mt-1 mb-6 text-[13px] text-muted">{desc}</p>
     </>
   );
 }
 
-/** A settings row: label + description on the left, control on the right. */
+/** A settings row: label + description on the left, control on the right.
+ * No horizontal padding: labels sit on the section header's left line and
+ * controls end on the connector cards'/hotkey table's right line — the old
+ * px-1 indented every row 4px off both (the alignment sweep, 2026-07-16). */
 function Row({
   label,
   desc,
@@ -130,7 +140,7 @@ function Row({
 }) {
   return (
     <div
-      className={`flex items-center gap-4 px-1 py-3.5 ${last ? "" : "border-b border-border/[0.06]"}`}
+      className={`flex items-center gap-4 py-3.5 ${last ? "" : "border-b border-border/[0.06]"}`}
     >
       <div className="min-w-0 flex-1">
         <p className="text-[13.5px] text-fg">{label}</p>
@@ -155,7 +165,7 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
       }`}
     >
       <span
-        className={`absolute left-[2px] top-[2px] h-[18px] w-[18px] rounded-full [transition:transform_var(--transition-duration-2)_var(--ease-out-tk),background-color_var(--transition-duration-2)] ${
+        className={`absolute left-[2px] top-[2px] h-[18px] w-[18px] rounded-full [transition:transform_var(--transition-duration-2)_var(--ease-out-tk),background-color_var(--transition-duration-2)_var(--ease-out-tk)] ${
           on ? "translate-x-[16px] bg-surface" : "bg-muted"
         }`}
       />
@@ -163,26 +173,38 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
   );
 }
 
-/** A segmented control (seek amount, launch mode). Selected = fg/12 fill. */
+/** A segmented control (seek amount, launch mode). Selected = fg/12 fill.
+ * Seated on the window's control system: h-8 (= Ghost, the one button
+ * height) with rounded-lg outside and rounded (4px) segments — concentric
+ * with the 3px padding + 1px border (8−3−1); the old 36px/9px/7px box sat
+ * off both scales. `label` names the group for AT — the selected segment is
+ * otherwise only a wash. */
 function Segmented<T extends string | number>({
+  label,
   options,
   value,
   onPick,
 }: {
+  label: string;
   options: { label: string; value: T }[];
   value: T;
   onPick: (v: T) => void;
 }) {
   return (
-    <div className="inline-flex gap-0.5 rounded-[9px] border border-border/[0.07] bg-fg/[0.05] p-[3px]">
+    <div
+      role="group"
+      aria-label={label}
+      className="inline-flex h-8 items-center gap-0.5 rounded-lg border border-border/[0.07] bg-fg/[0.05] p-[3px]"
+    >
       {options.map((o) => {
         const on = o.value === value;
         return (
           <button
             key={String(o.value)}
             type="button"
+            aria-pressed={on}
             onClick={() => onPick(o.value)}
-            className={`rounded-[7px] px-3 py-[5px] text-[12px] font-medium [transition:background-color_var(--transition-duration-2),color_var(--transition-duration-2)] ${
+            className={`inline-flex h-full items-center rounded px-3 text-[12px] font-medium [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),color_var(--transition-duration-2)_var(--ease-out-tk)] ${
               on ? "bg-fg/12 text-fg" : "text-muted hover:text-fg"
             }`}
           >
@@ -209,7 +231,7 @@ function Ghost({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex h-8 shrink-0 items-center whitespace-nowrap rounded-lg border border-border/12 bg-fg/[0.04] px-3.5 text-[12.5px] font-medium text-fg [transition:background-color_var(--transition-duration-2)] hover:bg-fg/[0.08] disabled:opacity-50"
+      className="inline-flex h-8 shrink-0 items-center whitespace-nowrap rounded-lg border border-border/12 bg-fg/[0.04] px-3.5 text-[12.5px] font-medium text-fg [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk)] hover:bg-fg/[0.08] disabled:opacity-50"
     >
       {children}
     </button>
@@ -318,7 +340,7 @@ function CloseX({ onClick }: { onClick: () => void }) {
       type="button"
       aria-label="Close preferences"
       onClick={onClick}
-      className="absolute right-4 top-3.5 z-10 grid h-[30px] w-[30px] place-items-center rounded-lg text-muted [transition:background-color_var(--transition-duration-2),color_var(--transition-duration-2)] hover:bg-fg/[0.08] hover:text-fg"
+      className="absolute right-4 top-3.5 z-10 grid h-[30px] w-[30px] place-items-center rounded-lg text-muted [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),color_var(--transition-duration-2)_var(--ease-out-tk)] hover:bg-fg/[0.08] hover:text-fg"
     >
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
         <path d="M 4.5,4.5 L 11.5,11.5" />
@@ -636,7 +658,10 @@ export default function Prefs() {
                 {authError}
               </p>
             )}
-            <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-fg/40">
+            {/* text-muted, not fg/40: this line carries load-bearing prose
+                (why Connect may fail) and fg/40 sat under the 4.5:1 floor the
+                project holds text to (CLAUDE.md's accent clause). */}
+            <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
               Development mode — connecting is limited to allow-listed accounts. Queue control and
               playback need this connection.
             </p>
@@ -652,7 +677,10 @@ export default function Prefs() {
                 <p className="mt-px text-[12px] text-muted">Unlocks more-like-this recommendations.</p>
               </div>
             </div>
-            <div className="flex gap-2">
+            {/* h-8 = Ghost's height, items-center as belt-and-suspenders —
+                the old 34px input beside the 32px button showed 2px steps at
+                both edges (the alignment sweep, 2026-07-16). */}
+            <div className="flex items-center gap-2">
               <input
                 value={lastfmKey}
                 onChange={(e) => onLastfmInput(e.target.value)}
@@ -660,7 +688,7 @@ export default function Prefs() {
                 placeholder="API key"
                 spellCheck={false}
                 autoComplete="off"
-                className="h-[34px] min-w-0 flex-1 select-text rounded-lg border border-border/12 bg-black/25 px-3 text-[12.5px] text-fg outline-none [transition:border-color_var(--transition-duration-2)] focus:border-border/30"
+                className="h-8 min-w-0 flex-1 select-text rounded-lg border border-border/12 bg-black/25 px-3 text-[12.5px] text-fg outline-none [transition:border-color_var(--transition-duration-2)_var(--ease-out-tk)] focus:border-border/30"
               />
               <Ghost onClick={testKey}>{testLabel}</Ghost>
             </div>
@@ -670,20 +698,26 @@ export default function Prefs() {
 
       hotkeys: (
         <>
-          {/* pr-10 keeps "Reset to defaults" clear of the detail pane's
-              floating × (absolute top-right); it's the only section header
-              with a right-aligned action. */}
-          <div className="flex items-end justify-between pr-10">
-            <p className="text-[18px] font-semibold text-fg">Hotkeys</p>
+          {/* The only section header with a right-aligned action — it sits ON
+              the header line: items-center on the title's 30px line box, so
+              title, "Reset to defaults", and the × share one centerline
+              (Thien, 2026-07-16). pr-6 ends the row 8px left of the × (the ×
+              spans 16..46px from the pane's right edge; content ends at 30).
+              The z-10 lifts the button above the drag strip painted after
+              the content — the strip's h-6 band now overlaps this row's top. */}
+          <div className="flex items-center justify-between pr-6">
+            <p className="text-[18px] font-semibold leading-[30px] text-fg">Hotkeys</p>
             <button
               type="button"
               onClick={resetHotkeys}
-              className="rounded-md px-1.5 py-1 text-[12px] text-muted [transition:color_var(--transition-duration-2)] hover:text-fg"
+              className="relative z-10 rounded-md px-1.5 py-1 text-[12px] text-muted [transition:color_var(--transition-duration-2)_var(--ease-out-tk)] hover:text-fg"
             >
               Reset to defaults
             </button>
           </div>
-          <p className="mt-1.5 mb-5 text-[13px] text-muted">
+          {/* mt-1 mb-6 = SectionHeader's desc rhythm exactly, so this
+              section's content block starts level with every other's. */}
+          <p className="mt-1 mb-6 text-[13px] text-muted">
             Click a shortcut to rebind it. Global shortcuts work anywhere, even when Palette is hidden.
           </p>
           <div className="overflow-hidden rounded-xl border border-border/[0.08]">
@@ -710,7 +744,7 @@ export default function Prefs() {
                       {showNote && (
                         <p
                           className="mt-0.5 flex items-center gap-1.5 text-[11.5px]"
-                          style={{ color: "rgba(214,142,116,0.9)" }}
+                          style={{ color: "rgb(var(--warn) / 0.9)" }}
                         >
                           <WarnTriangle />
                           Not registered — may be reserved by the system
@@ -745,8 +779,10 @@ export default function Prefs() {
                     ) : (
                       <button
                         type="button"
+                        aria-label={`Change shortcut for ${h.label}`}
+                        title={`Change shortcut for ${h.label}`}
                         onClick={() => setCapture({ id: h.id, live: [], conflict: null, needMod: false })}
-                        className="inline-flex items-center gap-1 rounded-md p-1 [transition:background-color_var(--transition-duration-2)] hover:bg-fg/[0.05]"
+                        className="inline-flex items-center gap-1 rounded-md p-1 [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk)] hover:bg-fg/[0.05]"
                       >
                         {caps.map((c, k) => (
                           <span
@@ -782,6 +818,7 @@ export default function Prefs() {
           </Row>
           <Row label="Seek amount" desc="How far the seek shortcuts jump.">
             <Segmented
+              label="Seek amount"
               value={seek}
               onPick={pickSeek}
               options={[
@@ -793,6 +830,7 @@ export default function Prefs() {
           </Row>
           <Row label="Default launch mode" desc="The size Palette opens at." last>
             <Segmented
+              label="Default launch mode"
               value={launch}
               onPick={pickLaunch}
               options={[
@@ -823,7 +861,10 @@ export default function Prefs() {
       about: (
         <>
           <SectionHeader title="About" desc="Palette — the now-playing player Windows should've had." />
-          <Row label="Version" desc={`${version || "…"} · up to date`}>
+          {/* No static "· up to date" claim — it sat there regardless of
+              update state, even beside its own button's "Update available"
+              toast. The button's toast is the narrator. */}
+          <Row label="Version" desc={version || "…"}>
             <Ghost onClick={checkUpdates}>Check for updates</Ghost>
           </Row>
           <Row label="Source" desc="github.com/thientran01/palette">
@@ -844,8 +885,11 @@ export default function Prefs() {
           <Row label="Data folder" desc="Where history, thumbnails, and settings are kept.">
             <Ghost onClick={() => commands.openDataFolder()}>Reveal</Ghost>
           </Row>
-          <div className="px-1 pb-1 pt-4">
-            <div className="flex items-center">
+          {/* Row's metrics by hand (py-3.5, gap-4 — this block can't BE a Row
+              because the confirm box expands below it), so the destructive
+              row sits on the same grid as its siblings above. */}
+          <div className="py-3.5">
+            <div className="flex items-center gap-4">
               <div className="min-w-0 flex-1">
                 <p className="text-[13.5px] text-fg">Clear play history</p>
                 <p className="mt-0.5 text-[12px] text-muted">
@@ -856,8 +900,8 @@ export default function Prefs() {
             </div>
             {confirmClear && (
               <div
-                className="mt-3 flex items-center gap-3 rounded-[10px] border p-3.5"
-                style={{ borderColor: "rgba(214,142,116,0.35)", background: "rgba(214,142,116,0.06)" }}
+                className="mt-3 flex items-center gap-3 rounded-xl border p-3.5"
+                style={{ borderColor: "rgb(var(--warn) / 0.35)", background: "rgb(var(--warn) / 0.06)" }}
               >
                 <p className="flex-1 text-[12.5px] text-fg">Erase all play history? This can't be undone.</p>
                 <Ghost onClick={() => setConfirmClear(false)}>Cancel</Ghost>
@@ -866,8 +910,8 @@ export default function Prefs() {
                   onClick={doClear}
                   className="h-8 rounded-lg border px-3.5 text-[12.5px] font-medium"
                   style={{
-                    borderColor: "rgba(214,142,116,0.5)",
-                    background: "rgba(214,142,116,0.14)",
+                    borderColor: "rgb(var(--warn) / 0.5)",
+                    background: "rgb(var(--warn) / 0.14)",
                     color: WARN_TEXT,
                   }}
                 >
@@ -907,9 +951,14 @@ export default function Prefs() {
 
       {/* SIDEBAR */}
       <div className="flex w-[212px] shrink-0 flex-col border-r border-border/[0.06] bg-black/[0.16] p-2.5">
+        {/* mt-2 seats the wordmark's center on the ×'s 29px line — the whole
+            top band (Preferences · section title · Reset · ×) reads as one
+            row across the sidebar seam. mx-2.5 = the nav buttons' px-2.5, so
+            the wordmark, nav icons, and the version line share one left
+            line. */}
         <p
           data-tauri-drag-region
-          className="mx-2 mb-3.5 mt-0.5 text-[15px] font-semibold text-fg"
+          className="mx-2.5 mb-2.5 mt-2 text-[15px] font-semibold text-fg"
         >
           Preferences
         </p>
@@ -923,7 +972,7 @@ export default function Prefs() {
                 setSection(s);
                 setConfirmClear(false);
               }}
-              className={`mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] [transition:background-color_var(--transition-duration-2),color_var(--transition-duration-2)] ${
+              className={`mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),color_var(--transition-duration-2)_var(--ease-out-tk)] ${
                 on ? "bg-fg/[0.08] font-medium text-fg" : "text-muted hover:bg-fg/[0.05]"
               }`}
             >
@@ -933,12 +982,15 @@ export default function Prefs() {
           );
         })}
         <div className="flex-1" />
-        <p className="mx-2 text-[11px] tabular-nums text-fg/32">Palette {version || "…"}</p>
+        <p className="mx-2.5 text-[11px] tabular-nums text-muted/70">Palette {version || "…"}</p>
       </div>
 
       {/* DETAIL */}
       <div className="prefs-scroll relative min-w-0 flex-1 overflow-y-auto">
-        <div className="px-[30px] pb-10 pt-[26px]">{detail[section]}</div>
+        {/* pt-[14px] = CloseX's top-3.5: the section title's 30px line box
+            and the ×'s 30px button share the same top, so their centers meet
+            at 29px — the one header line (see SectionHeader). */}
+        <div className="px-[30px] pb-10 pt-[14px]">{detail[section]}</div>
         {/* Drag handle — a thin strip over the detail pane's empty top padding
             (the frameless window's title-bar grab area). Painted after the
             content so it sits above that padding, but the × (z-10) stays on
