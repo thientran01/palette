@@ -390,6 +390,7 @@ const QueueRowBase = function QueueRow({
   index,
   dragging,
   dragDy,
+  settleDy,
   flash,
   s,
   onDragStart,
@@ -400,6 +401,10 @@ const QueueRowBase = function QueueRow({
   index: number;
   dragging: boolean;
   dragDy: number;
+  /** Nonzero for one frame after a live swap displaced this row: it renders
+   * seated at its OLD slot with the transform transition muted, then the
+   * clear glides it home on that transition (QueuePanel's FLIP-lite). */
+  settleDy: number;
   flash: boolean;
   s: QueueScaleSpec;
   onDragStart: (e: React.PointerEvent, index: number) => void;
@@ -417,9 +422,17 @@ const QueueRowBase = function QueueRow({
       className={`group/row relative flex ${s.row} cursor-grab touch-none select-none items-center ${
         dragging
           ? "z-10 bg-surface-2 shadow-lg shadow-black/40"
-          : "z-0 [transition:transform_140ms_var(--ease-out-tk),background-color_600ms_var(--ease-out-tk)] hover:bg-fg/5"
+          : settleDy
+            ? "z-0 hover:bg-fg/5"
+            : "z-0 [transition:transform_140ms_var(--ease-out-tk),background-color_600ms_var(--ease-out-tk)] hover:bg-fg/5"
       } ${flash && !dragging ? "bg-accent/15" : ""}`}
-      style={dragging ? { transform: `translateY(${dragDy}px)` } : undefined}
+      style={
+        dragging
+          ? { transform: `translateY(${dragDy}px)` }
+          : settleDy
+            ? { transform: `translateY(${settleDy}px)` }
+            : undefined
+      }
     >
       <RowThumb url={track.art_url} size={s.thumb} />
       <span className="flex min-w-0 flex-1 flex-col">
@@ -691,6 +704,29 @@ export function QueuePanel({
   // ---- queue reorder drag (translateY follow + live swap, the 11a spec) ----
   const [drag, setDrag] = useState<{ index: number; dy: number } | null>(null);
   const [order, setOrder] = useState<QueueTrack[] | null>(null); // drag overlay
+  // FLIP-lite for the displaced neighbor: a live swap re-renders it a full
+  // row away in one frame — the only un-eased motion in the drag grammar
+  // (its declared transform transition never fired; nothing changed on the
+  // element, only its list position — motion pass, 2026-07-16). On each
+  // swap, seat it at its OLD position (translateY ∓rowH, transition muted),
+  // then clear next frame so the row's own 140ms EASE.out transform
+  // transition glides it into the new slot. Index-addressed (uris can
+  // repeat); tick disambiguates back-to-back swaps of the same index.
+  const [settle, setSettle] = useState<{ index: number; dy: number; tick: number } | null>(null);
+  const settleTick = useRef(0);
+  useEffect(() => {
+    if (!settle) return;
+    // Double-rAF: the offset must PAINT before the clear re-render arms the
+    // transition back on — a single rAF can land pre-paint.
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setSettle(null));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [settle]);
   const rows = order ?? upnext;
   const upnextRef = useRef(upnext);
   upnextRef.current = upnext;
@@ -731,12 +767,18 @@ export function QueuePanel({
       }
       dy = ev.clientY - y0;
       let moved = false;
+      // The displaced neighbor of the LAST swap this event (normally the
+      // only one — SWAP_AT paces swaps to one per threshold crossing); it
+      // FLIPs from its old slot via `settle`. dy sign: a down-swap moves it
+      // UP one slot, so it starts translated DOWN (+rowH), and vice versa.
+      let displaced: { index: number; dy: number } | null = null;
       while (dy > s.swapAt && i < list.length - 1) {
         [list[i], list[i + 1]] = [list[i + 1], list[i]];
         i++;
         y0 += s.rowH;
         dy -= s.rowH;
         moved = true;
+        displaced = { index: i - 1, dy: s.rowH };
       }
       while (dy < -s.swapAt && i > 0) {
         [list[i], list[i - 1]] = [list[i - 1], list[i]];
@@ -744,8 +786,12 @@ export function QueuePanel({
         y0 -= s.rowH;
         dy += s.rowH;
         moved = true;
+        displaced = { index: i + 1, dy: -s.rowH };
       }
-      if (moved) setOrder([...list]);
+      if (moved) {
+        setOrder([...list]);
+        if (displaced) setSettle({ ...displaced, tick: ++settleTick.current });
+      }
       setDrag({ index: i, dy });
     };
     const finish = (commit: boolean) => {
@@ -973,6 +1019,7 @@ export function QueuePanel({
                 index={i}
                 dragging={drag?.index === i}
                 dragDy={drag?.index === i ? drag.dy : 0}
+                settleDy={settle && settle.index === i && drag?.index !== i ? settle.dy : 0}
                 flash={flashUris.has(t.uri)}
                 s={s}
                 onDragStart={onQueueDragStart}
@@ -1011,22 +1058,30 @@ export function QueuePanel({
         ))}
       </div>
       {/* Ghost chip — fixed within the (window-sized) webview, riding the
-          cursor; pure decoration, the pointer handlers own the semantics. */}
+          cursor; pure decoration, the pointer handlers own the semantics.
+          Two layers, two clocks: the OUTER transform is the cursor-follow
+          (translate3d, untransitioned — cursor-locked, compositor-only; it
+          was left/top layout mutations per move) and the INNER carries the
+          drop-zone scale on an eased transition — on one element the scale
+          snapped at the zone boundary while the zone's own glow eased 140ms
+          (motion pass, 2026-07-16). */}
       {ghost && (
         <div
           aria-hidden
-          className="pointer-events-none fixed z-50 flex items-center gap-2 rounded-lg border border-border/15 bg-surface-2 py-1 pl-1.5 pr-3 shadow-xl shadow-black/40"
-          style={{
-            left: ghost.x + 10,
-            top: ghost.y - 16,
-            transform: ghost.over ? "scale(1.02)" : "scale(1)",
-          }}
+          className="pointer-events-none fixed left-0 top-0 z-50 will-change-transform"
+          style={{ transform: `translate3d(${ghost.x + 10}px, ${ghost.y - 16}px, 0)` }}
         >
-          <span className="grid h-[22px] w-[22px] place-items-center overflow-hidden rounded-[5px] bg-surface text-muted">
-            <MorphIcon name="note" size={11} />
-          </span>
-          <span className="whitespace-nowrap text-xs font-medium text-fg">{ghost.entry.title}</span>
-          <span className="whitespace-nowrap text-[11px] text-muted">{ghost.entry.artist}</span>
+          <div
+            className={`flex items-center gap-2 rounded-lg border border-border/15 bg-surface-2 py-1 pl-1.5 pr-3 shadow-xl shadow-black/40 [transition:scale_140ms_var(--ease-out-tk)] ${
+              ghost.over ? "scale-[1.02]" : "scale-100"
+            }`}
+          >
+            <span className="grid h-[22px] w-[22px] place-items-center overflow-hidden rounded-[5px] bg-surface text-muted">
+              <MorphIcon name="note" size={11} />
+            </span>
+            <span className="whitespace-nowrap text-xs font-medium text-fg">{ghost.entry.title}</span>
+            <span className="whitespace-nowrap text-[11px] text-muted">{ghost.entry.artist}</span>
+          </div>
         </div>
       )}
     </div>

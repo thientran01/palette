@@ -245,8 +245,11 @@ function TruncateTip({ text, className }: { text: string; className: string }) {
             }}
             // w-max up to the window's width minus the header's left gutter
             // (44px art + gaps) — long strings wrap instead of truncating
-            // again inside their own tooltip.
-            className="absolute left-0 top-full z-20 mt-1.5 w-max max-w-[250px] whitespace-normal break-words rounded-md border border-border/10 bg-surface-2 px-2 py-1 text-xs leading-4 text-fg shadow-lg shadow-black/40"
+            // again inside their own tooltip. pointer-events-none: aria-hidden
+            // decoration must never hit-test — open (and through its exit) it
+            // sat over the artist line, eating that line's hover-hold and
+            // feeding mousedown to the window drag (motion pass, 2026-07-16).
+            className="pointer-events-none absolute left-0 top-full z-20 mt-1.5 w-max max-w-[250px] whitespace-normal break-words rounded-md border border-border/10 bg-surface-2 px-2 py-1 text-xs leading-4 text-fg shadow-lg shadow-black/40"
           >
             {text}
           </motion.span>
@@ -1729,9 +1732,12 @@ function App() {
           shell inside the never-resizing window (never inside it: the shell
           clips). Right-aligned to the docked corner's side; opens away from
           the shell (above when docked bottom, below when docked top — the
-          prototype only modeled bottom-right). Its `bottom`/`top` ride the
-          mode resize on the shell's own 200ms EASE.inOut so it glides with
-          the garment change; reveal is 140ms opacity with visibility
+          prototype only modeled bottom-right). Its `bottom`/`top` AND
+          `max-height` ride the mode resize on the shell's own 200ms
+          EASE.inOut so it glides with the garment change (max-height was
+          missing from the list — with a content-full list, stepping the
+          ladder glided the near edge while the far edge snapped 34px,
+          motion pass 2026-07-16); reveal is 140ms opacity with visibility
           deferred (always mounted — the scroll position and history feed
           survive closing). Max height re-derived from the REAL 440px window
           (prototype frame was 520): pill 330, card 296. While open, the hit
@@ -1744,8 +1750,8 @@ function App() {
             corner.endsWith("right") ? "right-1.5" : "left-1.5"
           } ${
             popoverVisible
-              ? "visible opacity-100 [transition:opacity_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk)]"
-              : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),visibility_0s_140ms]"
+              ? "visible opacity-100 [transition:opacity_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),max-height_200ms_var(--ease-in-out-tk)]"
+              : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),max-height_200ms_var(--ease-in-out-tk),visibility_0s_140ms]"
           }`}
           style={{
             width: POPOVER_W,

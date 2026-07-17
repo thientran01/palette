@@ -34,7 +34,9 @@ function Item({
       type="button"
       role="menuitem"
       onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left text-[12.5px] [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk)] hover:bg-fg/[0.08] ${
+      // active deepen, not scale: press feedback for a full-width text row
+      // (a scale would wobble the label); rides the existing bg transition.
+      className={`flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left text-[12.5px] [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk)] hover:bg-fg/[0.08] active:bg-fg/[0.12] ${
         muted ? "text-muted" : "text-fg"
       }`}
     >
@@ -69,8 +71,10 @@ export function WidgetMenu({
       onMouseDown={(e) => e.stopPropagation()}
       // The popover recipe verbatim (rounded-xl border-border/10 shadow-xl
       // shadow-black/40, App.tsx) — this menu had drifted into a third
-      // floating-surface recipe (10px/0.11/black-50).
-      className="absolute z-40 w-[204px] rounded-xl border border-border/10 bg-surface-2 p-1.5 shadow-xl shadow-black/40"
+      // floating-surface recipe (10px/0.11/black-50). caption-in on mount =
+      // the family's 140ms reveal (it copied the surface but entered at
+      // 0ms); close stays instant — dismissing menus don't linger.
+      className="absolute z-40 w-[204px] animate-[caption-in_140ms_var(--ease-out-tk)_both] rounded-xl border border-border/10 bg-surface-2 p-1.5 shadow-xl shadow-black/40"
       style={style}
     >
       <Item label="Preferences…" onClick={act(() => commands.openPrefs())} />

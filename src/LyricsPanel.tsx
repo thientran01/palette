@@ -175,10 +175,10 @@ const CASCADE_CAP = 10;
 /** Head start so the art view's exhale clears before rows land. */
 const CASCADE_BASE_MS = 90; // DUR[1]
 /** base + cap*step + row animation (200ms) + slack; also bounds the anchor
- * marker's ignite — keep in sync with the 600ms transition-delay in
- * index.css. The class is removed only AFTER every row animation has
- * finished — ripping it off mid-cascade would snap fill-mode-held rows to
- * full opacity in one frame. */
+ * marker's ignite — keep in sync with index.css's marker rule (600ms hold +
+ * 200ms caption-in = exactly this). The class is removed only AFTER every
+ * row animation has finished — ripping it off mid-cascade would snap
+ * fill-mode-held rows to full opacity in one frame. */
 const ENTRANCE_DONE_MS = 800;
 
 export type LyricsScale = "base" | "focus";

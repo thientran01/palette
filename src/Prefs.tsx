@@ -45,11 +45,26 @@ const WARN = "rgb(var(--warn))";
 const WARN_TEXT = "rgb(240,205,192)";
 
 const CAP_STYLE = `
+/* The listening ring breathes OPACITY on a static-shadow pseudo — animating
+ * box-shadow itself repainted the chip every frame for the whole listening
+ * state (the transform/opacity-only rule; motion pass 2026-07-16). Base
+ * state = ring visible: under the global reduced-motion kill the animation
+ * collapses and the element reverts to this — a static ring still marks the
+ * listening state (the .resting-pulse base-state pattern). */
 @keyframes prefs-cap-listen {
-  0%,100% { box-shadow: 0 0 0 0 rgb(var(--accent)/0.34); }
-  50% { box-shadow: 0 0 0 4px rgb(var(--accent)/0); }
+  0%,100% { opacity: 1; }
+  50% { opacity: 0; }
 }
-.prefs-cap-listen { animation: prefs-cap-listen 1.4s var(--ease-in-out-tk) infinite; }
+.prefs-cap-listen { position: relative; }
+.prefs-cap-listen::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 0 4px rgb(var(--accent)/0.34);
+  animation: prefs-cap-listen 1.4s var(--ease-in-out-tk) infinite;
+  pointer-events: none;
+}
 .prefs-scroll::-webkit-scrollbar { width: 8px; }
 .prefs-scroll::-webkit-scrollbar-thumb { background: rgb(var(--fg)/0.10); border-radius: 999px; }
 `;
@@ -164,8 +179,10 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
         on ? "bg-fg" : "bg-fg/15"
       }`}
     >
+      {/* Knob slides between two on-screen seats — the morph category rides
+          --ease-in-out-tk (enter/exit's ease-out reads as "shoved"). */}
       <span
-        className={`absolute left-[2px] top-[2px] h-[18px] w-[18px] rounded-full [transition:transform_var(--transition-duration-2)_var(--ease-out-tk),background-color_var(--transition-duration-2)_var(--ease-out-tk)] ${
+        className={`absolute left-[2px] top-[2px] h-[18px] w-[18px] rounded-full [transition:transform_var(--transition-duration-2)_var(--ease-in-out-tk),background-color_var(--transition-duration-2)_var(--ease-out-tk)] ${
           on ? "translate-x-[16px] bg-surface" : "bg-muted"
         }`}
       />
@@ -204,7 +221,7 @@ function Segmented<T extends string | number>({
             type="button"
             aria-pressed={on}
             onClick={() => onPick(o.value)}
-            className={`inline-flex h-full items-center rounded px-3 text-[12px] font-medium [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),color_var(--transition-duration-2)_var(--ease-out-tk)] ${
+            className={`inline-flex h-full items-center rounded px-3 text-[12px] font-medium [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),color_var(--transition-duration-2)_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] active:scale-[0.97] ${
               on ? "bg-fg/12 text-fg" : "text-muted hover:text-fg"
             }`}
           >
@@ -231,7 +248,7 @@ function Ghost({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex h-8 shrink-0 items-center whitespace-nowrap rounded-lg border border-border/12 bg-fg/[0.04] px-3.5 text-[12.5px] font-medium text-fg [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk)] hover:bg-fg/[0.08] disabled:opacity-50"
+      className="inline-flex h-8 shrink-0 items-center whitespace-nowrap rounded-lg border border-border/12 bg-fg/[0.04] px-3.5 text-[12.5px] font-medium text-fg [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/[0.08] active:scale-[0.97] disabled:opacity-50"
     >
       {children}
     </button>
@@ -340,7 +357,7 @@ function CloseX({ onClick }: { onClick: () => void }) {
       type="button"
       aria-label="Close preferences"
       onClick={onClick}
-      className="absolute right-4 top-3.5 z-10 grid h-[30px] w-[30px] place-items-center rounded-lg text-muted [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),color_var(--transition-duration-2)_var(--ease-out-tk)] hover:bg-fg/[0.08] hover:text-fg"
+      className="absolute right-4 top-3.5 z-10 grid h-[30px] w-[30px] place-items-center rounded-lg text-muted [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),color_var(--transition-duration-2)_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/[0.08] hover:text-fg active:scale-95"
     >
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
         <path d="M 4.5,4.5 L 11.5,11.5" />
@@ -381,8 +398,13 @@ export default function Prefs() {
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const toastTimer = useRef<number | undefined>(undefined);
+  // The last message survives past the null so the exit fades a FULL pill —
+  // clearing the text at timer-fire emptied it 140ms before the fade ended
+  // (motion pass, 2026-07-16). Content only swaps when the next toast lands.
+  const lastToastMsg = useRef<string>("");
   const toast = useCallback((msg: string) => {
     setToastMsg(msg);
+    lastToastMsg.current = msg;
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToastMsg(null), 1700);
   }, []);
@@ -710,7 +732,7 @@ export default function Prefs() {
             <button
               type="button"
               onClick={resetHotkeys}
-              className="relative z-10 rounded-md px-1.5 py-1 text-[12px] text-muted [transition:color_var(--transition-duration-2)_var(--ease-out-tk)] hover:text-fg"
+              className="relative z-10 rounded-md px-1.5 py-1 text-[12px] text-muted [transition:color_var(--transition-duration-2)_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:text-fg active:scale-[0.97]"
             >
               Reset to defaults
             </button>
@@ -771,7 +793,7 @@ export default function Prefs() {
                         <button
                           type="button"
                           onClick={() => setCapture(null)}
-                          className="grid h-6 place-items-center rounded-md bg-fg/[0.06] px-2 text-[10.5px] text-muted"
+                          className="grid h-6 place-items-center rounded-md bg-fg/[0.06] px-2 text-[10.5px] text-muted [transition:scale_90ms_var(--ease-out-tk)] active:scale-95"
                         >
                           esc
                         </button>
@@ -782,7 +804,7 @@ export default function Prefs() {
                         aria-label={`Change shortcut for ${h.label}`}
                         title={`Change shortcut for ${h.label}`}
                         onClick={() => setCapture({ id: h.id, live: [], conflict: null, needMod: false })}
-                        className="inline-flex items-center gap-1 rounded-md p-1 [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk)] hover:bg-fg/[0.05]"
+                        className="inline-flex items-center gap-1 rounded-md p-1 [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/[0.05] active:scale-[0.97]"
                       >
                         {caps.map((c, k) => (
                           <span
@@ -908,7 +930,7 @@ export default function Prefs() {
                 <button
                   type="button"
                   onClick={doClear}
-                  className="h-8 rounded-lg border px-3.5 text-[12.5px] font-medium"
+                  className="h-8 rounded-lg border px-3.5 text-[12.5px] font-medium [transition:scale_90ms_var(--ease-out-tk)] active:scale-[0.97]"
                   style={{
                     borderColor: "rgb(var(--warn) / 0.5)",
                     background: "rgb(var(--warn) / 0.14)",
@@ -972,7 +994,7 @@ export default function Prefs() {
                 setSection(s);
                 setConfirmClear(false);
               }}
-              className={`mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),color_var(--transition-duration-2)_var(--ease-out-tk)] ${
+              className={`mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk),color_var(--transition-duration-2)_var(--ease-out-tk)] active:bg-fg/[0.10] ${
                 on ? "bg-fg/[0.08] font-medium text-fg" : "text-muted hover:bg-fg/[0.05]"
               }`}
             >
@@ -1011,7 +1033,7 @@ export default function Prefs() {
           toastMsg ? "translate-x-[-50%] translate-y-0 opacity-100" : "translate-x-[-50%] translate-y-2 opacity-0"
         }`}
       >
-        {toastMsg}
+        {toastMsg ?? lastToastMsg.current}
       </div>
     </div>
   );
