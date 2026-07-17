@@ -907,7 +907,7 @@ function ExpandedView({
                   re-bloom the capsules from the dot. */}
               {headerShown && (
                 <span className="ml-1 flex shrink-0 items-center">
-                  <Waveform size="md" trailing />
+                  <Waveform size="md" trailing playing={np.status === "playing"} />
                 </span>
               )}
             </div>
@@ -991,7 +991,7 @@ function ExpandedView({
               the mount so the toggle doesn't re-bloom it from the dot. */}
           {active === "album" && (
             <div className="mt-3">
-              <Waveform size="lg" />
+              <Waveform size="lg" playing={np.status === "playing"} />
             </div>
           )}
         </div>
@@ -1594,6 +1594,7 @@ function App() {
                 <Waveform
                   trailing={!np.artist}
                   announceKey={announceSuppressed ? undefined : (lyricsKeyOf(np) ?? undefined)}
+                  playing={np.status === "playing"}
                 />
                 <TrackFadeSpan
                   key={`a:${lyricsKeyOf(np)}`}
@@ -1677,7 +1678,7 @@ function App() {
                 <div className="flex min-w-0 items-center">
                   <p className="min-w-0 truncate text-[15px] font-medium text-fg">{np.title}</p>
                   <span className="ml-1 flex shrink-0 items-center">
-                    <Waveform size="md" trailing />
+                    <Waveform size="md" trailing playing={np.status === "playing"} />
                   </span>
                 </div>
                 {/* The device tag rides the metadata line, icon-only (name in
