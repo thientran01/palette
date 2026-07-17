@@ -338,7 +338,6 @@ export default function Prefs() {
 
   const [version, setVersion] = useState("");
   const [reactive, setReactive] = useState(true);
-  const [seek, setSeek] = useState(10);
   const [launch, setLaunch] = useState("card");
   const [startLogin, setStartLogin] = useState(false);
   const [hideFs, setHideFs] = useState(true);
@@ -372,7 +371,6 @@ export default function Prefs() {
       if (!alive) return;
       setVersion(s.version);
       setReactive(s.reactive_separator);
-      setSeek(s.seek_amount);
       setLaunch(s.launch_mode);
       setStartLogin(s.start_at_login);
       setHideFs(s.hide_on_fullscreen);
@@ -542,10 +540,6 @@ export default function Prefs() {
     const next = !reactive;
     setReactive(next);
     commands.setSetting("reactive_separator", next);
-  };
-  const pickSeek = (v: number) => {
-    setSeek(v);
-    commands.setSetting("seek_amount", v);
   };
   const pickLaunch = (v: string) => {
     setLaunch(v);
@@ -780,17 +774,6 @@ export default function Prefs() {
           >
             <Toggle on={reactive} onClick={toggleReactive} label="Audio-reactive separator" />
           </Row>
-          <Row label="Seek amount" desc="How far the seek shortcuts jump.">
-            <Segmented
-              value={seek}
-              onPick={pickSeek}
-              options={[
-                { label: "5s", value: 5 },
-                { label: "10s", value: 10 },
-                { label: "30s", value: 30 },
-              ]}
-            />
-          </Row>
           <Row label="Default launch mode" desc="The size Palette opens at." last>
             <Segmented
               value={launch}
@@ -890,7 +873,6 @@ export default function Prefs() {
       hotkeys,
       capture,
       reactive,
-      seek,
       launch,
       startLogin,
       hideFs,
