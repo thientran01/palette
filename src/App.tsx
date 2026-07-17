@@ -295,6 +295,35 @@ function ModeButton({
 /** Ordered mode ladder the anchored cluster steps through. */
 const MODE_ORDER: readonly Mode[] = ["pill", "card", "expanded"];
 
+/**
+ * The Default launch mode (prefs → settings.json `launch_mode`) mirrored into
+ * localStorage so the widget can open at it SYNCHRONOUSLY on boot. Reading it
+ * async from prefsSeed would paint `card` first and then jump once the seed
+ * resolves — the launch flash. settings.json stays the source of truth: App
+ * refreshes this mirror from the mount seed AND from live "settings-changed",
+ * so a change made in prefs is honored on the very next launch. Override
+ * semantics — every launch opens here regardless of the last-used mode ("The
+ * size Palette opens at"); the within-session mode lives in React state and is
+ * intentionally not persisted (the main window never unmounts). The setting is
+ * launch-only — changing it never resizes the running widget. */
+const LAUNCH_MODE_KEY = "pulse.launchMode";
+function readLaunchMode(): Mode {
+  try {
+    const v = localStorage.getItem(LAUNCH_MODE_KEY);
+    return v === "pill" || v === "expanded" ? v : "card";
+  } catch {
+    return "card"; // storage unavailable — fall back to the default mode
+  }
+}
+function writeLaunchMode(v: string) {
+  if (v !== "pill" && v !== "card" && v !== "expanded") return;
+  try {
+    localStorage.setItem(LAUNCH_MODE_KEY, v);
+  } catch {
+    // non-fatal: readLaunchMode falls back to card next launch
+  }
+}
+
 /** The 6px transparent gutter per side between the window edge and shell —
  * 2× SHELL_SEAT's 1.5 inset. Change the seat inset, change this too. */
 const SHELL_GUTTER_PX = 12;
@@ -470,9 +499,9 @@ function ModeCluster({
       />
       {/* The ladder's fourth rung: from expanded, the expand verb keeps
           going — into the fullscreen focus window (focus.rs). Focus is a
-          TRANSIENT window, not a mode: MODE_ORDER/pulse.mode never learn
-          about it, so a relaunch can never boot into it; Esc/collapse in
-          the focus window steps back here. */}
+          TRANSIENT window, not a mode: MODE_ORDER and the persisted launch
+          mode never learn about it, so a relaunch can never boot into it;
+          Esc/collapse in the focus window steps back here. */}
       <ModeButton
         to="expand"
         label={
@@ -545,9 +574,9 @@ function QueueSeat({ queueOpen, onToggle }: { queueOpen: boolean; onToggle: () =
   );
 }
 
-/** The expanded view preference — lyrics (default) or album art. Persisted
- * like pulse.mode: "I don't want to see lyrics" is a preference, not a
- * per-visit choice, so it survives mode switches and relaunches. */
+/** The expanded view preference — lyrics (default) or album art. Persisted in
+ * localStorage: "I don't want to see lyrics" is a preference, not a per-visit
+ * choice, so it survives mode switches and relaunches. */
 function readViewPref(): "lyrics" | "art" {
   try {
     return localStorage.getItem("pulse.expandedView") === "art" ? "art" : "lyrics";
@@ -843,7 +872,7 @@ function ExpandedView({
                   re-bloom the capsules from the dot. */}
               {headerShown && (
                 <span className="ml-1 flex shrink-0 items-center">
-                  <Waveform size="md" trailing />
+                  <Waveform size="md" trailing playing={np.status === "playing"} />
                 </span>
               )}
             </div>
@@ -952,7 +981,7 @@ function ExpandedView({
               from the dot. */}
           {active === "album" && (
             <div className="flex min-h-0 flex-1 -translate-y-3 items-center justify-center">
-              <Waveform size="lg" />
+              <Waveform size="lg" playing={np.status === "playing"} />
             </div>
           )}
         </div>
@@ -1183,9 +1212,16 @@ function App() {
       // onboarding copy tracks a rebind instead of hardcoding a default.
       setHotkeys(s.hotkeys);
       setSeenIntro(s.seen_intro);
+      // Refresh the launch-mode mirror so the NEXT launch opens at the
+      // configured default synchronously (readLaunchMode) — no card→launch flash.
+      writeLaunchMode(s.launch_mode);
     });
     const un = onSettingsChanged(({ key, value }) => {
       if (key === "reactive_separator") setReactiveEnabledSetting(Boolean(value));
+      // A prefs change to the default launch mode updates the mirror so the next
+      // launch honors it. Launch-only by design: we deliberately don't setMode —
+      // changing the default must not resize the running widget.
+      else if (key === "launch_mode") writeLaunchMode(String(value));
     });
     const unHotkeys = onHotkeysChanged(setHotkeys);
     return () => {
@@ -1237,21 +1273,13 @@ function App() {
   useEffect(() => onDockCorner(setDockCorner), []);
   const corner = dockCorner ?? "bottom-right";
 
-  const [mode, setMode] = useState<Mode>(() => {
-    try {
-      const saved = localStorage.getItem("pulse.mode");
-      return saved === "pill" || saved === "expanded" ? saved : "card";
-    } catch {
-      return "card"; // storage unavailable — mode just won't persist
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem("pulse.mode", mode);
-    } catch {
-      // non-fatal: mode resets to card on next launch
-    }
-  }, [mode]);
+  // Boot at the configured Default launch mode, read SYNCHRONOUSLY from its
+  // localStorage mirror so the first paint is already correct (readLaunchMode /
+  // LAUNCH_MODE_KEY above). The mirror is kept fresh by the reactive-seed effect
+  // (prefsSeed + "settings-changed"). Within-session mode changes stay in React
+  // state and are NOT persisted — override semantics mean every launch reopens
+  // at the default, not wherever it was last left.
+  const [mode, setMode] = useState<Mode>(readLaunchMode);
 
   const reducedMotion = useReducedMotion();
 
@@ -1568,6 +1596,7 @@ function App() {
                 <Waveform
                   trailing={!np.artist}
                   announceKey={announceSuppressed ? undefined : (lyricsKeyOf(np) ?? undefined)}
+                  playing={np.status === "playing"}
                 />
                 <TrackFadeSpan
                   key={`a:${lyricsKeyOf(np)}`}
@@ -1651,7 +1680,7 @@ function App() {
                 <div className="flex min-w-0 items-center">
                   <p className="min-w-0 truncate text-[15px] font-medium text-fg">{np.title}</p>
                   <span className="ml-1 flex shrink-0 items-center">
-                    <Waveform size="md" trailing />
+                    <Waveform size="md" trailing playing={np.status === "playing"} />
                   </span>
                 </div>
                 {/* The device tag rides the metadata line, icon-only (name in

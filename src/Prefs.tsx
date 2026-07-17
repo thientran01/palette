@@ -190,7 +190,7 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
   );
 }
 
-/** A segmented control (seek amount, launch mode). Selected = fg/12 fill.
+/** A segmented control (launch mode). Selected = fg/12 fill.
  * Seated on the window's control system: h-8 (= Ghost, the one button
  * height) with rounded-lg outside and rounded (4px) segments — concentric
  * with the 3px padding + 1px border (8−3−1); the old 36px/9px/7px box sat
@@ -377,7 +377,6 @@ export default function Prefs() {
 
   const [version, setVersion] = useState("");
   const [reactive, setReactive] = useState(true);
-  const [seek, setSeek] = useState(10);
   const [launch, setLaunch] = useState("card");
   const [startLogin, setStartLogin] = useState(false);
   const [hideFs, setHideFs] = useState(true);
@@ -416,7 +415,6 @@ export default function Prefs() {
       if (!alive) return;
       setVersion(s.version);
       setReactive(s.reactive_separator);
-      setSeek(s.seek_amount);
       setLaunch(s.launch_mode);
       setStartLogin(s.start_at_login);
       setHideFs(s.hide_on_fullscreen);
@@ -586,10 +584,6 @@ export default function Prefs() {
     const next = !reactive;
     setReactive(next);
     commands.setSetting("reactive_separator", next);
-  };
-  const pickSeek = (v: number) => {
-    setSeek(v);
-    commands.setSetting("seek_amount", v);
   };
   const pickLaunch = (v: string) => {
     setLaunch(v);
@@ -838,18 +832,6 @@ export default function Prefs() {
           >
             <Toggle on={reactive} onClick={toggleReactive} label="Audio-reactive separator" />
           </Row>
-          <Row label="Seek amount" desc="How far the seek shortcuts jump.">
-            <Segmented
-              label="Seek amount"
-              value={seek}
-              onPick={pickSeek}
-              options={[
-                { label: "5s", value: 5 },
-                { label: "10s", value: 10 },
-                { label: "30s", value: 30 },
-              ]}
-            />
-          </Row>
           <Row label="Default launch mode" desc="The size Palette opens at." last>
             <Segmented
               label="Default launch mode"
@@ -956,7 +938,6 @@ export default function Prefs() {
       hotkeys,
       capture,
       reactive,
-      seek,
       launch,
       startLogin,
       hideFs,

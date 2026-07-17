@@ -31,8 +31,8 @@ const POLL_INTERVAL_MS: u64 = 500;
 // channel before snapshotting — players fire several events per track change
 // (title, then artist, then thumbnail) and one emit should cover the burst.
 const EVENT_SETTLE_MS: u64 = 30;
-// Keep in sync with SEEK_STEP_MS in src/App.tsx (UI buttons) — this one drives
-// the global hotkeys.
+// Keep in sync with SEEK_STEP_MS in src/Transport.tsx (UI buttons) — this one
+// drives the global hotkeys.
 const SEEK_STEP_MS: i64 = 10_000;
 
 // V1 hotkeys — constants for now, a settings surface later.
@@ -78,8 +78,7 @@ fn hotkey_defs() -> [HotkeyDef; 7] {
             },
         },
         // Seek hotkeys: no post-seek emit (it would carry the pre-seek
-        // position, snapping the UI back — the seek-command rule). The jump
-        // distance reads the persisted "seek_amount" setting live.
+        // position, snapping the UI back — the seek-command rule).
         // "seek-nudge" carries only the direction — the SeekButton runs the
         // same one-revolution spin a click gets, so the hotkey and the button
         // speak one feedback language (PR #21 follow-up). The buttons gate on
@@ -90,7 +89,7 @@ fn hotkey_defs() -> [HotkeyDef; 7] {
             label: "Seek backward",
             default_chord: HK_SEEK_BACK,
             action: |app| {
-                media::seek_rel_ms(-seek_step_ms(app));
+                media::seek_rel_ms(-SEEK_STEP_MS);
                 let _ = app.emit("seek-nudge", -1);
             },
         },
@@ -99,7 +98,7 @@ fn hotkey_defs() -> [HotkeyDef; 7] {
             label: "Seek forward",
             default_chord: HK_SEEK_FWD,
             action: |app| {
-                media::seek_rel_ms(seek_step_ms(app));
+                media::seek_rel_ms(SEEK_STEP_MS);
                 let _ = app.emit("seek-nudge", 1);
             },
         },
@@ -153,16 +152,6 @@ pub(crate) struct HotkeyInfo {
 /// The live resolved table, rebuilt on every register_all.
 #[derive(Default)]
 struct HotkeyState(Mutex<Vec<HotkeyInfo>>);
-
-/// The seek jump in ms — the persisted "seek_amount" (seconds) or the
-/// SEEK_STEP_MS default. Clamped to a sane range.
-fn seek_step_ms(app: &AppHandle) -> i64 {
-    let default_s = SEEK_STEP_MS / 1000;
-    let s = settings::get_value(app, "seek_amount")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(default_s);
-    s.clamp(1, 600) * 1000
-}
 
 /// The effective accelerator for an id: a persisted override, else the default.
 fn resolve_chord(app: &AppHandle, id: &str, default: &str) -> String {

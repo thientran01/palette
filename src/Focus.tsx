@@ -488,6 +488,7 @@ export default function Focus() {
             <Waveform
               size="room"
               announceKey={announceSuppressed ? undefined : (lyricsKeyOf(np) ?? undefined)}
+              playing={np?.status === "playing"}
             />
           </div>
 

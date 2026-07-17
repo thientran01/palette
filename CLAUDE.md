@@ -208,7 +208,8 @@ src-tauri/src/
                 widget's monitor (position → set_fullscreen → show; a
                 DIFFERENT window born at size is never-resize-legal).
                 VisIntent gains focus_open (memory-only — a relaunch can
-                never boot into focus; pulse.mode never learns about it):
+                never boot into focus; the persisted launch mode never
+                learns about it):
                 effective = !user_hidden && !(concealed && !snoozed) &&
                 !focus_open, so closing restores the EXACT prior intent.
                 Ctrl+Alt+M and the single-instance summons are focus-aware

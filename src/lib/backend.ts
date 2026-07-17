@@ -358,6 +358,16 @@ if (!IN_TAURI) {
   (window as unknown as { __mockNext?: () => void }).__mockNext = () => mockSkip(1);
 }
 
+// Preview affordance: an in-song dropout — zero bands for `ms` while status
+// stays "playing" (the process-loopback packet gap the Waveform's playing
+// grace exists for; the real trigger only exists in the installed app).
+let mockSilenceUntil = 0;
+if (!IN_TAURI) {
+  (window as unknown as { __mockSilence?: (ms: number) => void }).__mockSilence = (ms) => {
+    mockSilenceUntil = Date.now() + ms;
+  };
+}
+
 /** Mutate the mock payload, advancing the seq stamp like the backend does. */
 function pushMock(patch: Partial<NowPlaying>): void {
   mock = { ...mock, ...patch, seq: mock.seq + 1 };
@@ -610,7 +620,7 @@ export function onAudioBands(cb: (b: AudioBands) => void): () => void {
   }
   // Mock: musical-ish motion so preview exercises the reactive layer.
   const id = window.setInterval(() => {
-    if (mock.status !== "playing") {
+    if (mock.status !== "playing" || Date.now() < mockSilenceUntil) {
       cb({ bass: 0, mid: 0, high: 0, level: 0, spectrum: new Array<number>(SPECTRUM_BINS).fill(0) });
       return;
     }
@@ -649,7 +659,6 @@ export interface HotkeyInfo {
 export interface PrefsSeed {
   version: string;
   reactive_separator: boolean;
-  seek_amount: number;
   launch_mode: string;
   start_at_login: boolean;
   hide_on_fullscreen: boolean;
@@ -677,7 +686,6 @@ const MOCK_HOTKEYS: HotkeyInfo[] = [
 const mockSettings = {
   version: "0.7.1",
   reactive_separator: true,
-  seek_amount: 10,
   launch_mode: "card",
   start_at_login: false,
   hide_on_fullscreen: true,
@@ -1097,7 +1105,6 @@ export const commands = {
       return {
         version: mockSettings.version,
         reactive_separator: mockSettings.reactive_separator,
-        seek_amount: mockSettings.seek_amount,
         launch_mode: mockSettings.launch_mode,
         start_at_login: mockSettings.start_at_login,
         hide_on_fullscreen: mockSettings.hide_on_fullscreen,
@@ -1109,8 +1116,8 @@ export const commands = {
     }
     return invoke<PrefsSeed>("prefs_seed");
   },
-  /** Persist an inert setting (reactive separator, seek amount, launch mode,
-   * Last.fm key, seenIntro). Side-effect settings use their own commands. */
+  /** Persist an inert setting (reactive separator, launch mode, Last.fm key,
+   * seenIntro). Side-effect settings use their own commands. */
   setSetting(key: string, value: unknown): void {
     if (IN_TAURI) {
       void invoke("set_setting", { key, value });
