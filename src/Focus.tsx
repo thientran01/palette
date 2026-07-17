@@ -444,7 +444,11 @@ export default function Focus() {
               region above absorbs the rest — so mb = half the free space
               (Thien, 2026-07-14: "even" gaps both sides). */}
           <div className="mb-[calc((93vh_-_212px_-_var(--stack-top)_-_var(--art))/2)] flex shrink-0 items-center justify-center">
-            <Waveform size="room" announceKey={lyricsKeyOf(np) ?? undefined} />
+            <Waveform
+              size="room"
+              announceKey={lyricsKeyOf(np) ?? undefined}
+              playing={np?.status === "playing"}
+            />
           </div>
 
           {/* THE CONSOLE — persistent (a summoned takeover shows its
