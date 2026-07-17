@@ -13,7 +13,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { type AudioBands } from "./lib/backend";
-import { Envelope, subscribeBands } from "./lib/reactive";
+import { Envelope, reactiveOn, subscribeBands } from "./lib/reactive";
 
 /** Four renditions of the same instrument: "sm" is the pill's inline text
  * separator (5 bars); "md" is the card and lyrics-header separator (7 bars,
@@ -356,7 +356,14 @@ export function Waveform({
             setPhase("rest");
           }, DOTS_MS + DROP_MS + DOTS_MS),
         );
-      }, playingRef.current ? SLEEP_PLAYING_MS : SLEEP_MS);
+        // The playing grace is for the SONG's own quiet, and only while the
+        // reactive layer is live: when the pref toggles off or reduced motion
+        // flips on mid-track, reactive.ts sends ONE zero payload and stops the
+        // stream with `playing` still true — without the reactiveOn() term
+        // that zero would arm the 5s grace nothing can ever correct, and a
+        // user who just asked for less motion watches static bars for 5s
+        // (quick-review catch, PR #115).
+      }, playingRef.current && reactiveOn() ? SLEEP_PLAYING_MS : SLEEP_MS);
     };
 
     // Status flipped while a settle timer pends: restart it on the new
