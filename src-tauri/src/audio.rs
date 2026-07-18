@@ -20,7 +20,7 @@ use rustfft::{num_complex::Complex, FftPlanner};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 const FFT_SIZE: usize = 2048;
@@ -89,7 +89,16 @@ impl Ring {
         }
     }
     pub(crate) fn push_frame(&mut self, frame_mean: f32) {
-        self.buf[self.pos] = frame_mean;
+        // Sanitize at the one ingest point both capture paths share: a single
+        // non-finite sample (a driver/format edge case can emit NaN/Inf)
+        // propagates through the FFT into smoothed[] and STICKS there — serde
+        // renders a NaN band as `null` and the bars freeze until the next pause
+        // resets the envelope.
+        self.buf[self.pos] = if frame_mean.is_finite() {
+            frame_mean
+        } else {
+            0.0
+        };
         self.pos = (self.pos + 1) % self.buf.len();
     }
     /// Snapshot in chronological order.
@@ -234,11 +243,36 @@ const STALL_CAP: Duration = Duration::from_secs(60);
 /// finding 12. A capture that has delivered signal is never demoted: its later
 /// silence is the target really rendering nothing.
 const DEMOTE_AFTER_MS: u64 = 10_000;
+/// A demote is sticky but NOT permanent (it used to clear only on an AUMID
+/// change — so a single transient activation blip, or >10s of digital silence
+/// at open, stranded a player on whole-mix Discord-bleed capture for the whole
+/// session). After this long the AUMID is retried with a process-scoped join;
+/// the window is wide enough that a genuinely-uncapturable target (exclusive
+/// mode, sibling-process render) isn't re-resolved every loop.
+const DEMOTE_EXPIRY: Duration = Duration::from_secs(90);
+
+/// True while `aumid` is under an UNEXPIRED demote (see DEMOTE_EXPIRY). Clears a
+/// stale stamp in passing so the next open retries the process join.
+fn is_demoted(demoted: &mut Option<(String, Instant)>, aumid: &str) -> bool {
+    match demoted {
+        Some((d, since)) if d == aumid => {
+            if since.elapsed() >= DEMOTE_EXPIRY {
+                *demoted = None;
+                false
+            } else {
+                true
+            }
+        }
+        _ => false,
+    }
+}
 
 /// Owner thread: opens/drops the capture as the switch flips, runs the
 /// FFT + smoothing + emit loop while on.
 pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
+    std::thread::Builder::new()
+        .name("audio-owner".into())
+        .spawn(move || {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(FFT_SIZE);
         // Hann window, precomputed.
@@ -261,9 +295,10 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
 
         let mut active: Option<(Capture, f32, Arc<Mutex<Ring>>)> = None;
         let mut last_upgrade = std::time::Instant::now();
-        // The one AUMID currently demoted to Device capture (see
-        // DEMOTE_AFTER_MS). Cleared when the target moves off it.
-        let mut demoted: Option<String> = None;
+        // The one AUMID currently demoted to Device capture, stamped when the
+        // demote was applied (see DEMOTE_AFTER_MS / DEMOTE_EXPIRY). Cleared when
+        // the target moves off it OR the stamp expires (is_demoted).
+        let mut demoted: Option<(String, Instant)> = None;
         let mut smoothed = [0.0f32; 3];
         let mut gain_ref = [1e-4f32; 3];
         let spec_edges = spectrum_edges();
@@ -304,8 +339,8 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                 // whole-mix device loopback as the fallback.
                 let ring = Arc::new(Mutex::new(Ring::new()));
                 let aumid = target_aumid();
-                if demoted.as_deref().is_some_and(|d| d != aumid) {
-                    demoted = None;
+                if demoted.as_ref().is_some_and(|(d, _)| *d != aumid) {
+                    demoted = None; // target moved off the demoted AUMID
                 }
                 if aumid != stall_target {
                     // A fresh target opening = a fresh episode: base stall
@@ -318,7 +353,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                     stall_warned = false;
                     fallback_warned = false;
                 }
-                let process = if aumid.is_empty() || demoted.is_some() {
+                let process = if aumid.is_empty() || is_demoted(&mut demoted, &aumid) {
                     None
                 } else {
                     loopback::resolve_target(&aumid).and_then(|t| {
@@ -436,7 +471,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                             Act::Reopen
                         } else if last_upgrade.elapsed() > UPGRADE_RETRY {
                             last_upgrade = std::time::Instant::now();
-                            if aumid.is_empty() || demoted.as_deref() == Some(&aumid) {
+                            if aumid.is_empty() || is_demoted(&mut demoted, &aumid) {
                                 Act::Keep
                             } else {
                                 Act::TryUpgrade(aumid)
@@ -454,7 +489,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                     }
                     Act::Demote(aumid) => {
                         log::warn!("audio: process capture for {aumid:?} never delivered — device-mix fallback");
-                        demoted = Some(aumid);
+                        demoted = Some((aumid, Instant::now()));
                         active = None; // reopens demoted (Device) next iteration
                         continue;
                     }
@@ -486,7 +521,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                                     fallback_warned = false;
                                 } else {
                                     log::warn!("audio: process activation failed for {aumid:?} — staying on device mix");
-                                    demoted = Some(aumid);
+                                    demoted = Some((aumid, Instant::now()));
                                 }
                             }
                         }
@@ -571,5 +606,6 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
             let _ = app.emit("audio-bands", bands);
             std::thread::sleep(EMIT_INTERVAL);
         }
-    });
+        })
+        .expect("spawn audio-owner thread");
 }
