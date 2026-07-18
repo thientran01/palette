@@ -1122,7 +1122,14 @@ export const commands = {
    * seenIntro). Side-effect settings use their own commands. */
   setSetting(key: string, value: unknown): void {
     if (IN_TAURI) {
-      void invoke("set_setting", { key, value });
+      // set_setting now returns Result — it rejects a non-allow-listed key or an
+      // oversized value (e.g. a >4KB paste into the Last.fm key field). Rust
+      // already log::warn!s the reason; swallow here so a rejected persist never
+      // surfaces as an "Uncaught (in promise)". First-party UI only sends the
+      // four allow-listed keys, so this path is near-unreachable in practice.
+      void invoke("set_setting", { key, value }).catch((e) => {
+        console.warn(`set_setting rejected for ${key}:`, e);
+      });
     } else {
       (mockSettings as Record<string, unknown>)[key] = value;
     }
