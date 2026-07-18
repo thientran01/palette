@@ -31,7 +31,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - In-song silence no longer collapses and re-blooms the separator bars — a settle grace holds them while the track is still playing.
 - The separator demotes a silent process capture to the device fallback instead of stranding the bars at zero. Apple Music lossless in WASAPI *exclusive* mode remains uncapturable by anything — documented, with the user-side workaround, in [docs/smtc-support-matrix.md](docs/smtc-support-matrix.md).
 
-## [0.7.2] - 2026-07-15
+## [0.7.2] - 2026-07-14
 
 The Palette release — the app is now **Palette**.
 
