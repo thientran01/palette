@@ -216,9 +216,9 @@ const STALL_BASE: Duration = Duration::from_secs(2);
 /// locally (GSMTC playing with the audio on a phone/speaker — the DeviceTag
 /// case): reopening can't help, so consecutive fruitless reopens double the
 /// next stall threshold (2s → 4s → 8s …) up to this cap instead of cycling
-/// the device open/close every 2s all session. Any real frame progress or a
-/// target change resets to STALL_BASE, so genuine device-swap recovery keeps
-/// its first-reopen latency.
+/// the device open/close every 2s all session. Any real frame progress, a
+/// target change, or a landed process join resets to STALL_BASE, so genuine
+/// device-swap recovery keeps its first-reopen latency.
 const STALL_CAP: Duration = Duration::from_secs(60);
 /// A process capture that has NEVER delivered a packet WITH SIGNAL this long
 /// into playback either joined the wrong process (multi-profile browsers can
@@ -281,8 +281,9 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
         // Fruitless-reopen backoff (see STALL_CAP) + one-warn-per-episode
         // gates: a silent endpoint otherwise wrote the stall warn AND the
         // no-join warn every ~2s cycle (~3.6k lines/hour). An "episode" ends
-        // when frames progress or the target AUMID moves — both reset all
-        // three so the next episode warns once again at Warn level.
+        // when frames progress, the target AUMID moves, or a process-scoped
+        // join lands — each resets all three so the next episode warns once
+        // again at Warn level and starts at the base first-reopen latency.
         let mut stall_threshold = STALL_BASE;
         let mut stall_warned = false;
         let mut fallback_warned = false;
@@ -326,6 +327,14 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                 };
                 if let Some(cap) = process {
                     let rate = cap.sample_rate;
+                    // A landed join ends any stall episode: the Device-arm
+                    // resets can't run while a Process capture holds the
+                    // slot, so without this a later same-AUMID fall back to
+                    // Device inherits a capped threshold + pre-suppressed
+                    // warns from BEFORE the interlude.
+                    stall_threshold = STALL_BASE;
+                    stall_warned = false;
+                    fallback_warned = false;
                     active = Some((Capture::Process(cap, aumid), rate, ring));
                 } else if let Some((stream, rate)) = open_loopback(ring.clone(), frames.clone()) {
                     if !aumid.is_empty() {
@@ -468,6 +477,13 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                                     active = Some((Capture::Process(cap, aumid), rate, ring));
                                     last_frames = frames.load(Ordering::Relaxed);
                                     last_progress = std::time::Instant::now();
+                                    // Same episode-end as the open-branch
+                                    // join: the upgrade proves the target
+                                    // deliverable, so a later Device
+                                    // fallback is a NEW episode.
+                                    stall_threshold = STALL_BASE;
+                                    stall_warned = false;
+                                    fallback_warned = false;
                                 } else {
                                     log::warn!("audio: process activation failed for {aumid:?} — staying on device mix");
                                     demoted = Some(aumid);

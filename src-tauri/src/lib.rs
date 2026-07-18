@@ -515,9 +515,10 @@ pub(crate) fn emit_now(app: &AppHandle) -> media::NowPlaying {
 // on the main/STA thread and freezing the Win32 message pump — GSMTC `.get()`
 // reached from a hotkey/tray action (which dispatch ON the main thread), or a
 // lock / cross-thread window op. Two guards live here:
-//   1. defer_main_action — runs those actions OFF the main thread, the same
-//      off-main discipline the async transport commands and the single-instance
-//      handler already use.
+//   1. defer_main_action — runs those actions OFF the main thread on the
+//      dedicated blocking pool — the discipline the async transport commands
+//      reach via off_core and the single-instance summons routes through
+//      directly.
 //   2. spawn_main_thread_watchdog — logs a UI-pump stall BEFORE Windows
 //      force-closes, so any future regression names itself in pulse.log instead
 //      of vanishing silently (a hang bypasses the panic hook — nothing is
@@ -1010,8 +1011,12 @@ pub fn run() {
             // active conceal episode. This callback runs in a WndProc on
             // the main/STA thread (SendMessageW from the second process) —
             // apply_visibility's emit_now touches GSMTC, which must never
-            // block there (see the async-command note above), so the whole
-            // reconcile defers to the async pool.
+            // block there (see the async-command note above). The reconcile
+            // defers via defer_main_action (blocking pool), NOT a plain
+            // async spawn: the sync snapshot on a core worker is the
+            // off_core wedge class, and a summons lands exactly when the
+            // widget looks dead — relaunch-spam during a wedge episode
+            // would eat a non-replenishing core worker per press.
             let vis = app.state::<VisIntent>();
             // During the focus takeover, Pulse IS surfaced — the summons is
             // already satisfied, and the flag-clears below would silently
@@ -1023,14 +1028,13 @@ pub fn run() {
             if vis.concealed.load(Ordering::Relaxed) {
                 vis.conceal_snoozed.store(true, Ordering::Relaxed);
             }
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                apply_visibility(&app);
+            defer_main_action(app, |app| {
+                apply_visibility(app);
                 // Unconditional refresh, preserving the old handler's
                 // behavior for an ALREADY-visible widget (apply_visibility
                 // only emits on an actual show). Diff-suppressed — a
                 // redundant call costs nothing.
-                emit_now(&app);
+                emit_now(app);
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_focus();
                 }
@@ -1043,7 +1047,17 @@ pub fn run() {
         // builds also keep a Stdout target so `tauri dev` still prints inline.
         .plugin(
             tauri_plugin_log::Builder::new()
-                .level(log::LevelFilter::Info)
+                // Level is a hard cap: Info in release keeps identifying
+                // detail (presence's foreground exe) out of pulse.log — the
+                // support bundle — while dev builds lower to Debug so the
+                // crate's log::debug! diagnostics (audio reopen-backoff
+                // cadence, presence detail) actually print; without the dev
+                // branch every debug! line is dead in ALL builds.
+                .level(if cfg!(debug_assertions) {
+                    log::LevelFilter::Debug
+                } else {
+                    log::LevelFilter::Info
+                })
                 // Bound disk use: rotate at 5 MB, keep one old file.
                 .max_file_size(5_000_000)
                 .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)

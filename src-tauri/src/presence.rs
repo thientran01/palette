@@ -404,7 +404,10 @@ pub fn spawn(app: AppHandle) {
                     // (release level = Info), and the foreground exe name
                     // there would make it a timestamped what-was-fullscreen
                     // timeline. The identifying detail (exe, rect, quns)
-                    // stays one level down at Debug.
+                    // stays one level down at Debug — dev builds print it
+                    // (their level is Debug), release builds never do; the
+                    // dev overlay's presence-debug stream carries it live
+                    // either way.
                     log::info!(
                         "presence: fullscreen={} concealed={}",
                         state.fullscreen,
