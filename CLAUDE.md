@@ -163,6 +163,33 @@ src-tauri/src/
                 Spotify connected; skips inside the Spotify app bypass the
                 list; removing a fed front leaks that one track to
                 Spotify's queue
+  lastfm.rs     Last.fm track.getSimilar HTTP — the more-like-this brain
+                (Spotify's own /recommendations is gated for post-Nov-2024
+                apps). The API key is PERSONAL: settings.json
+                "lastfm_api_key", NEVER a const (public repo); it rides
+                the request URL urlenc'd and the module logs nothing.
+                no_data is a designed answer, not an error (the graph's
+                thin spot is recency, not language); every list tops with
+                same-artist entries (match 1.0–0.9) and degenerates into
+                filler below ~0.05 — the consumer (similar.rs) must
+                handle both shapes. validate_key backs the prefs
+                "Test key" button (ok/invalid/offline)
+  similar.rs    more-like-this + Search's discovery picks: current track →
+                Last.fm similars → Spotify resolution. more_like_this
+                appends to up-next via upnext::append ONE AT A TIME
+                (earned incremental arrival in the open panel), skipping
+                seed-artist entries first (genre discovery, not artist
+                radio) with MATCH_FLOOR (0.05) dropping the mush tail;
+                now-playing/dupe re-checked PER add — the walk takes
+                seconds and users interleave. discovery_picks returns
+                resolved tracks instead and fans BOUNDED: ≤2 seeds ×
+                ≤5 resolve tries each (a Spotify miss still costs a
+                search + gap), excluding by norm_key BEFORE resolving
+                (kept in lockstep with Search.tsx — a drift silently
+                stops excluding). One run at a time each: IN_FLIGHT +
+                a separate DISCOVERY_IN_FLIGHT so the empty-state fetch
+                and the queue button never block each other; blocking
+                HTTP on the spawn_blocking pool
   search.rs     the summon Search's window — Palette's FIRST second webview
                 (multi-window pioneer; focus mode reuses the seams). Created
                 ONCE hidden at setup (WebView2 cold-create costs ~100s of
@@ -240,6 +267,29 @@ src-tauri/src/
                 with no lyrics (Esc peels the queue first).
                 This is the removed P3's want with the correct trigger:
                 invoked, never guessed
+  prefs.rs      the Preferences window — third webview on the search.rs
+                multi-window seams, but a NORMAL desktop window (opaque,
+                720×560 born-at-size, taskbar/Alt-Tab, NOT always-on-top,
+                never click-through) with focus.rs's CREATE-ON-OPEN +
+                DESTROY-ON-CLOSE lifecycle (opens rarely — no third
+                resident webview); recenters on the cursor's monitor per
+                open (window-state denylisted). Owns the window lifecycle,
+                the prefs_seed settings-read seam, and the small
+                data/connector commands; open() validates the section
+                against SECTIONS and rides it on the builder URL (no
+                event race — an already-open window is nudged via
+                "prefs-section"). The hotkey REBIND machinery lives in
+                lib.rs, co-located with the HK_* defaults and the
+                registration it re-runs
+  settings.rs   app-data settings.json, read-modify-write behind a module
+                mutex (set_value merges per key — save_companion once
+                wrote `{"companion": on}` WHOLESALE, the founding
+                clobber lesson) + write_atomic (sibling temp + same-volume
+                rename, atomic on NTFS): THE crash-safe replace shared by
+                every config writer — settings.json here,
+                spotify_tokens.json, upnext.json — so a crash mid-write
+                leaves old-or-new, never the truncated file plain
+                fs::write's O_TRUNC produces
   audio.rs      audio capture → FFT → smoothed auto-gained band energies at
                 ~30Hz. Capture is PROCESS-SCOPED (loopback.rs) so the bars
                 ride the SONG, not the device mix — whole-mix loopback heard
@@ -352,6 +402,11 @@ Design rule: chrome stays neutral (house semantic tokens); the album-art palette
   [key+Spotify-gated], rotating on a day-part block seed; ↑ at the top slot
   pull-refreshes both)
 
+The HK_* constants are DEFAULTS: rebindable in Preferences → Hotkeys, with
+overrides persisted in settings.json under "hotkeys" and read at registration
+(lib.rs resolve_chord/register_all — which also records each chord's
+OS-registration result so a reserved combo surfaces instead of failing silently).
+
 Commands route to the OS "current" media session, which Windows re-points to
 whichever app played most recently (pause AM while Spotify plays → next command
 hits Spotify). The controlled-app brand icon (PlayerBadge) was removed in the
@@ -365,7 +420,7 @@ being controlled.
 - `npm run tauri build` — release build → NSIS per-user installer at `src-tauri/target/release/bundle/nsis/Palette_<version>_x64-setup.exe` (unsigned; SmartScreen warns on other machines). Needs `TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/pulse.key)"` in the env now that updater artifacts are signed — without it the bundler errors after compiling (the `_PATH` variant does NOT work despite `tauri signer generate`'s help text — measured 2026-07-08).
 - `npm run dev` — frontend only (no Tauri window, limited use)
 
-Installed app: single-instance (relaunching surfaces the running widget), tray has an opt-in "Start at login" toggle (tauri-plugin-autostart, HKCU Run key — registers the current exe's path, so toggling from a dev build points it at the dev exe) and a "Hide on fullscreen" check item (the conceal switch, persisted to app-data settings.json under the legacy `companion` key; dev builds add "Simulate fullscreen (10s)" for conceal testing). Tray "Connect Spotify" ⇄ "Disconnect Spotify" runs the Web API OAuth (spotify.rs — label doubles as connection state and flow narration). Tray "Check for updates" runs the update flow on demand (label narrates Checking…/Installing…/Up to date). App icon source: five living-separator capsules on a dark rounded square; regenerate the set with `npx tauri icon <1024px.png>`.
+Installed app: single-instance (relaunching surfaces the running widget), tray has an opt-in "Start at login" toggle (tauri-plugin-autostart, HKCU Run key — registers the current exe's path, so toggling from a dev build points it at the dev exe) and a "Hide on fullscreen" check item (the conceal switch, persisted to app-data settings.json under the legacy `companion` key; dev builds add "Simulate fullscreen (10s)" for conceal testing). Tray "Preferences…" opens the prefs window (prefs.rs) and "Shortcuts / Help" opens it jumped to the Hotkeys section. Tray "Connect Spotify" ⇄ "Disconnect Spotify" runs the Web API OAuth (spotify.rs — label doubles as connection state and flow narration). Tray "Check for updates" runs the update flow on demand (label narrates Checking…/Installing…/Up to date). Tray "Open logs" reveals the log dir (`%LOCALAPPDATA%\com.thien.pulse\logs\pulse.log` — the supportability affordance next to update checks). App icon source: five living-separator capsules on a dark rounded square; regenerate the set with `npx tauri icon <1024px.png>`.
 
 Releases: bump `version` in tauri.conf.json (+ Cargo.toml/package.json to match), merge, then `git tag vX.Y.Z && git push origin vX.Y.Z` — the release.yml workflow builds, signs the updater artifacts, and publishes a GitHub Release with latest.json. Installed apps self-update at launch (release builds only; `#[cfg(not(debug_assertions))]`). Updater keypair: `~/.tauri/pulse.key` (private, empty password, mirrored in the repo's `TAURI_SIGNING_PRIVATE_KEY` secret — LOSING IT ORPHANS ALL INSTALLS) / pubkey pinned in tauri.conf.json.
 
