@@ -620,7 +620,9 @@ pub(crate) fn defer_main_action(app: &AppHandle, f: impl FnOnce(&AppHandle) + Se
 /// fresh when idle.
 fn spawn_main_thread_watchdog(app: AppHandle) {
     MAIN_TICK_MS.store(now_ms(), Ordering::Relaxed);
-    std::thread::spawn(move || {
+    std::thread::Builder::new()
+        .name("main-watchdog".into())
+        .spawn(move || {
         let mut warned = false;
         let mut media_stall_peak: i64 = 0;
         loop {
@@ -657,7 +659,8 @@ fn spawn_main_thread_watchdog(app: AppHandle) {
                 media_stall_peak = 0;
             }
         }
-    });
+        })
+        .expect("spawn main-watchdog thread");
 }
 
 /// Visibility INTENT — the single owner of WHY the MAIN window is shown or
@@ -1452,13 +1455,16 @@ pub fn run() {
                         let on = !app.state::<VisIntent>().companion.load(Ordering::Relaxed);
                         set_companion(app, on);
                     }),
-                    "spotify" => {
+                    // Off the pump like "toggle"/"companion": disconnect does
+                    // token-file I/O (and connected() takes the state lock), so
+                    // it must not run on the message pump.
+                    "spotify" => defer_main_action(app, |app| {
                         if spotify::connected(app) {
                             spotify::disconnect(app);
                         } else {
                             spotify::start_connect(app);
                         }
-                    }
+                    }),
                     #[cfg(debug_assertions)]
                     "simfs" => {
                         app.state::<presence::Presence>()
@@ -1547,121 +1553,124 @@ pub fn run() {
             // a fully covered widget still captures. Occlusion detection isn't
             // exposed through Tauri; accepted for v1.
             let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                // Explicit MTA: media.rs's wait_op timeouts rely on WinRT
-                // completions arriving on the COM threadpool — make the
-                // implicit-MTA assumption explicit (S_FALSE double-init is
-                // fine; same idiom as audio.rs).
-                let _ = unsafe {
-                    windows::Win32::System::Com::CoInitializeEx(
-                        None,
-                        windows::Win32::System::Com::COINIT_MULTITHREADED,
-                    )
-                };
-                // Stage telemetry + dev sim-wedge key off this mark; the
-                // watchdog reads media::beat_age_ms (stage transitions +
-                // the per-iteration beat below).
-                media::mark_media_loop_thread();
-                let (wake_tx, wake_rx) = std::sync::mpsc::channel::<media::Wake>();
-                // None → GSMTC unavailable; the loop degrades to pure polling.
-                let mut watch = media::SessionWatch::new(wake_tx);
-                let mut resubscribe = true;
-                // Event wakes force a full snapshot; heartbeat ticks first
-                // probe tick_key and skip the snapshot (metadata marshal, art
-                // work, emit) when nothing moved — except while the art probe
-                // window is open, which needs every tick.
-                let mut force_snapshot = true;
-                let mut last_tick: Option<media::TickKey> = None;
-                // Hidden-window history cadence: probe every Nth heartbeat
-                // (~5s) so listens keep logging under P1 conceal — the ONE
-                // narrow exception to "no work while hidden" (no art
-                // marshal, no emit; media::history_probe).
-                const HISTORY_PROBE_BEATS: u32 = 10;
-                let mut hidden_beats = 0u32;
-                loop {
-                    media::beat();
-                    if let Some(w) = watch.as_mut() {
-                        w.resubscribe(std::mem::take(&mut resubscribe));
-                    }
-                    // Widened for focus mode: main hides behind the takeover
-                    // (VisIntent.focus_open), and a loop gated on main alone
-                    // would stop emitting — a frozen player in the focus
-                    // window (verified in planning). The audio capture
-                    // switch below inherits this for free.
-                    let visible = handle
-                        .get_webview_window("main")
-                        .and_then(|w| w.is_visible().ok())
-                        .unwrap_or(true)
-                        || handle
-                            .get_webview_window(focus::LABEL)
-                            .and_then(|w| w.is_visible().ok())
-                            .unwrap_or(false);
-                    let playing = if visible {
-                        hidden_beats = 0;
-                        let tick = media::tick_key();
-                        let probing = media::art_probing(&handle.state::<ArtCache>());
-                        let p = if std::mem::take(&mut force_snapshot)
-                            || probing
-                            || tick != last_tick
-                        {
-                            let np = emit_now(&handle);
-                            // A play_now jump flickers intermediate tracks as
-                            // "playing" (and a slow skip can hold one past the
-                            // 1s history floor) — those are navigation, not
-                            // listening. upnext::tick still runs: it owns the
-                            // jump-aware bookkeeping.
-                            if !spotify::jump_active(&handle) {
-                                history::ingest(&handle, &np);
-                            }
-                            upnext::tick(&handle, &np);
-                            np.status == "playing"
-                        } else {
-                            tick.as_ref().is_some_and(|k| k.3 == "playing")
-                        };
-                        last_tick = tick;
-                        p
-                    } else {
-                        hidden_beats += 1;
-                        if hidden_beats >= HISTORY_PROBE_BEATS {
-                            hidden_beats = 0;
-                            let np = media::history_probe();
-                            if !spotify::jump_active(&handle) {
-                                history::ingest(&handle, &np);
-                            }
-                            upnext::tick(&handle, &np);
-                        }
-                        false
+            std::thread::Builder::new()
+                .name("media-loop".into())
+                .spawn(move || {
+                    // Explicit MTA: media.rs's wait_op timeouts rely on WinRT
+                    // completions arriving on the COM threadpool — make the
+                    // implicit-MTA assumption explicit (S_FALSE double-init is
+                    // fine; same idiom as audio.rs).
+                    let _ = unsafe {
+                        windows::Win32::System::Com::CoInitializeEx(
+                            None,
+                            windows::Win32::System::Com::COINIT_MULTITHREADED,
+                        )
                     };
-                    // Grace-expiry sweep for a vanish-pending entry (a gone
-                    // session produces no ticks to ride).
-                    history::tick(&handle);
-                    let reactive = reactive_effective(&ui_reactive);
-                    // The capture's process-scoping target rides the same
-                    // beat as the switch: whichever app GSMTC says is
-                    // playing is the app whose audio the waveform should
-                    // hear (loopback.rs — never the whole device mix).
-                    audio::set_target(last_tick.as_ref().map(|k| k.0.as_str()).unwrap_or(""));
-                    audio_switch.store(visible && playing && reactive, Ordering::Relaxed);
-                    use std::sync::mpsc::RecvTimeoutError;
-                    match wake_rx.recv_timeout(Duration::from_millis(POLL_INTERVAL_MS)) {
-                        Ok(first) => {
-                            let mut changed = matches!(first, media::Wake::SessionChanged);
-                            std::thread::sleep(Duration::from_millis(EVENT_SETTLE_MS));
-                            while let Ok(w) = wake_rx.try_recv() {
-                                changed |= matches!(w, media::Wake::SessionChanged);
-                            }
-                            resubscribe = changed;
-                            force_snapshot = true;
+                    // Stage telemetry + dev sim-wedge key off this mark; the
+                    // watchdog reads media::beat_age_ms (stage transitions +
+                    // the per-iteration beat below).
+                    media::mark_media_loop_thread();
+                    let (wake_tx, wake_rx) = std::sync::mpsc::channel::<media::Wake>();
+                    // None → GSMTC unavailable; the loop degrades to pure polling.
+                    let mut watch = media::SessionWatch::new(wake_tx);
+                    let mut resubscribe = true;
+                    // Event wakes force a full snapshot; heartbeat ticks first
+                    // probe tick_key and skip the snapshot (metadata marshal, art
+                    // work, emit) when nothing moved — except while the art probe
+                    // window is open, which needs every tick.
+                    let mut force_snapshot = true;
+                    let mut last_tick: Option<media::TickKey> = None;
+                    // Hidden-window history cadence: probe every Nth heartbeat
+                    // (~5s) so listens keep logging under P1 conceal — the ONE
+                    // narrow exception to "no work while hidden" (no art
+                    // marshal, no emit; media::history_probe).
+                    const HISTORY_PROBE_BEATS: u32 = 10;
+                    let mut hidden_beats = 0u32;
+                    loop {
+                        media::beat();
+                        if let Some(w) = watch.as_mut() {
+                            w.resubscribe(std::mem::take(&mut resubscribe));
                         }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        // Only reachable when SessionWatch never constructed
-                        // (it owns the last sender) — plain sleep poll.
-                        Err(RecvTimeoutError::Disconnected) => {
-                            std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                        // Widened for focus mode: main hides behind the takeover
+                        // (VisIntent.focus_open), and a loop gated on main alone
+                        // would stop emitting — a frozen player in the focus
+                        // window (verified in planning). The audio capture
+                        // switch below inherits this for free.
+                        let visible = handle
+                            .get_webview_window("main")
+                            .and_then(|w| w.is_visible().ok())
+                            .unwrap_or(true)
+                            || handle
+                                .get_webview_window(focus::LABEL)
+                                .and_then(|w| w.is_visible().ok())
+                                .unwrap_or(false);
+                        let playing = if visible {
+                            hidden_beats = 0;
+                            let tick = media::tick_key();
+                            let probing = media::art_probing(&handle.state::<ArtCache>());
+                            let p = if std::mem::take(&mut force_snapshot)
+                                || probing
+                                || tick != last_tick
+                            {
+                                let np = emit_now(&handle);
+                                // A play_now jump flickers intermediate tracks as
+                                // "playing" (and a slow skip can hold one past the
+                                // 1s history floor) — those are navigation, not
+                                // listening. upnext::tick still runs: it owns the
+                                // jump-aware bookkeeping.
+                                if !spotify::jump_active(&handle) {
+                                    history::ingest(&handle, &np);
+                                }
+                                upnext::tick(&handle, &np);
+                                np.status == "playing"
+                            } else {
+                                tick.as_ref().is_some_and(|k| k.3 == "playing")
+                            };
+                            last_tick = tick;
+                            p
+                        } else {
+                            hidden_beats += 1;
+                            if hidden_beats >= HISTORY_PROBE_BEATS {
+                                hidden_beats = 0;
+                                let np = media::history_probe();
+                                if !spotify::jump_active(&handle) {
+                                    history::ingest(&handle, &np);
+                                }
+                                upnext::tick(&handle, &np);
+                            }
+                            false
+                        };
+                        // Grace-expiry sweep for a vanish-pending entry (a gone
+                        // session produces no ticks to ride).
+                        history::tick(&handle);
+                        let reactive = reactive_effective(&ui_reactive);
+                        // The capture's process-scoping target rides the same
+                        // beat as the switch: whichever app GSMTC says is
+                        // playing is the app whose audio the waveform should
+                        // hear (loopback.rs — never the whole device mix).
+                        audio::set_target(last_tick.as_ref().map(|k| k.0.as_str()).unwrap_or(""));
+                        audio_switch.store(visible && playing && reactive, Ordering::Relaxed);
+                        use std::sync::mpsc::RecvTimeoutError;
+                        match wake_rx.recv_timeout(Duration::from_millis(POLL_INTERVAL_MS)) {
+                            Ok(first) => {
+                                let mut changed = matches!(first, media::Wake::SessionChanged);
+                                std::thread::sleep(Duration::from_millis(EVENT_SETTLE_MS));
+                                while let Ok(w) = wake_rx.try_recv() {
+                                    changed |= matches!(w, media::Wake::SessionChanged);
+                                }
+                                resubscribe = changed;
+                                force_snapshot = true;
+                            }
+                            Err(RecvTimeoutError::Timeout) => {}
+                            // Only reachable when SessionWatch never constructed
+                            // (it owns the last sender) — plain sleep poll.
+                            Err(RecvTimeoutError::Disconnected) => {
+                                std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                            }
                         }
                     }
-                }
-            });
+                })
+                .expect("spawn media-loop thread");
             Ok(())
         })
         .build(tauri::generate_context!())

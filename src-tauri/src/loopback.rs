@@ -342,21 +342,29 @@ impl ProcessCapture {
         let t_stop = stop.clone();
         let t_done = done.clone();
         let t_last = last_data_ms.clone();
-        let join = std::thread::spawn(move || {
-            // MTA: audio interfaces are agile and the activation callback
-            // arrives on a worker. S_FALSE (already initialized) is fine.
-            let com = unsafe {
-                windows::Win32::System::Com::CoInitializeEx(
-                    None,
-                    windows::Win32::System::Com::COINIT_MULTITHREADED,
-                )
-            };
-            capture_loop(pid, ring, frames, t_stop, t_last, epoch, ready_tx);
-            t_done.store(true, Ordering::Relaxed);
-            if com.is_ok() {
-                unsafe { windows::Win32::System::Com::CoUninitialize() };
-            }
-        });
+        let join = std::thread::Builder::new()
+            .name("process-capture".into())
+            .spawn(move || {
+                // MTA: audio interfaces are agile and the activation callback
+                // arrives on a worker. S_FALSE (already initialized) is fine.
+                let com = unsafe {
+                    windows::Win32::System::Com::CoInitializeEx(
+                        None,
+                        windows::Win32::System::Com::COINIT_MULTITHREADED,
+                    )
+                };
+                // Runs on EVERY exit path — including a panic unwinding out of
+                // capture_loop. Without it a panic would skip `done` (the owner
+                // then keeps a dead capture until the next pause/hide/AUMID
+                // change) AND leak the MTA init (count imbalance). CoUninitialize
+                // must run on this same thread, which Drop guarantees.
+                let _exit = CaptureExit {
+                    done: t_done,
+                    uninit: com.is_ok(),
+                };
+                capture_loop(pid, ring, frames, t_stop, t_last, epoch, ready_tx);
+            })
+            .expect("spawn process-capture thread");
 
         // 5s comfortably covers the 2s activation wait plus the setup calls
         // after it. On timeout the thread is DETACHED, never joined: a
@@ -407,6 +415,25 @@ impl Drop for ProcessCapture {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(j) = self.join.take() {
             let _ = j.join();
+        }
+    }
+}
+
+/// Drop guard for the capture thread: sets `done` and balances the MTA
+/// CoUninitialize on every exit (normal return AND panic unwind), so a panic
+/// inside capture_loop can't strand a dead capture or leak a COM apartment
+/// init. `uninit` mirrors the CoInitializeEx success (S_OK/S_FALSE both count
+/// — each successful init needs one uninit).
+struct CaptureExit {
+    done: Arc<AtomicBool>,
+    uninit: bool,
+}
+
+impl Drop for CaptureExit {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+        if self.uninit {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
         }
     }
 }
@@ -484,23 +511,33 @@ fn capture_loop(
                     }
                     if n_frames > 0 {
                         let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
-                        let samples = std::slice::from_raw_parts(
-                            data as *const f32,
-                            n_frames as usize * channels,
-                        );
+                        // WASAPI may pair the SILENT flag with a NULL buffer
+                        // pointer, and slice::from_raw_parts on null with a
+                        // non-zero len is UB — the samples are unused in the
+                        // silent branch anyway (mean is 0.0). Read the slice only
+                        // when there's real signal; otherwise push n_frames of
+                        // silence so the bars still fall.
+                        let read_signal = !silent && !data.is_null();
                         let mut ring = match ring.lock() {
                             Ok(r) => r,
                             Err(p) => p.into_inner(),
                         };
                         let mut peak = 0.0f32;
-                        for frame in samples.chunks(channels) {
-                            let mean = if silent {
-                                0.0
-                            } else {
-                                frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32
-                            };
-                            peak = peak.max(mean.abs());
-                            ring.push_frame(mean);
+                        if read_signal {
+                            let samples = std::slice::from_raw_parts(
+                                data as *const f32,
+                                n_frames as usize * channels,
+                            );
+                            for frame in samples.chunks(channels) {
+                                let mean =
+                                    frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32;
+                                peak = peak.max(mean.abs());
+                                ring.push_frame(mean);
+                            }
+                        } else {
+                            for _ in 0..n_frames {
+                                ring.push_frame(0.0);
+                            }
                         }
                         drop(ring);
                         frames.fetch_add(1, Ordering::Relaxed);
