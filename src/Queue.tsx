@@ -53,6 +53,7 @@ const QSCALE = {
     rowH: 44,
     swapAt: 26,
     thumb: 26,
+    ledger: false,
     row: "h-[44px] gap-2.5 rounded-md px-2",
     title: "text-xs",
     artist: "text-[11px]",
@@ -66,19 +67,27 @@ const QSCALE = {
     grip: "h-[26px] w-[18px]",
     glyph: 13,
   },
+  // "Ledger Room" (focus takeover, 2026-07-19): the widget rows read as a
+  // miniature lost in the room even at the earlier 56px step-up (Thien). This
+  // tier re-cuts the ROW so it earns a wider column — taller rows, a bigger
+  // thumb, a second `artist · album` line, and a right-aligned duration /
+  // relative-time cell (`ledger`) so a short title never strands in a wide
+  // measure. Row height and swapAt move together — the reorder drag and the
+  // ghost drop compute in rowH units, so the interaction stays pixel-correct.
   room: {
-    rowH: 56,
-    swapAt: 32,
-    thumb: 40,
-    row: "h-[56px] gap-3 rounded-lg px-2",
-    title: "text-[15px]",
-    artist: "text-[13px]",
-    label: "text-[11px]",
-    toast: "text-[12px]",
-    prose: "text-[13px]",
-    btn: "h-[30px] w-[30px]",
-    grip: "h-[30px] w-[20px]",
-    glyph: 15,
+    rowH: 72,
+    swapAt: 40,
+    thumb: 52,
+    ledger: true,
+    row: "h-[72px] gap-3 rounded-lg px-3",
+    title: "text-[17px]",
+    artist: "text-[14px]",
+    label: "text-[13px]",
+    toast: "text-[13px]",
+    prose: "text-[14px]",
+    btn: "h-[34px] w-[34px]",
+    grip: "h-[34px] w-[22px]",
+    glyph: 16,
   },
 } as const satisfies Record<QueueScale, unknown>;
 type QueueScaleSpec = (typeof QSCALE)[QueueScale];
@@ -320,6 +329,31 @@ async function playTrackNow(t: { uri: string; title: string; artist: string }): 
 
 // ---- rows ----
 
+/** mm:ss for a track duration; "" when unknown (0) so the ledger cell reads
+ * blank instead of "0:00". */
+function fmtDuration(ms: number): string {
+  if (!ms || ms <= 0) return "";
+  const total = Math.round(ms / 1000);
+  return `${Math.floor(total / 60)}:${(total % 60).toString().padStart(2, "0")}`;
+}
+
+/** Coarse relative time for the EARLIER ledger cell ("now / 12m / 2h /
+ * Yesterday / 3d / 2w / 4mo"). It goes stale between renders — acceptable: it's
+ * a soft context anchor, not a clock, and the feed re-renders on updates. */
+function fmtRelTime(ms: number): string {
+  if (!ms || ms <= 0) return "";
+  const min = Math.floor((Date.now() - ms) / 60000);
+  if (min < 1) return "now";
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.floor(hr / 24);
+  if (day === 1) return "Yesterday";
+  if (day < 7) return `${day}d`;
+  if (day < 35) return `${Math.floor(day / 7)}w`;
+  return `${Math.floor(day / 30)}mo`;
+}
+
 /** Cover thumb (remote url straight into an img; note glyph on a null OR
  * dead url) — 26px in the queue rows; the search window passes its own size
  * (same grammar, bigger room). Exported for the search window's result rows. */
@@ -481,8 +515,15 @@ const QueueRowBase = function QueueRow({
       <RowThumb url={track.art_url} size={s.thumb} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className={`truncate ${s.title} font-medium text-fg`}>{track.title}</span>
-        <span className={`truncate ${s.artist} text-muted`}>{track.artist}</span>
+        <span className={`truncate ${s.artist} text-muted`}>
+          {s.ledger && track.album ? `${track.artist} · ${track.album}` : track.artist}
+        </span>
       </span>
+      {s.ledger && (
+        <span className={`shrink-0 whitespace-nowrap tabular-nums ${s.artist} text-muted`}>
+          {fmtDuration(track.duration_ms)}
+        </span>
+      )}
       <span
         aria-hidden
         className={`grid ${s.grip} shrink-0 place-items-center text-muted opacity-0 transition-opacity duration-2 ease-out-tk group-hover/row:opacity-100 group-focus-within/row:opacity-100`}
@@ -535,8 +576,15 @@ const HistoryRowBase = function HistoryRow({
       <RowThumb url={thumb} size={s.thumb} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className={`truncate ${s.title} font-medium text-fg`}>{entry.title}</span>
-        <span className={`truncate ${s.artist} text-muted`}>{entry.artist}</span>
+        <span className={`truncate ${s.artist} text-muted`}>
+          {s.ledger && entry.album ? `${entry.artist} · ${entry.album}` : entry.artist}
+        </span>
       </span>
+      {s.ledger && (
+        <span className={`shrink-0 whitespace-nowrap tabular-nums ${s.artist} text-muted`}>
+          {fmtRelTime(entry.started_at_ms)}
+        </span>
+      )}
       {actionable && (
         <>
           <RowActionButton label="Play now" onClick={() => onPlayNow(entry)} s={s}>
@@ -613,6 +661,7 @@ export function QueuePanel({
   scale?: QueueScale;
 }) {
   const s = QSCALE[scale];
+  const room = scale === "room";
   const upnext = useUpNext();
   const { entries, loadMore, exhausted } = useHistoryFeed(open);
   const spotifyActive = np?.player === "spotify";
@@ -990,6 +1039,7 @@ export function QueuePanel({
   // from the tray" dead-end. `gated` = the queue isn't live, either way.
   const gateProse = connected && !spotifyActive ? "Queue works while Spotify is playing" : null;
   const gated = !connected || !spotifyActive;
+  const upnextEmpty = rows.length === 0 && !gated;
 
   return (
     <div
@@ -1052,15 +1102,51 @@ export function QueuePanel({
         ref={zoneRef}
         role="list"
         aria-label="Up next"
-        className={`flex flex-col rounded-lg border [transition:border-color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk)] ${
-          ghost?.over ? "border-accent/55 bg-accent/5" : "border-transparent"
+        className={`flex flex-col border [transition:border-color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk)] ${
+          room && upnextEmpty ? "min-h-[144px] items-center justify-center gap-2 rounded-xl px-4 py-4 text-center" : "rounded-lg"
+        } ${
+          ghost?.over
+            ? "border-accent/55 bg-accent/5"
+            : room && upnextEmpty
+              ? "border-border/10"
+              : "border-transparent"
         }`}
       >
-        {rows.length === 0 && !gated && (
-          <p className={`m-0 px-2 py-2 ${s.prose} text-muted`}>
-            Queue is empty — press + on a track below or drag one here.
-          </p>
-        )}
+        {upnextEmpty &&
+          (room ? (
+            // The empty state IS the ghost drop-zone (zoneRef): a framed panel
+            // with a job, not a lone sentence lost in a 600px column.
+            <>
+              <span className="text-muted">
+                <PlusGlyph size={20} />
+              </span>
+              <p className="m-0 text-[15px] text-muted">Queue is empty</p>
+              <p className="m-0 text-[13px] text-muted/70">
+                Press + on a track below, or drag one up here
+              </p>
+              {hasKey && (
+                <button
+                  type="button"
+                  aria-label={np?.title ? `More like ${np.title}` : "More like this"}
+                  title={np?.title ? `More like ${np.title}` : "More like this"}
+                  aria-disabled={!queueLive || !np?.title || seeding || undefined}
+                  onClick={moreLikeThis}
+                  className={`mt-1 inline-flex items-center gap-1.5 rounded-lg border border-border/15 bg-surface-2 px-3 py-1.5 text-[13px] text-fg [transition:background-color_140ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] ${
+                    !queueLive || !np?.title || seeding
+                      ? "pointer-events-none opacity-40"
+                      : "hover:bg-fg/10 active:scale-95"
+                  }`}
+                >
+                  <SparkleGlyph size={13} />
+                  More like this
+                </button>
+              )}
+            </>
+          ) : (
+            <p className={`m-0 px-2 py-2 ${s.prose} text-muted`}>
+              Queue is empty — press + on a track below or drag one here.
+            </p>
+          ))}
         {(() => {
           // Keys must survive reorders (an index-keyed row remounts on every
           // swap — killed the glide AND dropped keyboard focus mid-reorder);
@@ -1087,10 +1173,20 @@ export function QueuePanel({
           });
         })()}
       </div>
-      <div className="px-2 pb-0.5 pt-2.5">
+      <div className={`px-2 ${room ? "mt-6 border-t border-border/10 pb-1 pt-4" : "pb-0.5 pt-2.5"}`}>
         <span className={`${s.label} uppercase tracking-widest text-muted`}>Earlier</span>
       </div>
-      <div role="list" aria-label="Earlier" className="flex flex-col">
+      {/* Earlier recedes by OPACITY, never smaller rows (house rule) — a quieter
+          secondary tier under Up next; hovering/focusing leans it back in. */}
+      <div
+        role="list"
+        aria-label="Earlier"
+        className={`flex flex-col ${
+          room
+            ? "opacity-[0.82] [transition:opacity_200ms_var(--ease-out-tk)] hover:opacity-100 focus-within:opacity-100"
+            : ""
+        }`}
+      >
         {entries.length === 0 && (
           <p className={`m-0 px-2 py-2 ${s.prose} text-muted`}>
             Tracks you play land here{exhausted ? "" : "…"}
