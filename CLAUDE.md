@@ -67,8 +67,13 @@ src-tauri/src/
                 blinks (measured PR #51). The oversized window's gutter is
                 kept from eating clicks by spawn_hit_watcher: cursor-polled
                 whole-window click-through (set_ignore_cursor_events)
-                gated on the frontend-reported hit rect (set_hit_size, the mode's
-                footprint at the docked corner). The corner is still DERIVED on
+                gated on the frontend-reported hit rect (set_hit_size, which
+                reports TWO corner-anchored boxes: the interactive union — it
+                swells for the queue popover and goes whole-window under a
+                transient overlay — and the mode's own MODE_SIZES box, which is
+                what every PLACEMENT decision uses; compensating a corner flip
+                with the union would move the window by a distance the shell's
+                FLIP never travels). The corner is still DERIVED on
                 every settle (from the footprint's center) and is still the anchor
                 IDENTITY — shell seat, hit-rect anchor, popover direction, mode-glide
                 growth all key on it and all anchor to the window rect, so they work
@@ -78,10 +83,18 @@ src-tauri/src/
                 way), and the whole window stays interactive for that glide
                 (HIT_GRACE_MS) since no corner-anchored hit rect is honest
                 mid-travel. Docked corner is pushed to the
-                webview ("dock-corner" event + dock_corner seed command); corner
-                derived from the window-state-restored position, never stored.
-                reset_position (tray) is now the ONLY way a position becomes a
-                canonical corner seat without being dragged there
+                webview ("dock-corner" event + dock_corner seed command) and,
+                since 2026-07-21, PERSISTED (settings.json "dockCorner"):
+                window-state restores the WINDOW's rect and the widget sits at
+                one of four corners inside it, which the rect alone cannot say
+                — re-deriving it from the window's center puts it in the wrong
+                quadrant across a ~200px band around each midline (the two
+                centers sit ~196px apart in pill mode) and re-seats the shell
+                at the far end of the window, i.e. a 392px teleport EVERY
+                launch. The corner is the decoder ring; absent (fresh install)
+                the whole window is treated as the widget, the pre-2026-07-21
+                behavior. reset_position (tray) is the ONLY way a position
+                becomes a canonical corner seat without being dragged there
   lyrics.rs     LRCLIB get→search fallback, disk cache (bounded, app-data) + session
                 miss set; candidate picking prefers ORIGINAL-SCRIPT synced entries
                 (hangul/CJK/kana) over romanized uploads — a Latin-only exact hit
