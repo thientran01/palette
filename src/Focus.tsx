@@ -325,7 +325,7 @@ export default function Focus() {
     // row (PR #109) — a remote-device session rides ~10px low.
     // --horizon-mb: the horizon's bottom margin, factored out so the
     // no-lyrics cluster can anchor off the SAME geometry (see its seat).
-    <div className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg [--art:min(560px,46vh,100vh_-_660px,40vw_-_390px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)] [--horizon-mb:calc((93vh_-_212px_-_var(--stack-top)_-_var(--art))/2)]">
+    <div className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg [--art:min(560px,46vh,100vh_-_660px,40vw_-_390px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)] [--horizon-mb:calc((93vh_-_212px_-_var(--stack-top)_-_var(--art))/2)] [--queue-w:clamp(480px,calc(var(--art)*1.6),720px)] [--queue-top:calc(var(--stack-top)_-_34px)] [--queue-h:calc(var(--art)_+_6vh)]">
       {/* Corner exit: hover-revealed + the has-[:focus-visible] keyboard
           reveal (the widget's contract). The contract-bracket verb, going
           home. */}
@@ -478,24 +478,25 @@ export default function Focus() {
           </div>
 
           {/* THE QUEUE — the room's content surface, seated IN THE LYRIC
-              COLUMN (redesigned 2026-07-16: the widget-sized 380px popover
-              read as a miniature lost on the big screen — Thien). This is
-              the expanded garment's peer-layer grammar at room scale:
-              content surfaces swap in place while identity holds still —
-              the album + metadata keep the left seat (the upper room is
-              queue-forced into the split composition above) and the queue
-              takes the lyric column's exact box: same px/gap flex row with
-              a --art spacer, same 11vh ladder top, same bottom edge on the
-              art's bottom line. Opaque bg-surface covers the still-running
+              COLUMN. "Ledger Room" (redesigned 2026-07-19: the art-width /
+              11vh-top box read as a widget floating top-left with a void
+              below — Thien). Same spine as the split row (px/gap flex with a
+              --art spacer, so its left edge shares the lyric column's line),
+              but re-anchored to BALANCE the art: --queue-w widens it past art
+              width (dense ledger rows earn it — see QSCALE.room), and
+              --queue-top / --queue-h center the box on the ALBUM-ART CENTER
+              (art center = --stack-top + --art/2) so the big left square and
+              the right list straddle one axis, its bottom clearing the horizon
+              like the art does. Opaque bg-surface covers the still-running
               lyrics behind it; opacity-only crossfade (in 200 / out 140,
-              visibility deferred), inert when hidden, always MOUNTED so
-              scroll + the history feed survive the toggle. Capped at 560px
-              (= the art's design width) — full-column rows read sparse. */}
+              visibility deferred), inert when hidden, always MOUNTED so scroll
+              + the history feed survive the toggle. --queue-h is the live
+              feel-check knob for exact height/center. */}
           <div className="pointer-events-none absolute inset-0 z-20 flex items-stretch gap-[7%] px-[10%]">
             <div className="w-(--art) shrink-0" />
             <div
               inert={!queueOpen}
-              className={`pointer-events-auto mt-[11vh] flex h-[calc(var(--stack-top)_+_var(--art)_-_11vh)] w-full min-w-0 max-w-(--art) flex-col bg-surface ${
+              className={`pointer-events-auto mt-(--queue-top) flex h-(--queue-h) w-full min-w-0 max-w-(--queue-w) flex-col bg-surface ${
                 queueOpen
                   ? "opacity-100 [transition:opacity_200ms_var(--ease-out-tk)]"
                   : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),visibility_0s_140ms]"
