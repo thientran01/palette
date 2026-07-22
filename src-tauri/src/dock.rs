@@ -254,10 +254,7 @@ fn monitor_rects(window: &WebviewWindow, cx: i32, cy: i32) -> Option<Rects> {
         .into_iter()
         .find(|m| {
             let (p, s) = (m.position(), m.size());
-            cx >= p.x
-                && cx < p.x + s.width as i32
-                && cy >= p.y
-                && cy < p.y + s.height as i32
+            cx >= p.x && cx < p.x + s.width as i32 && cy >= p.y && cy < p.y + s.height as i32
         })
         .or_else(|| window.current_monitor().ok().flatten())
         .or_else(|| window.primary_monitor().ok().flatten())?;
@@ -662,8 +659,11 @@ fn placement_rect(
     wh: i32,
 ) -> (i32, i32, i32, i32) {
     let dock = window.state::<Dock>();
-    let size = (*dock.mode_size.lock().unwrap_or_else(PoisonError::into_inner))
-        .or(*dock.hit_size.lock().unwrap_or_else(PoisonError::into_inner));
+    let size = (*dock
+        .mode_size
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner))
+    .or(*dock.hit_size.lock().unwrap_or_else(PoisonError::into_inner));
     anchored_rect(window, size, wx, wy, ww, wh)
 }
 
@@ -825,10 +825,14 @@ pub fn set_window_size(
     mode_height: f64,
 ) {
     dock.epoch.fetch_add(1, Ordering::SeqCst); // cancel any in-flight glide
+
     // Seed the placement box so the launch settle — and any Moved that beats
     // the frontend's first set_hit_size — measures the widget, not the window.
-    *dock.mode_size.lock().unwrap_or_else(PoisonError::into_inner) =
-        Some((mode_width, mode_height));
+    let mode_box = (mode_width, mode_height);
+    *dock
+        .mode_size
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(mode_box);
     let scale = window.scale_factor().unwrap_or(1.0);
     let w = (width * scale).round() as i32;
     let h = (height * scale).round() as i32;
@@ -903,8 +907,10 @@ pub fn set_window_size(
 #[tauri::command]
 pub fn set_hit_size(dock: State<Dock>, width: f64, height: f64, mode_width: f64, mode_height: f64) {
     *dock.hit_size.lock().unwrap_or_else(PoisonError::into_inner) = Some((width, height));
-    *dock.mode_size.lock().unwrap_or_else(PoisonError::into_inner) =
-        Some((mode_width, mode_height));
+    *dock
+        .mode_size
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some((mode_width, mode_height));
 }
 
 /// The fixed-size window's transparent gutter must not eat clicks meant for
@@ -1049,7 +1055,10 @@ mod tests {
         // MAGNET_PX (80), so this used to be yanked into the corner seat.
         // Now each axis is beyond RAIL_PX, so it stands exactly as dropped.
         let seat = (1920 - 300 - 12, 1032 - 48 - 12);
-        assert_eq!(settle((seat.0 - 60, seat.1 - 60)).1, (seat.0 - 60, seat.1 - 60));
+        assert_eq!(
+            settle((seat.0 - 60, seat.1 - 60)).1,
+            (seat.0 - 60, seat.1 - 60)
+        );
     }
 
     #[test]
