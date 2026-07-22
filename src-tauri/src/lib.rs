@@ -729,11 +729,6 @@ pub(crate) fn apply_visibility(app: &AppHandle) {
     // the worst failure class here (quick-review catch, 2026-07-09).
     let is = win.is_visible().unwrap_or(!want);
     if want && !is {
-        // Reconcile the seat context first: a show landing between presence
-        // ticks (hotkey snooze, tray) must never flash at the wrong seat.
-        // The hidden-window swap is an instant jump, and sync_seat never
-        // calls back into apply_visibility.
-        dock::sync_seat(app);
         let _ = win.show();
         // The hit watcher parks while hidden — wake it so click-through is
         // reconciled to the cursor before the first click, not up to a poll
