@@ -1375,10 +1375,18 @@ function App() {
         if (!posClock.ingest(next)) return;
         // Direction consumes OUTSIDE the updater (StrictMode double-invokes
         // updaters; takeTrackDir clears on read). track→track only: a
-        // session appearing or vanishing isn't a skip.
+        // session appearing or vanishing isn't a skip — those RESET to
+        // forward, so a new session can't inherit the last skip's -1
+        // (quick-review catch). Known-and-accepted: a play_now jump's first
+        // suppressed intermediate consumes the note; harmless while Next is
+        // the only intermediate producer (its note ≡ the forward default).
         const nextKey = lyricsKeyOf(next);
         if (nextKey !== lastTrackKey.current) {
-          if (nextKey !== null && lastTrackKey.current !== null) setTrackDir(takeTrackDir());
+          // ALWAYS consume (clears the slot) so a note stranded by a vanish
+          // can't misdirect a later unrelated advance inside its TTL — but
+          // only a real→real change USES the value.
+          const noted = takeTrackDir();
+          setTrackDir(nextKey !== null && lastTrackKey.current !== null ? noted : 1);
           lastTrackKey.current = nextKey;
         }
         setNp((prev) => (sameIdentity(prev, next) ? prev : next));
@@ -1857,11 +1865,17 @@ function App() {
                   in the NEW album's color — stays pill-only: the quiet state
                   is where a change needs noticing. */}
               <p className="min-w-0 flex-1 truncate text-xs font-medium text-fg">
+                {/* inline-block: translate does NOT apply to non-replaced
+                    inline boxes (spec) — a bare span slides nowhere and the
+                    beat silently degrades to the fade (quick-review catch).
+                    Default baseline alignment, so nothing shifts against the
+                    inline waveform beside it. */}
                 <TrackFadeSpan
                   key={`t:${lyricsKeyOf(np)}`}
                   k={lyricsKeyOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
+                  className="inline-block"
                 >
                   {np.title}
                 </TrackFadeSpan>
@@ -1879,7 +1893,7 @@ function App() {
                   k={lyricsKeyOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
-                  className="font-normal text-muted"
+                  className="inline-block font-normal text-muted"
                 >
                   {np.artist}
                 </TrackFadeSpan>

@@ -203,9 +203,13 @@ export default function Focus() {
     () =>
       onNowPlaying((next) => {
         if (!posClock.ingest(next)) return;
+        // track→track consumes; vanish/appear RESETS to forward and still
+        // CLEARS the note (a new session can't inherit the last skip's -1,
+        // and a stranded note can't misdirect a later advance — App's rule).
         const nextKey = lyricsKeyOf(next);
         if (nextKey !== lastTrackKey.current) {
-          if (nextKey !== null && lastTrackKey.current !== null) setTrackDir(takeTrackDir());
+          const noted = takeTrackDir();
+          setTrackDir(nextKey !== null && lastTrackKey.current !== null ? noted : 1);
           lastTrackKey.current = nextKey;
         }
         setNp((prev) => (sameIdentity(prev, next) ? prev : next));
