@@ -354,17 +354,25 @@ export default function Focus() {
   useEffect(() => {
     prevSeatKey.current = seatKey;
   });
+  // Track-change slides run one rung faster (140/90 — Thien's live "a bit
+  // dramatic" verdict, 2026-07-23) than the composition swaps, which keep
+  // their pre-slide 200/140 feel; the dx-conditional transitions split them.
+  const slideEase = [...EASE.out] as [number, number, number, number];
+  const slideInT = { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: slideEase };
+  const slideOutT = { duration: reducedMotion ? 0 : DUR[1] / 1000, ease: slideEase };
+  const compositionOutT = { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: slideEase };
   const seatVariants = {
     enter: (dx: number) => ({ opacity: 0, x: dx }),
-    center: { opacity: 1, x: 0 },
+    center: (dx: number) => ({
+      opacity: 1,
+      x: 0,
+      transition: dx !== 0 ? slideInT : swapTiming,
+    }),
     exit: (dx: number) => ({
       opacity: 0,
       x: -dx,
       pointerEvents: "none" as const,
-      transition: {
-        duration: reducedMotion ? 0 : DUR[2] / 1000,
-        ease: [...EASE.out] as [number, number, number, number],
-      },
+      transition: dx !== 0 ? slideOutT : compositionOutT,
     }),
   };
 

@@ -266,7 +266,10 @@ body {
  * lesson). Exits on the CSS path stay instant (remount-keyed); only the
  * motion-managed surfaces (expanded content, focus seats) slide out. */
 .track-in {
-  animation: track-slide-in 200ms var(--ease-out-tk) both;
+  /* 140ms, one rung under the first cut's 200 — Thien's live verdict
+     2026-07-23: "a bit dramatic... a bit faster". Next knob if it still
+     reads staged: the SLIDE_PX amplitudes, not more speed. */
+  animation: track-slide-in 140ms var(--ease-out-tk) both;
 }
 @keyframes track-slide-in {
   from {

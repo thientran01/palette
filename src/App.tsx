@@ -894,8 +894,10 @@ function ExpandedView({
   const contentDx = slideSuppressed ? 0 : slideDir * SLIDE_PX.content;
   const headerDx = slideDir * SLIDE_PX.header;
   const slideEase = [...EASE.out] as [number, number, number, number];
-  const slideIn = { duration: reducedMotion ? 0 : DUR[3] / 1000, ease: slideEase };
-  const slideOut = { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: slideEase };
+  // 140/90, one rung under the first cut's 200/140 — Thien's live verdict
+  // 2026-07-23: "a bit dramatic... a bit faster". Next knob: SLIDE_PX.
+  const slideIn = { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: slideEase };
+  const slideOut = { duration: reducedMotion ? 0 : DUR[1] / 1000, ease: slideEase };
   // "still" mounts without theater — the earned cascade owns that entrance.
   // Exits carry pointerEvents none (the PR #48 inert-exiting rule): the old
   // panel's click-to-seek lines must not eat a click meant for the new track.
@@ -1847,13 +1849,13 @@ function App() {
                 12px it needs to breathe. */}
             <div className="flex h-full items-center gap-2 pl-1.5 pr-3">
               <Art url={shownArt} size={26} radiusPx={6} />
-              {/* Track-change announcement (pill only — the quiet state is
-                  where a change needs NOTICING; card/expanded already read
-                  as now-playing surfaces): the incoming title/artist fade
-                  in via remount (outgoing exits instantly — track changes
-                  exit fast and plain) while the separator runs its announce
+              {/* Track-change title beat: the incoming title/artist slide in
+                  via remount (.track-in — one directional grammar with the
+                  card/expanded since 2026-07-23; outgoing exits instantly,
+                  track changes exit fast and plain). The WAVEFORM announce
                   ladder — collapse, gray re-multiply, accent igniting last
-                  in the NEW album's color. */}
+                  in the NEW album's color — stays pill-only: the quiet state
+                  is where a change needs noticing. */}
               <p className="min-w-0 flex-1 truncate text-xs font-medium text-fg">
                 <TrackFadeSpan
                   key={`t:${lyricsKeyOf(np)}`}
