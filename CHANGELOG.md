@@ -37,6 +37,7 @@ The placement + track-change release: the widget goes anywhere and stays put, an
 
 ### Fixed
 
+- The taskbar no longer covers the widget's bottom edge after switching apps. Windows had been raising the taskbar above it on every app switch; parked flush with the bottom of the screen, that clipped it.
 - Pill and card modes could throw the widget up to 392px away from where it was released when a drag crossed the middle of the screen.
 - A skip's piecemeal metadata delivery could rubber-band the outgoing album cover during the track-change slide.
 
