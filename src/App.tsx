@@ -871,6 +871,17 @@ function ExpandedView({
     const t = window.setTimeout(() => setCaptionExpired(true), NO_LYRICS_CAPTION_MS);
     return () => window.clearTimeout(t);
   }, [verdict, trackKey]);
+  // The album view's status band is ONE row shared by the caption and the
+  // remote-device tag, resolved by priority: only a TERMINAL caption (the
+  // miss/offline answer) owns the seat, and only for its read window. Pending
+  // yields — "Finding lyrics…" is a wait notice while the tag is a standing
+  // fact, and pending is unbounded (a slow fetch, or a rejected invoke that
+  // leaves useLyrics on "loading"), so gating the tag on it would blank the
+  // tag on every skip and sometimes for good (quick-review catch 2026-07-24).
+  const captionOwnsBand = (verdict === "none" || verdict === "offline") && !captionExpired;
+  // Terminal captions stay mounted past expiry to run their fade-out.
+  const captionInBand =
+    verdict === "none" || verdict === "offline" || (verdict === "pending" && !remoteDevice);
 
   // Which of the three peer views owns the surface. They crossfade IN PLACE
   // under a fixed header — switching content, never a panel over a panel.
@@ -1115,20 +1126,36 @@ function ExpandedView({
               occupants come and go (a verdict resolving, a late
               "spotify-device" event) and NONE of them may move the bars —
               the guarantee the old height-reserved rows bought with a row the
-              hero's seat needed. -mb-2 cancels the column's gap-2 for this box
-              alone, so the centring reaches the progress bar the eye measures
-              against instead of stopping 8px short of it. */}
+              hero's seat needed. -mb-2 cancels the OUTER column's gap-2 (the
+              8px between this layer's box and the progress row — App's
+              `flex h-full flex-col gap-2`) for this box alone, so the centring
+              reaches the progress row the eye measures against instead of
+              stopping 8px short of it; nothing paints in the overhang (the
+              bars are centred, the surface fill lives on the layer).
+              Parity with focus is the SEAT, not the structure: focus has the
+              room to stack the caption and the device tag as two independent,
+              always-on rows (Focus.tsx IdentityStack) — 380px does not, hence
+              ONE shared band here, priority-ordered below. */}
           <div className="relative -mb-2 flex min-h-0 w-full flex-1 items-center justify-center">
-            {/* The shared band: the lyric caption answers first and expires at
-                NO_LYRICS_CAPTION_MS, then the remote-device tag settles into
-                the SAME seat as it fades (Thien's call 2026-07-24 — one row,
-                two occupants in sequence, so neither costs the hero its
-                centre). ALWAYS mounted: gating the caption with the Waveform
-                (98337fd swept it inside that gate) re-mounted an
-                already-EXPIRED caption on every album re-entry — e.g. a queue
-                close — and replayed its 260ms caption-out ghost. */}
+            {/* The shared band: one row, two occupants, by PRIORITY — a
+                terminal caption (miss/offline) owns the seat for its
+                NO_LYRICS_CAPTION_MS read window, then the remote-device tag
+                settles into it as the caption fades (Thien's call
+                2026-07-24). The PENDING caption yields to the tag instead of
+                blocking it: "Finding lyrics…" is a wait notice, the tag is a
+                standing fact about where the audio IS, and pending is
+                unbounded — a slow LRCLIB fetch (up to the 15s timeout +
+                UPGRADE_GRACE) or a rejected invoke that leaves useLyrics on
+                "loading" would otherwise hide the tag for ~20s or forever,
+                and it would blink out on EVERY track change while a phone
+                plays (quick-review catch). So a device only ever loses the
+                seat to a caption that is actually earning it.
+                ALWAYS mounted: gating the caption with the Waveform (98337fd
+                swept it inside that gate) re-mounted an already-EXPIRED
+                caption on every album re-entry — e.g. a queue close — and
+                replayed its 260ms caption-out ghost. */}
             <p className="absolute inset-x-0 top-1 flex h-4 items-center justify-center text-[11px] leading-4 text-muted">
-              {verdict !== "synced" && (
+              {captionInBand && (
                 <span
                   key={verdict}
                   aria-hidden={captionExpired || undefined}
@@ -1148,7 +1175,7 @@ function ExpandedView({
                 </span>
               )}
             </p>
-            {remoteDevice && (verdict === "synced" || captionExpired) && (
+            {remoteDevice && !captionOwnsBand && (
               <div className="absolute inset-x-0 top-1 flex h-4 items-center justify-center animate-[caption-in_200ms_var(--ease-out-tk)_both]">
                 <DeviceTag device={remoteDevice} playing={playing} showName />
               </div>
