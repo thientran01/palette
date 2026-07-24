@@ -41,3 +41,10 @@ export function initTrackDir(): () => void {
  * carries the swap, the offset only gives it a direction. Users skip a LOT;
  * anything bigger than "barely there" becomes fatigue (Thien, 2026-07-23). */
 export const SLIDE_PX = { pill: 8, card: 10, header: 10, content: 14, room: 20 } as const;
+
+/** One perceived track change per this window: GSMTC's piecemeal field
+ * delivery flaps the raw track key 2–3 times per real skip (media props vs
+ * timeline duration), and remount-keying the slides on the raw key
+ * rubber-banded the exiting album block (re-adoption mid-exit). Key
+ * changes inside the window update content in place instead. */
+export const SLIDE_SETTLE_MS = 400;

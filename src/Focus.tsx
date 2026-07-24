@@ -47,7 +47,7 @@ import { initReactive } from "./lib/reactive";
 import { DUR, EASE } from "./lib/tokens";
 import { DeviceTag } from "./DeviceTag";
 import { LyricsPanel, lyricsKeyOf, lyricsVerdictOf, useLyrics, useSeatHold } from "./LyricsPanel";
-import { initTrackDir, SLIDE_PX, takeTrackDir } from "./lib/trackDir";
+import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
 import {
   armSuppression,
   clearSuppression,
@@ -199,6 +199,11 @@ export default function Focus() {
   // hotkey "track-nudge" event reaches both).
   const [trackDir, setTrackDir] = useState<1 | -1>(1);
   const lastTrackKey = useRef<string | null>(null);
+  // The settled slide epoch — App's rule: one perceived change per
+  // SLIDE_SETTLE_MS, so GSMTC's piecemeal field flaps can't remount the
+  // seat mid-slide (the "held back by a rope" rubber-band, 2026-07-23).
+  const [slideEpoch, setSlideEpoch] = useState(0);
+  const epochAt = useRef(0);
   useEffect(
     () =>
       onNowPlaying((next) => {
@@ -211,6 +216,11 @@ export default function Focus() {
           const noted = takeTrackDir();
           setTrackDir(nextKey !== null && lastTrackKey.current !== null ? noted : 1);
           lastTrackKey.current = nextKey;
+          const now = performance.now();
+          if (now - epochAt.current > SLIDE_SETTLE_MS) {
+            epochAt.current = now;
+            setSlideEpoch((e) => e + 1);
+          }
         }
         setNp((prev) => (sameIdentity(prev, next) ? prev : next));
       }),
@@ -346,7 +356,10 @@ export default function Focus() {
   // are COMPOSITION changes (a verdict, the queue), not skips, and keep the
   // plain opacity crossfade (dx 0). Computed per render so the entering
   // seat's variants and the exiting seat's `custom` both see the change.
-  const seatKey = split ? `split:${lyricsKeyOf(np)}` : "centered";
+  // split seats key on the settled EPOCH, not the raw track key — raw-key
+  // flaps (GSMTC piecemeal fields) update the seat's content in place
+  // instead of remounting it mid-slide.
+  const seatKey = split ? `split:${slideEpoch}` : "centered";
   const prevSeatKey = useRef(seatKey);
   const seatDx =
     seatKey !== prevSeatKey.current &&
@@ -458,9 +471,9 @@ export default function Focus() {
               An OPEN QUEUE also forces the split composition: the queue
               surface lives in the lyric column's seat (below), so the
               identity stack must hold the left seat even with no lyrics —
-              keyed on lyricsKeyOf(np) (≡ lyrics.key whenever lyricsLive),
-              which stays honest when the seat is queue- or hold-forced
-              through the fetch interlude. */}
+              keyed on the settled slide EPOCH (one bump per perceived
+              change), which stays honest when the seat is queue- or
+              hold-forced through the fetch interlude. */}
           <div className="relative min-h-0 flex-1">
             <AnimatePresence initial={false} custom={seatDx}>
               {split ? (

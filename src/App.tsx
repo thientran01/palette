@@ -33,7 +33,7 @@ import {
 } from "./LyricsPanel";
 import { useArt, useArtAccent } from "./lib/artAccent";
 import * as posClock from "./lib/posClock";
-import { initTrackDir, SLIDE_PX, takeTrackDir } from "./lib/trackDir";
+import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
 import { initReactive, setReactiveEnabledSetting } from "./lib/reactive";
 import { MODE_SIZES, WINDOW_MAX, type Mode } from "./lib/sizes";
 import { DUR, EASE } from "./lib/tokens";
@@ -761,6 +761,7 @@ function ExpandedView({
   remoteDevice,
   slideDir,
   slideSuppressed,
+  slideEpoch,
 }: {
   np: NowPlaying;
   artUrl: string | null;
@@ -782,6 +783,10 @@ function ExpandedView({
   /** Jump-intermediate suppression (isAnnounceSuppressed) — intermediates
    * swap by plain opacity, the landing target slides once. */
   slideSuppressed: boolean;
+  /** The settled transition epoch (App's ledger) — the REMOUNT key for every
+   * sliding surface; raw-key flaps inside SLIDE_SETTLE_MS update content in
+   * place instead of restarting the slide. */
+  slideEpoch: number;
 }) {
   const reducedMotion = useReducedMotion();
   // Key-stamped gate: never render the new track's header over the old
@@ -965,7 +970,7 @@ function ExpandedView({
                   drifts in from the skip's direction; the waveform beside it
                   holds its seat — the living instance never slides. */}
               <TrackFadeSpan
-                key={`xt:${trackKey}`}
+                key={`xt:${slideEpoch}`}
                 k={trackKey}
                 suppress={slideSuppressed}
                 dx={headerDx}
@@ -989,7 +994,7 @@ function ExpandedView({
                 artist line holds size through the card⇄expanded morph (the
                 15px title above already does; 13px here visibly stepped). */}
             <TrackFadeSpan
-              key={`xa:${trackKey}`}
+              key={`xa:${slideEpoch}`}
               k={trackKey}
               suppress={slideSuppressed}
               dx={headerDx}
@@ -1073,7 +1078,7 @@ function ExpandedView({
           <div className="relative w-full">
             <AnimatePresence initial={false} custom={contentDx}>
               <motion.div
-                key={trackKey ?? "no-track"}
+                key={`alb:${slideEpoch}`}
                 custom={contentDx}
                 variants={albumSlide}
                 initial="enter"
@@ -1365,6 +1370,19 @@ function App() {
   // way the skip went.
   const [trackDir, setTrackDir] = useState<1 | -1>(1);
   const lastTrackKey = useRef<string | null>(null);
+  // The SLIDE EPOCH: one perceived track change per settle window. GSMTC
+  // delivers a skip's fields piecemeal (title/artist/album from the media
+  // properties, duration from the TIMELINE update), so the raw lyricsKeyOf
+  // can flap 2–3 times within ~200ms of one skip — keying the sliding
+  // surfaces on it remounted them per flap, and a flap back to a still-
+  // exiting key made AnimatePresence re-adopt the exiting album block and
+  // yank it back to center mid-exit (Thien's live "held back by a rope"
+  // report, 2026-07-23; invisible in the mock, which emits atomically).
+  // Keyed on the epoch, stragglers update content IN PLACE inside the one
+  // running slide. Bursts faster than the window also merge — one slide
+  // per mash, landing on the right content.
+  const [slideEpoch, setSlideEpoch] = useState(0);
+  const epochAt = useRef(0);
   useEffect(
     () =>
       onNowPlaying((next) => {
@@ -1388,6 +1406,11 @@ function App() {
           const noted = takeTrackDir();
           setTrackDir(nextKey !== null && lastTrackKey.current !== null ? noted : 1);
           lastTrackKey.current = nextKey;
+          const now = performance.now();
+          if (now - epochAt.current > SLIDE_SETTLE_MS) {
+            epochAt.current = now;
+            setSlideEpoch((e) => e + 1);
+          }
         }
         setNp((prev) => (sameIdentity(prev, next) ? prev : next));
       }),
@@ -1871,7 +1894,7 @@ function App() {
                     Default baseline alignment, so nothing shifts against the
                     inline waveform beside it. */}
                 <TrackFadeSpan
-                  key={`t:${lyricsKeyOf(np)}`}
+                  key={`t:${slideEpoch}`}
                   k={lyricsKeyOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
@@ -1889,7 +1912,7 @@ function App() {
                   playing={np.status === "playing"}
                 />
                 <TrackFadeSpan
-                  key={`a:${lyricsKeyOf(np)}`}
+                  key={`a:${slideEpoch}`}
                   k={lyricsKeyOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
@@ -1974,7 +1997,7 @@ function App() {
                       never moves (its announcement is the pill's beat). */}
                   <p className="min-w-0 truncate text-[15px] font-medium text-fg">
                     <TrackFadeSpan
-                      key={`ct:${lyricsKeyOf(np)}`}
+                      key={`ct:${slideEpoch}`}
                       k={lyricsKeyOf(np)}
                       suppress={announceSuppressed}
                       dx={trackDir * SLIDE_PX.card}
@@ -1994,7 +2017,7 @@ function App() {
                 <div className="flex min-w-0 items-center gap-1">
                   <p className="min-w-0 flex-1 truncate text-xs leading-4 text-muted">
                     <TrackFadeSpan
-                      key={`ca:${lyricsKeyOf(np)}`}
+                      key={`ca:${slideEpoch}`}
                       k={lyricsKeyOf(np)}
                       suppress={announceSuppressed}
                       dx={trackDir * SLIDE_PX.card}
@@ -2027,6 +2050,7 @@ function App() {
             remoteDevice={remoteDevice}
             slideDir={trackDir}
             slideSuppressed={announceSuppressed}
+            slideEpoch={slideEpoch}
           />
         )}
         </ModeContent>
