@@ -1067,10 +1067,10 @@ function ExpandedView({
           inert={active !== "album"}
           className={`absolute inset-0 flex flex-col items-center bg-surface pt-8 ${layer(active === "album")}`}
         >
-          {/* Track-keyed identity block — cover + metadata slide as ONE plane
-              on a track change (the art-slides call, tentative pending
-              Thien's live verdict 2026-07-23; cutting it = unwrap this back
-              to bare children). The relative wrapper keeps the exiting copy
+          {/* Epoch-keyed identity block — cover + metadata slide as ONE plane
+              on a track change (KEPT on Thien's live verdict 2026-07-23 —
+              hero art is content, and content carries the slide; only
+              chrome-seat art crossfades in place). The relative wrapper keeps the exiting copy
               overlaid (albumSlide absolutizes it) so the caption/hero below
               never move. Keying Art per track skips its crossfade on track
               changes (the slide carries the swap); rev-bump heals within a
