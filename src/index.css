@@ -266,10 +266,14 @@ body {
  * lesson). Exits on the CSS path stay instant (remount-keyed); only the
  * motion-managed surfaces (expanded content, focus seats) slide out. */
 .track-in {
-  /* 140ms, one rung under the first cut's 200 — Thien's live verdict
-     2026-07-23: "a bit dramatic... a bit faster". Next knob if it still
-     reads staged: the SLIDE_PX amplitudes, not more speed. */
-  animation: track-slide-in 140ms var(--ease-out-tk) both;
+  /* 90ms — the third cut (200 → 140 → 90) on Thien's live spam verdict
+     2026-07-24: "i skip songs a lot... feels kinda heavy at this speed
+     when i am spamming skip". DUR[1], the press-feedback rung: still
+     clearly seen on a single skip, gone before the next one lands in a
+     burst. Next knobs if a burst STILL drags, in order: the SLIDE_PX
+     amplitudes, then widening SLIDE_SETTLE_MS so more of a burst merges
+     into one slide. Not more speed — below this it reads as a blink. */
+  animation: track-slide-in 90ms var(--ease-out-tk) both;
 }
 @keyframes track-slide-in {
   from {
