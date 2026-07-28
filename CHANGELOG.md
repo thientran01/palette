@@ -8,9 +8,14 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-07-28
+
+A small follow-up to 0.7.4's track-change work: the slide is quicker, and the expanded album view's status line stops moving the waveform.
+
 ### Changed
 
 - The expanded album view now seats "No synced lyrics" directly under the artist line — the same place focus mode puts it — and centres the waveform between that line and the progress bar. The caption no longer pushes the bars down, and neither does the "Playing on <device>" tag: the two share one row, the caption answering first and the tag settling into the same seat as it fades.
+- Track-change slides are quicker. A skip now completes in one short beat rather than an exit trailing underneath a longer entrance, so skipping repeatedly no longer feels weighed down — a single skip still reads directionally. The album cover's crossfade was brought to the same speed so nothing outlives the swap it belongs to.
 
 ## [0.7.4] - 2026-07-23
 
@@ -232,7 +237,8 @@ First public release.
 - Synced lyrics (LRCLIB with disk cache), album-art adaptive accents, an audio-reactive "living separator", corner docking, morphing icons, and a monotonic position clock owning playback time.
 - Ships as a per-user NSIS installer — single-instance, opt-in start-at-login — with a GitHub Releases auto-update pipeline and an in-app updater.
 
-[Unreleased]: https://github.com/thientran01/palette/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/thientran01/palette/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/thientran01/palette/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/thientran01/palette/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/thientran01/palette/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/thientran01/palette/compare/v0.7.1...v0.7.2
