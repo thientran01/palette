@@ -372,11 +372,13 @@ export default function Focus() {
   useEffect(() => {
     prevSeatKey.current = seatKey;
   });
-  // Track-change slides run one rung faster (140/90 — Thien's live "a bit
-  // dramatic" verdict, 2026-07-23) than the composition swaps, which keep
-  // their pre-slide 200/140 feel; the dx-conditional transitions split them.
+  // Track-change slides run two rungs faster (90/90 after the 2026-07-24
+  // spam cut — App.tsx carries the reasoning) than the composition swaps,
+  // which keep their pre-slide 200/140 feel: a skip is a thing you do
+  // repeatedly, a composition change isn't. The dx-conditional transitions
+  // below are what split them.
   const slideEase = [...EASE.out] as [number, number, number, number];
-  const slideInT = { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: slideEase };
+  const slideInT = { duration: reducedMotion ? 0 : DUR[1] / 1000, ease: slideEase };
   const slideOutT = { duration: reducedMotion ? 0 : DUR[1] / 1000, ease: slideEase };
   const compositionOutT = { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: slideEase };
   const seatVariants = {
@@ -523,7 +525,7 @@ export default function Focus() {
                       // entrance stays unwrapped so choreography never stacks.
                       <div
                         className={`flex min-h-0 min-w-0 flex-1 flex-col ${
-                          entrance ? "" : "animate-[caption-in_140ms_var(--ease-out-tk)_both]"
+                          entrance ? "" : "animate-[caption-in_90ms_var(--ease-out-tk)_both]"
                         }`}
                       >
                         <LyricsPanel

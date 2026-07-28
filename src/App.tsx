@@ -674,11 +674,13 @@ function PillTime({ np }: { np: NowPlaying }) {
   );
 }
 
-/** How long an incoming cover fades in over the settled one — DUR[2], an
- * identity change swaps fast and plain, it just doesn't POP. (The Tailwind
- * animate-[…140ms…] literal below mirrors it, the file's arbitrary-value
+/** How long an incoming cover fades in over the settled one — DUR[1], one
+ * rung with the track slide (2026-07-24) so the chrome-seat art can't be
+ * the slow member of a swap everything else finishes in 90ms. An identity
+ * change swaps fast and plain, it just doesn't POP. (The Tailwind
+ * animate-[…90ms…] literal below mirrors it, the file's arbitrary-value
  * convention — change both together.) */
-const ART_XFADE_MS = DUR[2];
+const ART_XFADE_MS = DUR[1];
 
 /** Album cover with an opacity-only crossfade on identity change: the
  * incoming art fades in OVER the settled one, then becomes the base — the
@@ -715,7 +717,7 @@ function Art({ url, size, radiusPx }: { url: string | null; size: number; radius
           src={incoming}
           alt=""
           draggable={false}
-          className="absolute inset-0 h-full w-full animate-[caption-in_140ms_var(--ease-out-tk)_both] object-cover"
+          className="absolute inset-0 h-full w-full animate-[caption-in_90ms_var(--ease-out-tk)_both] object-cover"
         />
       )}
     </div>
@@ -910,9 +912,12 @@ function ExpandedView({
   const contentDx = slideSuppressed ? 0 : slideDir * SLIDE_PX.content;
   const headerDx = slideDir * SLIDE_PX.header;
   const slideEase = [...EASE.out] as [number, number, number, number];
-  // 140/90, one rung under the first cut's 200/140 — Thien's live verdict
-  // 2026-07-23: "a bit dramatic... a bit faster". Next knob: SLIDE_PX.
-  const slideIn = { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: slideEase };
+  // 90/90 — the third cut (200/140 → 140/90 → 90/90) on Thien's live spam
+  // verdict 2026-07-24 ("feels kinda heavy... when i am spamming skip").
+  // Equal in/out is deliberate: the two overlap, so a swap now costs ONE
+  // 90ms beat end to end instead of an exit trailing under a longer
+  // entrance. Next knobs: SLIDE_PX, then SLIDE_SETTLE_MS — not more speed.
+  const slideIn = { duration: reducedMotion ? 0 : DUR[1] / 1000, ease: slideEase };
   const slideOut = { duration: reducedMotion ? 0 : DUR[1] / 1000, ease: slideEase };
   // "still" mounts without theater — the earned cascade owns that entrance.
   // Exits carry pointerEvents none (the PR #48 inert-exiting rule): the old
@@ -1019,7 +1024,7 @@ function ExpandedView({
         {/* Lyrics view — the top-[52px] body box clears the fixed header.
             Keyed per track so a change re-anchors fresh; the outgoing panel
             slides out through AnimatePresence (both states sit in the same
-            absolute box, so the 140ms exit overlaps the entrance as one
+            absolute box, so the 90ms exit overlaps the entrance as one
             directional motion — dx 0 degrades it to the plain crossfade). */}
         <div
           inert={active !== "lyrics"}
