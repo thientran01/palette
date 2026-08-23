@@ -50,8 +50,10 @@ pub struct NowPlaying {
     pub can_seek: bool,
     pub art_id: Option<String>,
     /// GSMTC MediaPlaybackType bucket: "music" | "video" | "image" |
-    /// "unknown". History uses it to keep read surfaces music-only; "" only
-    /// ever appears on pre-feature history.jsonl rows (see history::is_music).
+    /// "unknown". Copied onto history rows; the history allowlist (Apple
+    /// Music / Spotify, dropping video/image) is what actually keeps Search
+    /// and the Earlier feed music-only. "" only ever appears on pre-feature
+    /// history.jsonl rows (see history::is_music).
     pub media_kind: String,
 }
 
@@ -599,10 +601,12 @@ fn base_snapshot(session: &Session) -> (NowPlaying, bool) {
             p.Title().map(|h| h.to_string()).unwrap_or_default(),
             p.Artist().map(|h| h.to_string()).unwrap_or_default(),
             p.AlbumTitle().map(|h| h.to_string()).unwrap_or_default(),
-            // MediaPlaybackType — the signal history uses to drop video
-            // (Netflix/anime/browser) from music-only surfaces. Nullable:
-            // a null IReference, read error, or Unknown(0) all fall to
-            // "unknown" (kept — never lose a real listen). Match the
+            // MediaPlaybackType — informational. History's music gate is
+            // the Apple Music / Spotify player allowlist; this kind only
+            // drops video/image from those apps. Browsers/YouTube often
+            // report Music(1) for anime and other video, so the kind alone
+            // is not a music signal. Nullable: a null IReference, read
+            // error, or Unknown(0) all fall to "unknown". Match the
             // numeric tuple like playback_info's PlaybackStatus(4).
             match p.PlaybackType().ok().and_then(|r| r.Value().ok()) {
                 Some(MediaPlaybackType(1)) => "music",

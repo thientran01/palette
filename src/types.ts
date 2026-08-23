@@ -20,8 +20,9 @@ export interface NowPlaying {
   can_seek: boolean;
   art_id: string | null;
   /** GSMTC MediaPlaybackType bucket ("music" | "video" | "image" | "unknown").
-   *  Backend-only today — history uses it to keep read surfaces music-only;
-   *  no frontend surface reads it. */
+   *  Backend-only today — history's player allowlist (Apple Music /
+   *  Spotify) plus this kind (drop video/image) keep Search and the
+   *  Earlier feed music-only; no frontend surface reads it. */
   media_kind?: string;
 }
 
@@ -72,8 +73,9 @@ export interface HistoryEntry {
   /** Stamped by the up-next engine while Spotify is connected (PR 3). */
   spotify_uri: string | null;
   /** GSMTC MediaPlaybackType bucket ("music" | "video" | "image" | "unknown");
-   *  "" on pre-feature rows. Read surfaces are already filtered to music
-   *  backend-side (history::is_music), so no consumer reads this. */
+   *  "" on pre-feature rows. Read surfaces are already filtered to Apple
+   *  Music / Spotify music backend-side (history::is_music), so no consumer
+   *  reads this. */
   media_kind?: string;
 }
 

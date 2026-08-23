@@ -15,7 +15,7 @@ It reads and controls any player that speaks the Windows system media API (GSMTC
 - **Free placement with edge snapping** — drag it anywhere on screen and it stays; drop it near an edge and that axis tidies to a 12px margin, leaving the other alone
 - **Fullscreen focus-mode takeover** — a room-scale now-playing view with lyrics or the visualizer
 - **Search** (`Ctrl+Alt+S`) — search and play, queue, or resurface tracks from history
-- **Managed up-next queue + play history** — a Palette-kept queue and a full log of everything it displayed
+- **Managed up-next queue + play history** — a Palette-kept queue and a log of Apple Music and Spotify listens
 - **"More like this"** discovery from the current track
 - **Hide on fullscreen** — a courtesy conceal that ducks the widget out of games and fullscreen video, then restores it exactly
 - **Global hotkeys** for transport, seek, show/hide, and search
@@ -78,7 +78,7 @@ Everything above is an optional power tier layered on top — the base player ne
 
 Palette keeps everything local. There is no analytics, no telemetry, and no account.
 
-- **What's stored on your machine** (`%APPDATA%\com.thien.pulse`): your preferences, your play history (`history.jsonl` — every track Palette displayed), the on-disk lyrics and thumbnail caches, and — only if you connect Spotify — your Spotify tokens. The tokens are plain JSON protected by your Windows user-profile permissions, not OS-level encryption. Logs and the WebView2 cache live under `%LOCALAPPDATA%\com.thien.pulse`; the log (`pulse.log`) records app diagnostics including fullscreen-presence transitions (when the widget concealed and restored — which app was fullscreen is recorded only in debug builds, never in release logs).
+- **What's stored on your machine** (`%APPDATA%\com.thien.pulse`): your preferences, your play history (`history.jsonl` — Apple Music and Spotify listens; browser/YouTube sessions are not logged), the on-disk lyrics and thumbnail caches, and — only if you connect Spotify — your Spotify tokens. The tokens are plain JSON protected by your Windows user-profile permissions, not OS-level encryption. Logs and the WebView2 cache live under `%LOCALAPPDATA%\com.thien.pulse`; the log (`pulse.log`) records app diagnostics including fullscreen-presence transitions (when the widget concealed and restored — which app was fullscreen is recorded only in debug builds, never in release logs).
 - **What leaves your machine**: lyric lookups to [LRCLIB](https://lrclib.net), and — only for the opt-in tier — requests to the Spotify Web API and Last.fm. Nothing else.
 - **Clearing data**: **Preferences → Data → Clear play history** wipes the history log and its thumbnails. Uninstalling removes the app and always deletes your Spotify tokens; play history, preferences, and caches survive an uninstall→reinstall unless you tick the uninstaller's "Delete the application data" checkbox.
 
