@@ -101,21 +101,27 @@ src-tauri/src/
                 waits UPGRADE_GRACE (3s, usually ~0: the search raced alongside)
                 for the search to offer the upgrade; script preference stays
                 BELOW synced-ness (hangul plain-only never beats romanized synced)
-  history.rs    play-history: logs every track Palette displays (player-agnostic —
-                GSMTC has no history API) to append-only app-data/history.jsonl,
+  history.rs    play-history: logs Apple Music / Spotify listens (not
+                browser/YouTube — GSMTC often stamps those as Music, which
+                leaked anime into Search) to append-only app-data/history.jsonl,
                 no cap, paginated via an in-memory line index (history_page +
                 "history-appended" seed/event pair). Fed from the media loop:
                 visible rides emit_now's return; hidden probes ~5s via
                 media::history_probe (art-free, no emit — the ONE exception to
                 "no work while hidden", so conceal-hidden listens still log).
-                ms_listened = wall-clock playing spans, NOT position projection
-                (that rule guards the UI clock). Dedupe: pause/resume = one
-                entry; AM session vanish + same track back within 10min resumes
-                it; raw-position restart past the bar = replay = new entry;
-                <1s listens dropped as skip churn; RunEvent::Exit flushes.
-                Thumbs: bounded app-data/thumbs cache (96px JPEG) — the
-                FRONTEND downscales once per art revision (useHistoryThumb;
-                rev bumps overwrite, so a stale first capture heals)
+                Non-music sessions still finalize a previous music candidate
+                but never become one themselves. is_music = player allowlist
+                (apple_music|spotify) minus video/image; page() still filters
+                so already-logged video rows vanish from Search and Earlier
+                without a wipe. ms_listened = wall-clock playing spans, NOT
+                position projection (that rule guards the UI clock). Dedupe:
+                pause/resume = one entry; AM session vanish + same track back
+                within 10min resumes it; raw-position restart past the bar =
+                replay = new entry; <1s listens dropped as skip churn;
+                RunEvent::Exit flushes. Thumbs: bounded app-data/thumbs cache
+                (96px JPEG) — the FRONTEND downscales once per art revision
+                (useHistoryThumb; rev bumps overwrite, so a stale first
+                capture heals)
   spotify.rs    Spotify Web API adapter (the app's first OAuth): PKCE +
                 loopback redirect (127.0.0.1:43117/callback — the dashboard
                 app must register EXACTLY that URI; SPOTIFY_CLIENT_ID const,

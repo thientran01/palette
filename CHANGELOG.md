@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Fixed
+
+- Search's "From your history" picks and the queue's Earlier feed no longer surface YouTube videos, anime, or other browser sessions. GSMTC often labels those as Music, so the previous video/image filter let them through; history now keeps Apple Music and Spotify listens only. Already-logged video rows disappear from those surfaces without clearing history.
+
 ## [0.7.5] - 2026-07-28
 
 A small follow-up to 0.7.4's track-change work: the slide is quicker, and the expanded album view's status line stops moving the waveform.

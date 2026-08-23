@@ -1,10 +1,13 @@
-//! Play-history: logs every track Pulse displays, fed from the media loop's
-//! own GSMTC stream (GSMTC has no history API — this file IS the history).
-//! Append-only JSONL at app_data/history.jsonl, no cap; an in-memory
-//! (started_at, byte offset) index serves backwards pagination without
-//! holding entries in RAM. The index build reads the whole log, so it runs
-//! on a background thread spawned from setup (off the launch path —
-//! Milestone D); page() waits on it, bounded, via the Tracker condvar.
+//! Play-history: logs Apple Music and Spotify listens, fed from the media
+//! loop's own GSMTC stream (GSMTC has no history API — this file IS the
+//! history). Browser/YouTube/other sessions still drive the now-playing
+//! widget, but they never become history candidates — Search and the queue's
+//! Earlier feed are a music library, not a watch log. Append-only JSONL at
+//! app_data/history.jsonl, no cap; an in-memory (started_at, byte offset)
+//! index serves backwards pagination without holding entries in RAM. The
+//! index build reads the whole log, so it runs on a background thread spawned
+//! from setup (off the launch path — Milestone D); page() waits on it,
+//! bounded, via the Tracker condvar.
 //!
 //! `ms_listened` is accumulated wall-clock time spent in status "playing",
 //! measured with `Instant` at status transitions. This is NOT position
@@ -66,10 +69,9 @@ pub struct HistoryEntry {
     /// (PR 3) — lets history rows replay without a search round-trip.
     pub spotify_uri: Option<String>,
     /// GSMTC MediaPlaybackType bucket ("music" | "video" | "image" |
-    /// "unknown"), copied from the snapshot. Read surfaces (page + the
-    /// history-appended emit) keep only music via `is_music`. `#[serde(default)]`
-    /// → "" on pre-feature rows, which is exactly the legacy sentinel is_music
-    /// falls back on; new rows are always non-empty.
+    /// "unknown"), copied from the snapshot. `is_music` gates both persist
+    /// and the read surfaces (page + history-appended). `#[serde(default)]`
+    /// → "" on pre-feature rows; new rows are always non-empty.
     #[serde(default)]
     pub media_kind: String,
 }
@@ -293,11 +295,7 @@ pub fn ingest(app: &AppHandle, np: &NowPlaying) {
         inner.ingest(np)
     };
     if let Some(entry) = finalized {
-        // Persisted regardless (inside ingest); only music is announced to
-        // the queue's live prepend, so non-music never surfaces.
-        if is_music(&entry) {
-            let _ = app.emit("history-appended", &entry);
-        }
+        let _ = app.emit("history-appended", &entry);
     }
 }
 
@@ -320,9 +318,7 @@ pub fn tick(app: &AppHandle) {
         }
     };
     if let Some(entry) = finalized {
-        if is_music(&entry) {
-            let _ = app.emit("history-appended", &entry);
-        }
+        let _ = app.emit("history-appended", &entry);
     }
 }
 
@@ -381,8 +377,13 @@ impl Inner {
         let same = self.candidate.as_ref().is_some_and(|c| c.key == key);
         if !same {
             // Track change (or first track) — finalize whatever was current.
+            // YouTube/browser/etc. still close out a previous music listen so
+            // the song isn't left hanging, but they never become a candidate:
+            // GSMTC often stamps those as Music, which is how anime episodes
+            // leaked into Search and the Earlier feed.
             let entry = self.finalize();
-            self.candidate = Some(Candidate::new(np, key));
+            self.candidate =
+                music_source(&np.player, &np.media_kind).then(|| Candidate::new(np, key));
             return entry;
         }
 
@@ -424,10 +425,16 @@ impl Inner {
     }
 
     /// Close out the candidate: below the listen floor it's dropped as
-    /// skip-through churn; otherwise appended to the log + index.
+    /// skip-through churn; a non-music source (browser/YouTube) is dropped
+    /// without persisting; otherwise appended to the log + index.
     fn finalize(&mut self) -> Option<HistoryEntry> {
         let entry = self.candidate.take()?.into_entry();
         if entry.ms_listened < MIN_LISTEN_MS {
+            return None;
+        }
+        // Belt for rows that were already in-flight when the source flipped,
+        // and for pre-allowlist candidates still sitting in memory.
+        if !is_music(&entry) {
             return None;
         }
         let dir = self.dir.clone()?;
@@ -497,18 +504,24 @@ impl Inner {
     }
 }
 
-/// Music gate for the READ surfaces (search + queue). Conservative: only a
-/// POSITIVE video/image kind is dropped, so a music app that mislabels its
-/// PlaybackType as Unknown is never lost. "" is the pre-feature legacy row
-/// (no media_kind persisted) — those fall back to the player bucket, which
-/// keeps old Apple Music/Spotify listens and hides old browser/video ones.
-/// Persistence is untouched; this only governs what surfaces.
+/// Music gate: Search + queue history are Apple Music / Spotify only.
+///
+/// v0.7.1 dropped only a POSITIVE video/image `media_kind`, keeping
+/// `player=other` when the session claimed Music or Unknown. Browsers and
+/// YouTube routinely stamp PlaybackType as Music (the anime-in-search bug),
+/// so the kind alone is not a music signal. The player allowlist is the
+/// gate; video/image still drops a Spotify/AM video session (podcasts,
+/// music videos) so those don't sneak in the other way. "" (pre-feature
+/// rows with no media_kind) and "unknown" stay if the player is AM/Spotify
+/// — a music app that mislabels PlaybackType must not lose the listen.
+/// `page()` still filters so already-logged YouTube rows vanish from the
+/// UI without a history wipe.
+fn music_source(player: &str, media_kind: &str) -> bool {
+    matches!(player, "apple_music" | "spotify") && !matches!(media_kind, "video" | "image")
+}
+
 fn is_music(e: &HistoryEntry) -> bool {
-    match e.media_kind.as_str() {
-        "video" | "image" => false,
-        "" => matches!(e.player.as_str(), "apple_music" | "spotify"),
-        _ => true, // "music", "unknown", any future kind
-    }
+    music_source(&e.player, &e.media_kind)
 }
 
 /// Append one entry line; returns its byte offset in the log. Heals a
@@ -688,5 +701,53 @@ fn evict_old(dir: &Path, max: usize) {
     let excess = files.len().saturating_sub(max);
     for (_, path) in files.into_iter().take(excess) {
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(player: &str, media_kind: &str) -> HistoryEntry {
+        HistoryEntry {
+            v: 2,
+            key: "k".into(),
+            app_id: "app".into(),
+            player: player.into(),
+            title: "t".into(),
+            artist: "a".into(),
+            album: String::new(),
+            started_at_ms: 0,
+            ended_at_ms: 0,
+            ms_listened: 60_000,
+            duration_ms: 180_000,
+            spotify_uri: None,
+            media_kind: media_kind.into(),
+        }
+    }
+
+    #[test]
+    fn music_source_keeps_spotify_and_apple_music() {
+        for player in ["spotify", "apple_music"] {
+            assert!(is_music(&entry(player, "music")), "{player} music");
+            assert!(is_music(&entry(player, "unknown")), "{player} unknown");
+            assert!(is_music(&entry(player, "")), "{player} legacy empty kind");
+        }
+    }
+
+    #[test]
+    fn music_source_drops_video_even_from_music_apps() {
+        assert!(!is_music(&entry("spotify", "video")));
+        assert!(!is_music(&entry("apple_music", "image")));
+    }
+
+    #[test]
+    fn music_source_drops_browser_even_when_gsmtc_says_music() {
+        // The anime-in-search bug: Chrome/YouTube stamp PlaybackType as Music.
+        assert!(!is_music(&entry("other", "music")));
+        assert!(!is_music(&entry("other", "unknown")));
+        assert!(!is_music(&entry("other", "video")));
+        assert!(!is_music(&entry("other", "")));
+        assert!(!is_music(&entry("none", "music")));
     }
 }

@@ -8,7 +8,8 @@
  *
  * Data reality: "Up next" is upnext.rs's list (Spotify's API can't remove/
  * reorder, so all list mutations are local + instant); "Earlier" is
- * history.rs's log (player-agnostic, infinite scroll, newest first).
+ * history.rs's log (Apple Music / Spotify music only, infinite scroll,
+ * newest first).
  * Play-now rides spotify.rs's context-preserving jump; the pill's
  * track-change announcement is suppressed for the jump's intermediate
  * flickers via isAnnounceSuppressed (the target's arrival announces once,
