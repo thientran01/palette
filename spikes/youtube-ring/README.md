@@ -38,10 +38,12 @@ with the Windows command — it does not fake a WebView2 pass.
 
 - 12px ring around 640×360 16:9. Outer 664×384. Ring is the only drag.
 - Neutral shell (house surface), 1px fg/10 hairline, radius 12. No accent
-  on the frame.
-- Close: hover × in the ring top-right, 20px hit (L-clipped so it never
-  sits on the video). Reveal on `data-hot` (cursor in the RING) plus
-  `:has(:focus-visible)`. Never CSS `:hover`. Never `:focus-within`.
+  on the frame. Idle: shell + hairline + × at opacity 0. Reveal on
+  `data-hot` (cursor in the RING) plus `:has(:focus-visible)` — opacity
+  only, EASE.inOut / DUR 3 (200ms). The 12px HTCAPTION hit stays always.
+  Never CSS `:hover`. Never `:focus-within`.
+- Close: × in the ring top-right, 20px hit (L-clipped so it never sits
+  on the video), same reveal as the shell.
 - Persist x,y. One born size. Edge snap 24px per axis. Always-on-top.
 - Presence never moves it. No corner magnet, no fsSeat, no reserved rail,
   no Palette transport, no URL bar, no stock title bar, no Win11 accent

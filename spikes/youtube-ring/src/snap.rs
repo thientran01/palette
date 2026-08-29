@@ -52,6 +52,12 @@ pub fn in_ring(x: i32, y: i32, w: i32, h: i32, ring: i32) -> bool {
     x >= 0 && y >= 0 && x < w && y < h && (x < ring || y < ring || x >= w - ring || y >= h - ring)
 }
 
+/// Pin: chrome (shell + hairline + ×) is visible only on ring-hot or
+/// :focus-visible. Never CSS :hover. Never :focus-within.
+pub fn chrome_visible(hot: bool, focus_visible: bool) -> bool {
+    hot || focus_visible
+}
+
 /// Top-right 20px hit, clipped to the ring L so it never covers the video.
 pub fn in_close_l(x: i32, y: i32, w: i32, _h: i32, ring: i32, hit: i32) -> bool {
     if hit <= 0 || ring <= 0 {
@@ -151,5 +157,17 @@ mod tests {
         // Inset video: no.
         assert!(!in_ring(12, 12, w, h, ring));
         assert!(in_ring(6, 200, w, h, ring));
+    }
+
+    #[test]
+    fn chrome_idle_is_hidden() {
+        assert!(!chrome_visible(false, false));
+    }
+
+    #[test]
+    fn chrome_hot_or_focus_reveals() {
+        assert!(chrome_visible(true, false));
+        assert!(chrome_visible(false, true));
+        assert!(chrome_visible(true, true));
     }
 }

@@ -22,23 +22,23 @@ use tao::{
     window::WindowBuilder,
 };
 use windows::Win32::{
-    Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::{
         Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE},
         Gdi::{
-            BeginPaint, CombineRgn, CreatePen, CreateRectRgn, CreateRoundRectRgn, CreateSolidBrush,
-            DeleteObject, EndPaint, FillRect, GetMonitorInfoW, GetStockObject, MonitorFromWindow,
-            RoundRect, ScreenToClient, SelectObject, SetWindowRgn, MONITORINFO,
-            MONITOR_DEFAULTTONEAREST, NULL_BRUSH, PAINTSTRUCT, PS_SOLID, RGN_OR,
+            BeginPaint, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, EndPaint,
+            GetMonitorInfoW, MonitorFromWindow, ScreenToClient, SetWindowRgn, MONITORINFO,
+            MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, RGN_DIFF,
         },
     },
     UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::{
             GetClientRect, GetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect, KillTimer,
-            SetTimer, GW_CHILD, GW_HWNDNEXT, HTCAPTION, HTCLIENT, WINDOW_LONG_PTR_INDEX,
-            WM_DESTROY, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_LBUTTONUP, WM_NCCALCSIZE, WM_NCHITTEST,
-            WM_NCLBUTTONDBLCLK, WM_PAINT, WM_TIMER, WS_CAPTION, WS_SYSMENU, WS_THICKFRAME,
+            SetTimer, GW_CHILD, GW_HWNDNEXT, HTCAPTION, HTCLIENT, HTTRANSPARENT,
+            WINDOW_LONG_PTR_INDEX, WM_DESTROY, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_LBUTTONUP,
+            WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_PAINT, WM_TIMER, WS_CAPTION,
+            WS_SYSMENU, WS_THICKFRAME,
         },
     },
 };
@@ -56,14 +56,12 @@ const CLOSE_HIT_PX: f64 = 20.0;
 const RAIL_PX: f64 = 24.0;
 const RADIUS_PX: f64 = 12.0;
 
-/// House surface (warm near-black). "~97%" is the token; Windows ignores
-/// window-bg alpha (tao), and Palette already measured /97 ghosting desktop
-/// text, so the ring paints opaque.
+/// House surface (warm near-black). Window-bg only — shell + hairline paint
+/// in close.html and fade via opacity. "~97%" is not restyled here.
 const SURFACE: (u8, u8, u8) = (20, 18, 16);
-/// fg/10 blended onto surface — the 1px hairline.
-const HAIRLINE: (u8, u8, u8) = (43, 40, 37);
 
 const SUBCLASS_ID: usize = 0x5954_0001;
+const CHROME_SUBCLASS_ID: usize = 0x5954_0002;
 const TIMER_HOT: usize = 1;
 const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
 const DWMWCP_DONOTROUND: u32 = 1; // we own the 12px region
@@ -176,10 +174,6 @@ fn probe_log(line: &str) {
     eprintln!("probe: {line}");
 }
 
-fn colorref(rgb: (u8, u8, u8)) -> COLORREF {
-    COLORREF((rgb.0 as u32) | ((rgb.1 as u32) << 8) | ((rgb.2 as u32) << 16))
-}
-
 fn run_surface(probe: bool) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoopBuilder::<Msg>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -215,8 +209,8 @@ fn run_surface(probe: bool) -> Result<(), Box<dyn std::error::Error>> {
         size: LogicalSize::new(VIEW_W, VIEW_H).into(),
     };
     let close_bounds = WebRect {
-        position: LogicalPosition::new(OUTER_W - CLOSE_HIT_PX, 0.0).into(),
-        size: LogicalSize::new(CLOSE_HIT_PX, CLOSE_HIT_PX).into(),
+        position: LogicalPosition::new(0.0, 0.0).into(),
+        size: LogicalSize::new(OUTER_W, OUTER_H).into(),
     };
 
     let mut web_context = WebContext::new(Some(data_dir().join("profile")));
@@ -246,7 +240,8 @@ fn run_surface(probe: bool) -> Result<(), Box<dyn std::error::Error>> {
         .build_as_child(&window)?;
 
     let close_hwnd = newest_child(hwnd, &before_close).unwrap_or_default();
-    apply_close_l_region(close_hwnd, scale);
+    apply_ring_frame_region(close_hwnd, scale);
+    install_chrome_ht(close_hwnd);
     let _ = youtube.set_bounds(yt_bounds);
     let _ = close.set_bounds(close_bounds);
 
@@ -276,6 +271,14 @@ fn run_surface(probe: bool) -> Result<(), Box<dyn std::error::Error>> {
                     "document.documentElement.removeAttribute('data-hot')"
                 };
                 let _ = close.evaluate_script(js);
+                // WebView2 may spawn inner HWNDs after first navigate.
+                install_chrome_ht(close_hwnd);
+                if probe {
+                    probe_log(&format!(
+                        "paint/hot chrome_visible={} (focus-visible is CSS)",
+                        snap::chrome_visible(hot, false)
+                    ));
+                }
             }
             Event::UserEvent(Msg::Settle) => settle_window(&window),
             Event::WindowEvent {
@@ -293,7 +296,7 @@ fn run_surface(probe: bool) -> Result<(), Box<dyn std::error::Error>> {
             } => {
                 let scale = window.scale_factor();
                 apply_round_region(hwnd, scale);
-                apply_close_l_region(close_hwnd, scale);
+                apply_ring_frame_region(close_hwnd, scale);
                 let _ = youtube.set_bounds(yt_bounds);
                 let _ = close.set_bounds(close_bounds);
                 if probe {
@@ -352,7 +355,7 @@ fn dump_bounds_probe(window: &tao::window::Window, youtube: &WebView, close: &We
     let yt = youtube.bounds().ok();
     let cl = close.bounds().ok();
     probe_log(&format!(
-        "inner={}x{} yt={yt:?} close={cl:?} expect_inset=12,12,640,360 close_hit=20x20@top-right",
+        "inner={}x{} yt={yt:?} chrome={cl:?} expect_inset=12,12,640,360 chrome=664x384 ring-region, close_hit=20x20@top-right L",
         inner.width, inner.height
     ));
 }
@@ -384,21 +387,64 @@ fn apply_round_region(hwnd: HWND, scale: f64) {
     let _ = unsafe { SetWindowRgn(hwnd, Some(rgn), true) };
 }
 
-fn apply_close_l_region(hwnd: HWND, scale: f64) {
+/// Chrome HWND is the 12px frame only — never the video inset.
+fn apply_ring_frame_region(hwnd: HWND, scale: f64) {
     if hwnd.is_invalid() {
         return;
     }
-    let hit = (CLOSE_HIT_PX * scale).round() as i32;
+    let mut rc = RECT::default();
+    if unsafe { GetClientRect(hwnd, &mut rc) }.is_err() {
+        return;
+    }
     let ring = (RING_PX * scale).round() as i32;
     unsafe {
-        let top = CreateRectRgn(0, 0, hit, ring);
-        let right = CreateRectRgn(hit - ring, 0, hit, hit);
+        let outer = CreateRectRgn(0, 0, rc.right, rc.bottom);
+        let inner = CreateRectRgn(ring, ring, rc.right - ring, rc.bottom - ring);
         let dest = CreateRectRgn(0, 0, 0, 0);
-        let _ = CombineRgn(Some(dest), Some(top), Some(right), RGN_OR);
-        let _ = DeleteObject(top.into());
-        let _ = DeleteObject(right.into());
+        let _ = CombineRgn(Some(dest), Some(outer), Some(inner), RGN_DIFF);
+        let _ = DeleteObject(outer.into());
+        let _ = DeleteObject(inner.into());
         let _ = SetWindowRgn(hwnd, Some(dest), true);
     }
+}
+
+/// Chrome paints the ring; hits on the frame fall through to the parent
+/// HTCAPTION except the close L (HTCLIENT). HTCAPTION stays always-on.
+fn install_chrome_ht(root: HWND) {
+    if root.is_invalid() {
+        return;
+    }
+    let mut stack = vec![root];
+    while let Some(h) = stack.pop() {
+        let _ = unsafe { SetWindowSubclass(h, Some(chrome_ht_proc), CHROME_SUBCLASS_ID, 0) };
+        let mut c = unsafe { GetWindow(h, GW_CHILD) }.unwrap_or_default();
+        while !c.is_invalid() {
+            stack.push(c);
+            c = unsafe { GetWindow(c, GW_HWNDNEXT) }.unwrap_or_default();
+        }
+    }
+}
+
+unsafe extern "system" fn chrome_ht_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if msg == WM_NCHITTEST {
+        let pt = lparam_client(hwnd, lparam);
+        let (w, h) = client_size(hwnd);
+        let scale = scale_of(hwnd);
+        let ring = (RING_PX * scale).round() as i32;
+        let hit = (CLOSE_HIT_PX * scale).round() as i32;
+        if snap::in_close_l(pt.x, pt.y, w, h, ring, hit) {
+            return LRESULT(HTCLIENT as isize);
+        }
+        return LRESULT(HTTRANSPARENT as isize);
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
 }
 
 fn monitor_rects(hwnd: HWND) -> Option<(SnapRect, SnapRect)> {
@@ -503,6 +549,9 @@ unsafe extern "system" fn subclass_proc(
         }
         WM_ERASEBKGND => return LRESULT(1),
         WM_PAINT => {
+            // Chrome (shell + hairline + ×) is CSS opacity on the overlay.
+            // Complete the paint cycle; do not FillRect SURFACE — that was
+            // the always-on brown ring leftover. Not gated on hot.
             paint_ring(hwnd);
             return LRESULT(0);
         }
@@ -570,14 +619,16 @@ fn cursor_in_close_l(hwnd: HWND) -> bool {
     )
 }
 
-fn hit_test(hwnd: HWND, lparam: LPARAM) -> i32 {
-    let x = (lparam.0 as i32) & 0xFFFF;
-    let y = ((lparam.0 as i32) >> 16) & 0xFFFF;
-    // lParam is signed screen coords packed as GET_X_LPARAM / GET_Y_LPARAM.
-    let sx = x as i16 as i32;
-    let sy = y as i16 as i32;
-    let mut pt = POINT { x: sx, y: sy };
+fn lparam_client(hwnd: HWND, lparam: LPARAM) -> POINT {
+    let x = (lparam.0 as i32) as i16 as i32;
+    let y = ((lparam.0 as i32) >> 16) as i16 as i32;
+    let mut pt = POINT { x, y };
     let _ = unsafe { ScreenToClient(hwnd, &mut pt) };
+    pt
+}
+
+fn hit_test(hwnd: HWND, lparam: LPARAM) -> i32 {
+    let pt = lparam_client(hwnd, lparam);
     let (w, h) = client_size(hwnd);
     let scale = scale_of(hwnd);
     let ring = (RING_PX * scale).round() as i32;
@@ -597,26 +648,5 @@ fn paint_ring(hwnd: HWND) {
     if hdc.is_invalid() {
         return;
     }
-    let (w, h) = client_size(hwnd);
-    let scale = scale_of(hwnd);
-    let dia = ((RADIUS_PX * scale).round() as i32 * 2).max(2);
-    unsafe {
-        let brush = CreateSolidBrush(colorref(SURFACE));
-        let rc = RECT {
-            left: 0,
-            top: 0,
-            right: w,
-            bottom: h,
-        };
-        let _ = FillRect(hdc, &rc, brush);
-        let _ = DeleteObject(brush.into());
-        let pen = CreatePen(PS_SOLID, 1, colorref(HAIRLINE));
-        let old_pen = SelectObject(hdc, pen.into());
-        let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        let _ = RoundRect(hdc, 0, 0, w, h, dia, dia);
-        SelectObject(hdc, old_pen);
-        SelectObject(hdc, old_brush);
-        let _ = DeleteObject(pen.into());
-        let _ = EndPaint(hwnd, &ps);
-    }
+    let _ = unsafe { EndPaint(hwnd, &ps) };
 }
