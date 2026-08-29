@@ -28,7 +28,7 @@ use windows::Win32::{
         Gdi::{
             BeginPaint, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, EndPaint,
             GetMonitorInfoW, MonitorFromWindow, ScreenToClient, SetWindowRgn, MONITORINFO,
-            MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, RGN_DIFF,
+            MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, RGN_OR,
         },
     },
     UI::{
@@ -204,14 +204,12 @@ fn run_surface(probe: bool) -> Result<(), Box<dyn std::error::Error>> {
     let scale = window.scale_factor();
     apply_round_region(hwnd, scale);
 
-    let yt_bounds = WebRect {
-        position: LogicalPosition::new(RING_PX, RING_PX).into(),
-        size: LogicalSize::new(VIEW_W, VIEW_H).into(),
-    };
-    let close_bounds = WebRect {
-        position: LogicalPosition::new(0.0, 0.0).into(),
-        size: LogicalSize::new(OUTER_W, OUTER_H).into(),
-    };
+    let yt_bounds = web_rect(SnapRect {
+        x: RING_PX as i32,
+        y: RING_PX as i32,
+        w: VIEW_W as i32,
+        h: VIEW_H as i32,
+    });
 
     let mut web_context = WebContext::new(Some(data_dir().join("profile")));
     let youtube = WebViewBuilder::new_with_web_context(&mut web_context)
@@ -221,6 +219,31 @@ fn run_surface(probe: bool) -> Result<(), Box<dyn std::error::Error>> {
         .with_focused(true)
         .build_as_child(&window)?;
 
+    // Four 12px strips — create-bounds never meet the inset. Not a 664×384
+    // child with RGN_DIFF (OUTER ∩ INSET is the miss class).
+    debug_assert!(snap::rects_intersect(snap::OUTER, snap::INSET));
+    let mut strips: Vec<WebView> = Vec::new();
+    let mut strip_hwnds: Vec<HWND> = Vec::new();
+    for r in snap::ring_strip_rects() {
+        debug_assert!(!snap::rects_intersect(r, snap::INSET));
+        let before = child_hwnds(hwnd);
+        let wv = WebViewBuilder::new()
+            .with_html(include_str!("ring.html"))
+            .with_bounds(web_rect(r))
+            .with_transparent(true)
+            .with_background_color((0, 0, 0, 0))
+            .with_devtools(false)
+            .with_focused(false)
+            .build_as_child(&window)?;
+        let child = newest_child(hwnd, &before).unwrap_or_default();
+        install_chrome_ht(child, false);
+        strip_hwnds.push(child);
+        strips.push(wv);
+    }
+
+    let close_r = snap::close_overlay_rect();
+    debug_assert_eq!((close_r.w, close_r.h), (20, 20));
+    let close_bounds = web_rect(close_r);
     let before_close = child_hwnds(hwnd);
     let close = WebViewBuilder::new()
         .with_html(include_str!("close.html"))
@@ -240,14 +263,17 @@ fn run_surface(probe: bool) -> Result<(), Box<dyn std::error::Error>> {
         .build_as_child(&window)?;
 
     let close_hwnd = newest_child(hwnd, &before_close).unwrap_or_default();
-    apply_ring_frame_region(close_hwnd, scale);
-    install_chrome_ht(close_hwnd);
+    apply_close_l_region(close_hwnd, scale);
+    install_chrome_ht(close_hwnd, true);
     let _ = youtube.set_bounds(yt_bounds);
+    for (wv, r) in strips.iter().zip(snap::ring_strip_rects()) {
+        let _ = wv.set_bounds(web_rect(r));
+    }
     let _ = close.set_bounds(close_bounds);
 
     install_subclass(hwnd, proxy.clone(), probe);
     if probe {
-        dump_bounds_probe(&window, &youtube, &close);
+        dump_bounds_probe(&window, &youtube, &strips, &close);
     }
 
     settle_window(&window);
@@ -271,8 +297,13 @@ fn run_surface(probe: bool) -> Result<(), Box<dyn std::error::Error>> {
                     "document.documentElement.removeAttribute('data-hot')"
                 };
                 let _ = close.evaluate_script(js);
-                // WebView2 may spawn inner HWNDs after first navigate.
-                install_chrome_ht(close_hwnd);
+                for wv in &strips {
+                    let _ = wv.evaluate_script(js);
+                }
+                install_chrome_ht(close_hwnd, true);
+                for h in &strip_hwnds {
+                    install_chrome_ht(*h, false);
+                }
                 if probe {
                     probe_log(&format!(
                         "paint/hot chrome_visible={} (focus-visible is CSS)",
@@ -296,11 +327,14 @@ fn run_surface(probe: bool) -> Result<(), Box<dyn std::error::Error>> {
             } => {
                 let scale = window.scale_factor();
                 apply_round_region(hwnd, scale);
-                apply_ring_frame_region(close_hwnd, scale);
+                apply_close_l_region(close_hwnd, scale);
                 let _ = youtube.set_bounds(yt_bounds);
+                for (wv, r) in strips.iter().zip(snap::ring_strip_rects()) {
+                    let _ = wv.set_bounds(web_rect(r));
+                }
                 let _ = close.set_bounds(close_bounds);
                 if probe {
-                    dump_bounds_probe(&window, &youtube, &close);
+                    dump_bounds_probe(&window, &youtube, &strips, &close);
                 }
             }
             _ => {}
@@ -350,12 +384,25 @@ fn probe_styles(hwnd: HWND, probe: bool, tag: &str) {
     ));
 }
 
-fn dump_bounds_probe(window: &tao::window::Window, youtube: &WebView, close: &WebView) {
+fn web_rect(r: SnapRect) -> WebRect {
+    WebRect {
+        position: LogicalPosition::new(r.x as f64, r.y as f64).into(),
+        size: LogicalSize::new(r.w as f64, r.h as f64).into(),
+    }
+}
+
+fn dump_bounds_probe(
+    window: &tao::window::Window,
+    youtube: &WebView,
+    strips: &[WebView],
+    close: &WebView,
+) {
     let inner = window.inner_size();
     let yt = youtube.bounds().ok();
     let cl = close.bounds().ok();
+    let strip_b: Vec<_> = strips.iter().filter_map(|s| s.bounds().ok()).collect();
     probe_log(&format!(
-        "inner={}x{} yt={yt:?} chrome={cl:?} expect_inset=12,12,640,360 chrome=664x384 ring-region, close_hit=20x20@top-right L",
+        "inner={}x{} yt={yt:?} strips={strip_b:?} close={cl:?} expect strips=12px bars (never 664x384) close=20x20@top-right L",
         inner.width, inner.height
     ));
 }
@@ -387,36 +434,37 @@ fn apply_round_region(hwnd: HWND, scale: f64) {
     let _ = unsafe { SetWindowRgn(hwnd, Some(rgn), true) };
 }
 
-/// Chrome HWND is the 12px frame only — never the video inset.
-fn apply_ring_frame_region(hwnd: HWND, scale: f64) {
+/// L-clip the 20×20 close HWND so the 8×8 that would sit on the video
+/// is not in the region. If this misses, chrome_ht_proc still returns
+/// HTTRANSPARENT on that overlap — not a full-page cover.
+fn apply_close_l_region(hwnd: HWND, scale: f64) {
     if hwnd.is_invalid() {
         return;
     }
-    let mut rc = RECT::default();
-    if unsafe { GetClientRect(hwnd, &mut rc) }.is_err() {
-        return;
-    }
+    let hit = (CLOSE_HIT_PX * scale).round() as i32;
     let ring = (RING_PX * scale).round() as i32;
     unsafe {
-        let outer = CreateRectRgn(0, 0, rc.right, rc.bottom);
-        let inner = CreateRectRgn(ring, ring, rc.right - ring, rc.bottom - ring);
+        let top = CreateRectRgn(0, 0, hit, ring);
+        let right = CreateRectRgn(hit - ring, 0, hit, hit);
         let dest = CreateRectRgn(0, 0, 0, 0);
-        let _ = CombineRgn(Some(dest), Some(outer), Some(inner), RGN_DIFF);
-        let _ = DeleteObject(outer.into());
-        let _ = DeleteObject(inner.into());
+        let _ = CombineRgn(Some(dest), Some(top), Some(right), RGN_OR);
+        let _ = DeleteObject(top.into());
+        let _ = DeleteObject(right.into());
         let _ = SetWindowRgn(hwnd, Some(dest), true);
     }
 }
 
-/// Chrome paints the ring; hits on the frame fall through to the parent
-/// HTCAPTION except the close L (HTCLIENT). HTCAPTION stays always-on.
-fn install_chrome_ht(root: HWND) {
+/// `is_close`: L is HTCLIENT; the 8×8 video overlap (if the L-region
+/// missed) is HTTRANSPARENT. Strips are always HTTRANSPARENT so the
+/// parent HTCAPTION still owns the 12px drag.
+fn install_chrome_ht(root: HWND, is_close: bool) {
     if root.is_invalid() {
         return;
     }
+    let data = if is_close { 1 } else { 0 };
     let mut stack = vec![root];
     while let Some(h) = stack.pop() {
-        let _ = unsafe { SetWindowSubclass(h, Some(chrome_ht_proc), CHROME_SUBCLASS_ID, 0) };
+        let _ = unsafe { SetWindowSubclass(h, Some(chrome_ht_proc), CHROME_SUBCLASS_ID, data) };
         let mut c = unsafe { GetWindow(h, GW_CHILD) }.unwrap_or_default();
         while !c.is_invalid() {
             stack.push(c);
@@ -431,16 +479,18 @@ unsafe extern "system" fn chrome_ht_proc(
     wparam: WPARAM,
     lparam: LPARAM,
     _id: usize,
-    _data: usize,
+    data: usize,
 ) -> LRESULT {
     if msg == WM_NCHITTEST {
-        let pt = lparam_client(hwnd, lparam);
-        let (w, h) = client_size(hwnd);
-        let scale = scale_of(hwnd);
-        let ring = (RING_PX * scale).round() as i32;
-        let hit = (CLOSE_HIT_PX * scale).round() as i32;
-        if snap::in_close_l(pt.x, pt.y, w, h, ring, hit) {
-            return LRESULT(HTCLIENT as isize);
+        if data != 0 {
+            let pt = lparam_client(hwnd, lparam);
+            let (w, h) = client_size(hwnd);
+            let scale = scale_of(hwnd);
+            let ring = (RING_PX * scale).round() as i32;
+            let hit = (CLOSE_HIT_PX * scale).round() as i32;
+            if snap::in_close_l(pt.x, pt.y, w, h, ring, hit) {
+                return LRESULT(HTCLIENT as isize);
+            }
         }
         return LRESULT(HTTRANSPARENT as isize);
     }

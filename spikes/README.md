@@ -87,7 +87,9 @@ v2 of the hosted-web probe (sibling of `web-surface/`, not a replacement).
 Frameless tao window, 12px native hit-test ring around a wry WebView2 inset
 on `youtube.com`, ring-only close overlay, x/y seat, edge snap 24px/axis,
 always-on-top. Shell + hairline + × idle at opacity 0; reveal on ring-hot
-/ `:focus-visible` (EASE.inOut, 200ms). Detaches from the launcher so
+/ `:focus-visible` (EASE.inOut, 200ms). Chrome lives on four 12px
+strip HWNDs plus a 20×20 L-clipped × — never a 664×384 overlay.
+Detaches from the launcher so
 closing the parent does not kill the surface — v1's named fail. Not the
 DWM mirror. Not wired into Palette.
 

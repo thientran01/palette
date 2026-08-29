@@ -13,9 +13,7 @@
         user-select: none;
         -webkit-user-select: none;
       }
-      /* Shell + hairline + × share ONE reveal: data-hot (cursor in the RING)
-         + :has(:focus-visible). Opacity only. EASE.inOut / DUR 3.
-         Never :hover. Never :focus-within. Chrome never sits on the video. */
+      /* × only. HWND is 20×20 top-right, L-clipped. Never a 664×384 child. */
       .reveal {
         position: absolute;
         inset: 0;
@@ -26,15 +24,6 @@
       html[data-hot] .reveal,
       html:has(:focus-visible) .reveal {
         opacity: 1;
-      }
-      .shell {
-        position: absolute;
-        inset: 0;
-        box-sizing: border-box;
-        border: 12px solid rgb(20 18 16);
-        border-radius: 12px;
-        box-shadow: inset 0 0 0 1px rgb(245 239 230 / 0.1);
-        pointer-events: none;
       }
       #close {
         position: absolute;
@@ -71,7 +60,6 @@
   </head>
   <body>
     <div class="reveal">
-      <div class="shell" aria-hidden="true"></div>
       <button id="close" type="button" aria-label="Close"><span class="x">×</span></button>
     </div>
     <script>

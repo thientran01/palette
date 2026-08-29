@@ -44,6 +44,9 @@ with the Windows command — it does not fake a WebView2 pass.
   Never CSS `:hover`. Never `:focus-within`.
 - Close: × in the ring top-right, 20px hit (L-clipped so it never sits
   on the video), same reveal as the shell.
+- Chrome HWNDs are the four 12px strips plus that 20×20. Never a
+  664×384 child over YouTube (ring-region-on-a-full-webview is the
+  miss class). Click on the inset is HTCLIENT / YouTube.
 - Persist x,y. One born size. Edge snap 24px per axis. Always-on-top.
 - Presence never moves it. No corner magnet, no fsSeat, no reserved rail,
   no Palette transport, no URL bar, no stock title bar, no Win11 accent

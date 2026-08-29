@@ -58,6 +58,67 @@ pub fn chrome_visible(hot: bool, focus_visible: bool) -> bool {
     hot || focus_visible
 }
 
+pub const INSET: Rect = Rect {
+    x: 12,
+    y: 12,
+    w: 640,
+    h: 360,
+};
+pub const OUTER: Rect = Rect {
+    x: 0,
+    y: 0,
+    w: 664,
+    h: 384,
+};
+
+/// Axis-aligned intersection. The morning gate: a chrome HWND whose
+/// create-bounds intersect INSET can eat YouTube if its region misses.
+pub fn rects_intersect(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+/// 12px frame as four HWNDs. None of these rects meet the inset, so a
+/// missed SetWindowRgn cannot cover the page.
+pub fn ring_strip_rects() -> [Rect; 4] {
+    [
+        Rect {
+            x: 0,
+            y: 0,
+            w: 664,
+            h: 12,
+        },
+        Rect {
+            x: 0,
+            y: 372,
+            w: 664,
+            h: 12,
+        },
+        Rect {
+            x: 0,
+            y: 12,
+            w: 12,
+            h: 360,
+        },
+        Rect {
+            x: 652,
+            y: 12,
+            w: 12,
+            h: 360,
+        },
+    ]
+}
+
+/// × overlay create-bounds (20×20 top-right). Intersects the inset in an
+/// 8×8 — L-clip + HTTRANSPARENT on that overlap. Not a 664×384 overlay.
+pub fn close_overlay_rect() -> Rect {
+    Rect {
+        x: 644,
+        y: 0,
+        w: 20,
+        h: 20,
+    }
+}
+
 /// Top-right 20px hit, clipped to the ring L so it never covers the video.
 pub fn in_close_l(x: i32, y: i32, w: i32, _h: i32, ring: i32, hit: i32) -> bool {
     if hit <= 0 || ring <= 0 {
@@ -169,5 +230,27 @@ mod tests {
         assert!(chrome_visible(true, false));
         assert!(chrome_visible(false, true));
         assert!(chrome_visible(true, true));
+    }
+
+    #[test]
+    fn full_window_overlay_covers_inset() {
+        assert!(rects_intersect(OUTER, INSET));
+    }
+
+    #[test]
+    fn ring_strips_cannot_cover_inset() {
+        for r in ring_strip_rects() {
+            assert!(
+                !rects_intersect(r, INSET),
+                "strip {r:?} intersects inset — that HWND would eat YouTube if a region missed"
+            );
+        }
+    }
+
+    #[test]
+    fn close_overlay_is_not_a_full_window() {
+        let c = close_overlay_rect();
+        assert_eq!((c.w, c.h), (20, 20));
+        assert_ne!(c, OUTER);
     }
 }
