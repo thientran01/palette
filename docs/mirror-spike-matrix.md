@@ -7,14 +7,14 @@ path; that is `spikes/web-surface`).
 
 Instrument: [`spikes/mirror-spike`](../spikes/mirror-spike). Standalone
 `cargo run` crate, own `[workspace]`, not part of `src-tauri/`. Windows-only
-(MSVC). **No cell below is a live Windows measurement from this PR** — the
-authoring agent is on Linux and cannot call DWM. Prior-art / MSDN cells are
-filled; every Windows-live cell is a checkbox for Thien.
+(MSVC). Authoring agent is on Linux. **One live stamp so far:** Thien,
+2026-08-29 — opaque dest + DWM clone over Roblox ("it works now"). Frameless
++ GSMTC rows below are new and unchecked.
 
 Feel target (not a pixel spec, do not restyle Palette): a compact floating
 clone over YouTube theater and over a fullscreen game (Roblox / Frontlines).
-This spike is a bare native window + a DWM thumbnail. No Palette chrome, no
-GSMTC transport, no input forwarding.
+This spike is a bare native window + a DWM thumbnail + a thin strip of GSMTC
+transport. No Palette chrome, no input forwarding.
 
 ```
 cd spikes/mirror-spike
@@ -25,8 +25,9 @@ cargo run -- --crop youtube
 cargo run -- --layered youtube
 ```
 
-Started 2026-08-29. Behavior is OS- and GPU-dependent — re-run after major
-Windows updates and after a browser GPU-pipeline change.
+Started 2026-08-29. Pull + rebuild after the frameless/GSMTC slice.
+Behavior is OS- and GPU-dependent — re-run after major Windows updates
+and after a browser GPU-pipeline change.
 
 ## Hypothesis (non-binding)
 
@@ -47,7 +48,7 @@ machine."
 | Dest and source must be **top-level** HWNDs; a child dest returns `E_INVALIDARG` | [DwmRegisterThumbnail](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmregisterthumbnail) | tao's window HWND is the dest. No child/WebView dest. |
 | Dest must be **this process** (or the desktop HWND) | same remarks | We never register into someone else's window. |
 | `DwmRegisterThumbnail` does **not** draw; nothing appears until `DwmUpdateThumbnailProperties` | [thumbnail overview](https://learn.microsoft.com/en-us/windows/win32/dwm/thumbnail-ovw) | Spike always updates dest rect + `fVisible` after register and on resize. |
-| Thumbnail is composited **at presentation time**, not blitted into the dest DC | Greg Schechter / DWM API notes; [SO 2196268](https://stackoverflow.com/questions/2196268/is-it-possible-to-capture-a-window-with-windows-7-dwm-thumbnail-in-it) | We cannot screenshot the thumb. Overlays painted in our DC sit **under** it. Empty-state = hide the thumb (`fVisible=false`) then paint. |
+| Thumbnail is composited **at presentation time**, not blitted into the dest DC | Greg Schechter / DWM API notes; [SO 2196268](https://stackoverflow.com/questions/2196268/is-it-possible-to-capture-a-window-with-windows-7-dwm-thumbnail-in-it) | We cannot screenshot the thumb. Overlays painted in our DC sit **under** it. **The strip is outside `rcDestination`** — that is the only way transport stays visible. Empty-state = hide the thumb (`fVisible=false`) then paint the video pane. |
 | `fSourceClientAreaOnly` drops the Win32 non-client frame only | [DWM_THUMBNAIL_PROPERTIES](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ns-dwmapi-dwm_thumbnail_properties) | Default path uses this. Browser tab/toolbar still show. `--crop` adds a ~88 DIP top `rcSource` inset — a guess, not a video-element finder. |
 | Minimized sources stop being composited; the thumb freezes on the last frame | OnTopReplica [#71](https://github.com/LorenzCK/OnTopReplica/issues/71) (wontfix, 2018); same as the taskbar preview | Honest frozen/empty state. Do not fake video. Click-to-raise restores the source. |
 | `UpdateLayeredWindow` dests have no DWM composition surface for thumbs | Alt-Tabby / community (ULW bypasses normal composition) | `--layered` uses `WS_EX_LAYERED` + `SetLayeredWindowAttributes` (SLWA), which is the *possible* layered path. ULW is not this experiment. |
@@ -86,9 +87,12 @@ the exact command.
 
 ### 3. Always-on-top over a game (the load-bearing case)
 
-- [ ] **Borderless / windowed-fullscreen Roblox (or Frontlines)** — dest
-      stays visible and keeps compositing over the game. This is the
-      screenshot case. Exclusive-fullscreen D3D is a different row.
+- [x] **Borderless / windowed-fullscreen Roblox (or Frontlines)** —
+      **measured 2026-08-29 (Thien):** "Holy shit it works now." Shot:
+      YouTube livestream clone, stock Windows title bar, bottom-left over
+      Roblox (Opera GX visible in the cloned chrome). Opaque dest + DWM
+      is real. The remaining gimmick was the dest itself (title bar +
+      whole-window click-to-raise) — that is the frameless/GSMTC slice.
 - [ ] **Exclusive fullscreen D3D game** (if one is handy). Prior art: many
       always-on-top windows lose to exclusive fullscreen. Stamp what
       actually happens; do not "fix" it in this crate.
@@ -121,16 +125,18 @@ exstyle before/after. Watch the dest with your eyes.
 - [ ] **Close the YouTube window.** Dest stays up, empty, titled
       `mirror — source closed`. No crash, no re-register onto a random HWND.
 
-### 6. Click = raise source (view-only)
+### 6. Raise source (view-only) — superseded path
 
-- [ ] **Left-click the dest** while the source is in the background. Source
-      is restored if minimized and becomes foreground. The crate prints
-      `click → raise source … foreground_now=…`. No clicks are synthesized
-      into the YouTube client area.
-- [ ] **A game is foreground, then click the dest, then click again** — does
-      the second click still raise Chrome, or does the game eat the
-      foreground lock? Stamp it; don't add `AttachThreadInput` unless a
-      finding says the simple path is dead.
+Whole-window click-to-raise was the gimmick on the 2026-08-29 Roblox run
+("i have to fullscreen into the video and then alt tab"). That path is
+gone. Raise is **only** the strip `open` hit or a double-click on the
+video pane (same `raise_source`). Play/pause must not raise.
+
+- [ ] **`open` / video-pane double-click** raises the source. Crate prints
+      `open → raise source …` / `double-click video → raise source`.
+- [ ] **Play/pause does not raise** Firefox/Chrome/Opera. Game can stay
+      under the dest. Confirm the console says `smtc cmd accepted=… (no raise)`
+      and the source window does not come to the front.
 
 ### 7. Crop / resize (nice-to-have, not a research project)
 
@@ -155,6 +161,44 @@ cargo run -- list
 - [ ] **Several YouTube windows + bare `cargo run`** prints the list and
       waits for an index (TTY).
 
+### 9. Frameless dest + strip (2026-08-29 slice 2)
+
+```
+cd spikes/mirror-spike
+git pull
+cargo run -- youtube
+```
+
+- [ ] **No native title bar.** Dest is frameless; the only chrome is the
+      bottom strip (`::` / prev / play / next / open / x).
+- [ ] **Thumb vs strip z-order.** The DWM clone fills the video pane and
+      **does not cover** the strip. If the thumb paints over the buttons,
+      `rcDestination` leaked — that is a bug, not a "hope."
+- [ ] **Strip-drag** moves the dest over Roblox without raising the source.
+      Video-pane single click does nothing (no raise, no drag).
+- [ ] **Frameless over Roblox.** Same load-bearing case as the 2026-08-29
+      shot, without the stock title bar. Can you keep playing and still
+      see / move the clone?
+
+### 10. GSMTC transport (does not raise the source)
+
+The crate binds a session by score (YouTube title + browser AUMID matching
+the cloned exe). **Spotify is scored −100** so Windows' "current" session
+does not steal the buttons. Console prints every session + the bind line.
+
+- [ ] **Bind hits the cloned browser**, not Spotify, when both are open.
+      Look for `smtc bound: AUMID=… title=…` after `smtc sessions:`.
+      YouTube-in-Firefox / Opera GX / Chrome should win.
+- [ ] **Play/pause** toggles the livestream without alt-tabbing to the
+      browser. Audio stays in the source. Buttons disable honestly when
+      there is no session (`smtc: no session — transport disabled`).
+- [ ] **Next/prev** only fire when the session says they are enabled
+      (livestreams often disable them — muted label, click prints
+      `next disabled` / `prev disabled`).
+- [ ] **Seek is not faked.** `can_seek=` is printed; there is no seek
+      scrubber on the strip. If a later slice adds one, it must honor
+      `IsPlaybackPositionEnabled`.
+
 ## Fallback (only if DWM is impossible)
 
 If `DwmRegisterThumbnail` fails on an opaque, top-level, same-process tao
@@ -169,10 +213,13 @@ a black thumb on a protected surface would be a finding, not a fix.
 
 ## Findings (fill on the live run)
 
-*None yet — Linux authoring run. Stamp below, dated, like the presence
-matrix ("measured 2026-07-09").*
-
-1. —
+1. **Opaque dest over Roblox works** (Thien, 2026-08-29): "Holy shit it
+   works now. its just really gimicky because i can't control the mini
+   window itself. i have to fullscreen into the video and then alt tab to
+   roblox. the top chrome is bothering too." Shot: YouTube livestream
+   clone, stock title bar, bottom-left over Roblox. That finding closed
+   the "does DWM even draw" question and opened slice 2 (frameless +
+   GSMTC, this commit).
 2. —
 
 ## How to fill the live cells
@@ -181,10 +228,9 @@ On the Windows machine (MSVC toolchain, same as `npm run tauri dev`):
 
 ```
 cd spikes/mirror-spike
-cargo run -- list                 # picker sanity
-cargo run -- youtube              # opaque path — leave it up
-# play a YouTube video; look at the dest
-# alt-tab a game under it; click the dest; minimize Chrome; restore
+git pull && cargo run -- youtube  # frameless + strip + GSMTC
+# Roblox under it; strip-drag; play/pause; confirm Firefox/Opera not raised
+# leave Spotify playing in the background — bind line must not be Spotify
 cargo run -- --crop youtube       # one-look crop verdict
 cargo run -- --layered youtube    # does the thumb survive WS_EX_LAYERED?
 ```

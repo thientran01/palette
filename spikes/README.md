@@ -90,15 +90,19 @@ folded into Palette — picker instinct comes from `presence-spike`'s hwnd
 enum (skip tool windows / empty titles / cloaked / shell classes), window
 feel comes from `web-surface` (tao, always-on-top, remembered seat).
 
-Opaque dest first. Click raises the source window (view-only — no input
-forwarding). Minimized sources are an honest frozen/empty state; DWM stops
-compositing them. `--layered` is a documented second experiment
-(`WS_EX_LAYERED` + SLWA) because a transparent/layered dest is the known
-risk. If DWM refuses an opaque same-process top-level HWND, the next spike
-is `Windows.Graphics.Capture` — not this crate.
+**2026-08-29 live (Thien):** opaque dest + DWM clone sat over Roblox
+("it works now"). The gimmick was the dest — stock title bar, whole-window
+click raised the source. Current slice: **frameless** dest, a thin strip
+*outside* the thumb rect (DWM composites over the dest DC), strip-drag,
+GSMTC play/pause/next/prev that does **not** raise the source. Open /
+double-click the video pane is the only raise. No input forwarding.
+
+`--layered` is a documented second experiment (`WS_EX_LAYERED` + SLWA).
+If DWM refuses an opaque same-process top-level HWND, the next spike is
+`Windows.Graphics.Capture` — not this crate.
 
 Windows-live cells in the matrix are for a real machine; a Linux `cargo
-check` cannot stamp them.
+check` cannot stamp the new rows. Pull + rebuild after this slice.
 
 ```sh
 cd spikes/mirror-spike
