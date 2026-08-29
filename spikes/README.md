@@ -80,3 +80,33 @@ cargo run -- https://youtube.com       # any other site
 ```
 
 Deleting `%APPDATA%\palette-web-surface-spike\` is the full reset (profile + seat).
+
+## `mirror-spike/` → [`../docs/mirror-spike-matrix.md`](../docs/mirror-spike-matrix.md)
+
+The MIRROR tier of Palette Surfaces: live-clone an **already-open** YouTube
+browser tab into a small always-on-top window via `DwmRegisterThumbnail`.
+This is not the hosted-WebView2 path (that's `web-surface/`) and it is not
+folded into Palette — picker instinct comes from `presence-spike`'s hwnd
+enum (skip tool windows / empty titles / cloaked / shell classes), window
+feel comes from `web-surface` (tao, always-on-top, remembered seat).
+
+Opaque dest first. Click raises the source window (view-only — no input
+forwarding). Minimized sources are an honest frozen/empty state; DWM stops
+compositing them. `--layered` is a documented second experiment
+(`WS_EX_LAYERED` + SLWA) because a transparent/layered dest is the known
+risk. If DWM refuses an opaque same-process top-level HWND, the next spike
+is `Windows.Graphics.Capture` — not this crate.
+
+Windows-live cells in the matrix are for a real machine; a Linux `cargo
+check` cannot stamp them.
+
+```sh
+cd spikes/mirror-spike
+cargo run                  # pick / auto YouTube
+cargo run -- list
+cargo run -- youtube
+```
+
+`--crop` insets a cheap Chromium tab+toolbar guess. `--layered` is the
+transparent dest experiment. Deleting `%APPDATA%\palette-mirror-spike\`
+resets the seat.
