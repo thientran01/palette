@@ -10,28 +10,24 @@ export interface LyricLine {
   end?: number;
 }
 
-/** A gap must run at least this long (after the previous line's estimated
- * sung hold) to earn a break row — short instrumental fills just keep the
- * previous line current, like before. Five dots over 7s = 1.4s/dot, about
- * the shortest cadence that still reads as a countdown. */
+/** A marked gap must run at least this long to earn a break row — short
+ * fills (and every unmarked gap) keep the previous line current. Five
+ * dots over 7s = 1.4s/dot, about the shortest cadence that still reads
+ * as a countdown. */
 const BREAK_MIN_MS = 7_000;
-/** Fallback/clamps for the sung-hold estimate (how long the previous line is
- * actually being sung before the instrumental starts — LRC has line STARTS
- * only, so this is inferred from the track's own line-to-line cadence). */
-const HOLD_FALLBACK_MS = 3_000;
-const HOLD_MIN_MS = 1_500;
-const HOLD_MAX_MS = 5_000;
 /** Dots per break row — the living separator's capsule count. */
 export const BREAK_DOTS = 5;
 
 /**
  * Parse LRC text into sorted timed lines with instrumental-break rows
- * synthesized into the gaps. Handles multiple timestamps per line
- * (`[00:12.30][01:02.00]chorus`). Empty timestamped lines (`[01:22.75] `)
- * are uploader-marked vocal-end points — they pin a break's exact start;
- * gaps without one estimate the previous line's sung hold from the track's
- * own median line cadence. Short gaps stay as before: the previous line
- * simply remains current.
+ * synthesized where the singer has actually stopped. Handles multiple
+ * timestamps per line (`[00:12.30][01:02.00]chorus`). Empty timestamped
+ * lines (`[01:22.75] `) are uploader-marked vocal-end points — they pin a
+ * break's exact start. Gaps without a marker keep the previous line
+ * current: LRC has starts only, and a guessed sung hold was inventing
+ * rest rows mid-phrase. An intro before the first line still
+ * synthesizes — there is no previous lyric. A marked outro (empty stamp
+ * after the last line) still synthesizes to track duration.
  */
 export function parseLrc(lrc: string, durationMs: number): LyricLine[] {
   const lines: LyricLine[] = [];
@@ -56,34 +52,26 @@ export function parseLrc(lrc: string, durationMs: number): LyricLine[] {
   return withBreaks(lines, markers, durationMs);
 }
 
-/** Median line-to-line gap under the break floor — the track's own singing
- * cadence, standing in for the sung duration of a line before a gap. */
-function holdEstimate(lines: LyricLine[]): number {
-  const gaps: number[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const g = lines[i].t - lines[i - 1].t;
-    if (g > 0 && g < BREAK_MIN_MS) gaps.push(g);
-  }
-  if (gaps.length === 0) return HOLD_FALLBACK_MS;
-  gaps.sort((a, b) => a - b);
-  return Math.min(Math.max(gaps[gaps.length >> 1], HOLD_MIN_MS), HOLD_MAX_MS);
-}
-
 function withBreaks(lines: LyricLine[], markers: number[], durationMs: number): LyricLine[] {
   if (lines.length === 0) return lines;
-  const hold = holdEstimate(lines);
   const out: LyricLine[] = [];
-  // Intro: the widget otherwise sits with nothing highlighted until the
-  // first vocal (idx -1) — the most common break in practice.
+  // Intro: no previous lyric to keep current — the widget otherwise sits
+  // with nothing highlighted until the first vocal (idx -1).
   if (lines[0].t >= BREAK_MIN_MS) out.push({ t: 0, text: "", end: lines[0].t });
   for (let i = 0; i < lines.length; i++) {
     out.push(lines[i]);
-    // The outro's endpoint is the track duration; a mismatched upload whose
-    // timeline overruns it just skips the break (negative span below).
+    // Mid-track and outro need an uploader empty-timestamp pin. LRC only
+    // has line STARTS; guessing a ≤5s sung hold invented a rest row
+    // mid-phrase whenever the next stamp was ≥12s away (a 13s vocal
+    // hold). Short unmarked gaps already kept the previous line current;
+    // long unmarked gaps now do the same. The outro's endpoint is the
+    // track duration; a mismatched upload whose timeline overruns it
+    // just skips the break (negative span below).
     const nextT = i + 1 < lines.length ? lines[i + 1].t : durationMs;
     const marker = markers.find((m) => m > lines[i].t && m < nextT);
-    const start = marker ?? lines[i].t + hold;
-    if (nextT - start >= BREAK_MIN_MS) out.push({ t: start, text: "", end: nextT });
+    if (marker !== undefined && nextT - marker >= BREAK_MIN_MS) {
+      out.push({ t: marker, text: "", end: nextT });
+    }
   }
   return out;
 }
