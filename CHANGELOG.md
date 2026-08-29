@@ -11,6 +11,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 ### Fixed
 
 - Search's "From your history" picks and the queue's Earlier feed no longer surface YouTube videos, anime, or other browser sessions. GSMTC often labels those as Music, so the previous video/image filter let them through; history now keeps Apple Music and Spotify listens only. Already-logged video rows disappear from those surfaces without clearing history.
+- A long sung hold no longer jumps the lyric highlight onto the five-dot rest row. LRC only has line starts, and the guessed ≤5s hold was inserting an instrumental break mid-phrase whenever the next stamp was far enough away. Rest dots now appear only for an uploader empty-timestamp marker (and the intro before the first line).
 
 ## [0.7.5] - 2026-07-28
 

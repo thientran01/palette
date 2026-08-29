@@ -995,10 +995,11 @@ export const commands = {
       if (LYRICS_PARAM === "none") return LYRICS_MISS;
       if (LYRICS_PARAM === "offline") return LYRICS_OFFLINE;
       // Mock: verses on a 4s cadence with real instrumental gaps, so preview
-      // exercises karaoke AND every break-synthesis path (parseLrc): a 12s
+      // exercises karaoke AND the break-synthesis paths (parseLrc): a 12s
       // intro, a marker-pinned break (the empty stamp at 64s — the mock's
       // start position of 63s sits right on its doorstep), an UN-marked
-      // 100→124s gap (the estimated-hold path), and a marker-pinned outro.
+      // 100→124s gap (keeps the previous lyric current — no guessed hold),
+      // and a marker-pinned outro.
       const stamp = (s: number) =>
         `[${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}.00]`;
       const lines: string[] = [];
@@ -1011,7 +1012,7 @@ export const commands = {
       verse(12, 60);
       lines.push(`${stamp(64)} `); // vocal-end marker → break 64s→84s
       verse(84, 100);
-      verse(124, 156); // the un-marked gap before this verse estimates its hold
+      verse(124, 156); // unmarked gap before this verse keeps the prior lyric
       lines.push(`${stamp(160)} `); // vocal-end marker → outro to durationMs
       return { synced: lines.join("\n"), plain: null };
     }
