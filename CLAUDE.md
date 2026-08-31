@@ -73,7 +73,27 @@ src-tauri/src/
                 transient overlay — and the mode's own MODE_SIZES box, which is
                 what every PLACEMENT decision uses; compensating a corner flip
                 with the union would move the window by a distance the shell's
-                FLIP never travels). The corner is still DERIVED on
+                FLIP never travels). THAT SAME LOOP KEEPS THE WIDGET AT THE
+                FRONT OF THE TOPMOST BAND (reassert_topmost): Windows orders
+                all topmost windows by whoever called SetWindowPos last and
+                the shell raises the taskbar to the front of it, while
+                alwaysOnTop is applied once at creation — so the first app
+                switch clipped the bottom edge of a widget parked on the
+                flush-with-the-screen line (reported live 2026-07-22). The
+                re-assert is LEVEL-triggered (a burst on every foreground
+                change + a 500ms idle heartbeat), NOT a one-shot reaction:
+                our raise and the shell's are reactions to the SAME event and
+                the shell's is async, so arriving first just means being
+                raised over — being fast is losing, and nothing can observe
+                who won. For the same reason there is NO "is it over the
+                taskbar?" gate: an auto-hidden taskbar reserves no work area
+                (rcWork == rcMonitor), so a rect gate is unsatisfiable
+                exactly where the taskbar can slide over the widget. The ONE
+                exemption is our own topmost windows (Search/focus keep the
+                front while they hold the foreground; prefs is a normal
+                window and already sits below). SWP_ASYNCWINDOWPOS is
+                required — this loop also drives click-through and must never
+                block on the main thread pumping. The corner is still DERIVED on
                 every settle (from the footprint's center) and is still the anchor
                 IDENTITY — shell seat, hit-rect anchor, popover direction, mode-glide
                 growth all key on it and all anchor to the window rect, so they work

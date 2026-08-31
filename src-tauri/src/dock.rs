@@ -65,9 +65,11 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetSystemMetrics, SetWindowPos, SystemParametersInfoW, SET_WINDOW_POS_FLAGS,
-    SM_SWAPBUTTON, SPI_GETCLIENTAREAANIMATION, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSIZE,
-    SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW,
+    GetWindowThreadProcessId, SetWindowPos, SystemParametersInfoW, GWL_EXSTYLE, HWND_TOPMOST,
+    SET_WINDOW_POS_FLAGS, SM_SWAPBUTTON, SPI_GETCLIENTAREAANIMATION, SWP_ASYNCWINDOWPOS,
+    SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WS_EX_TOPMOST,
 };
 
 /// Gap between the widget and the screen edges when an axis snaps, in
@@ -106,6 +108,19 @@ const HIT_NEAR_PAD: i32 = 64;
 /// interactive for the glide instead — the same never-smaller-than-what's-
 /// on-screen rule as the frontend's deferred hit shrinks (hitCommanded).
 const HIT_GRACE_MS: u64 = SNAP_MS + 80;
+/// Topmost re-assert cadence (reassert_topmost). A foreground change opens a
+/// BURST: we re-assert on every poll for this long, because the shell's raise
+/// of the taskbar is its ASYNC reaction to the same event and lands some
+/// unknown moment after ours — a single raise, however fast, can simply lose
+/// and stay lost. Out-raising it across the window in which it acts is what
+/// actually wins, and each call is a posted no-op when we already hold the
+/// front.
+const TOPMOST_BURST_MS: u64 = 400;
+/// Outside a burst, the reconcile heartbeat: covers every raise that comes
+/// with NO foreground change at all — an auto-hidden taskbar sliding up, a
+/// shell restart, tray flyouts — bounding how long the widget can stay
+/// covered by anything.
+const TOPMOST_IDLE_MS: u64 = 500;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Corner {
@@ -913,6 +928,62 @@ pub fn set_hit_size(dock: State<Dock>, width: f64, height: f64, mode_width: f64,
         .unwrap_or_else(PoisonError::into_inner) = Some((mode_width, mode_height));
 }
 
+/// Windows keeps every topmost window in ONE band, ordered by whoever called
+/// SetWindowPos last — and the shell raises the taskbar to the front of that
+/// band. Palette's always-on-top is applied once at window creation and never
+/// re-asserted, so the first app switch left the taskbar sitting ON TOP of a
+/// widget parked at the flush-with-the-screen bottom line, clipping its bottom
+/// edge (reported live 2026-07-22).
+///
+/// Re-asserting is LEVEL-triggered, and that IS the design (see the cadence
+/// constants). Reacting once to a foreground change cannot work: our raise and
+/// the shell's raise are reactions to the SAME event — win32k flips
+/// GetForegroundWindow synchronously while explorer learns of it
+/// asynchronously — so arriving FIRST just means the shell raises over us
+/// afterwards. Being fast is losing. Nothing here can observe who won, either
+/// (both windows are topmost, and the taskbar is findable only by class name
+/// and is not the only thing that can cover us), so the honest form is an
+/// idempotent re-assert that keeps reconciling: the same posture as
+/// apply_visibility. It is also why there is no "is it over the taskbar?"
+/// gate — an auto-hidden taskbar reserves NO work area (rcWork == rcMonitor),
+/// so every rect-based gate is unsatisfiable exactly where the taskbar is
+/// free to slide over us.
+///
+/// The one thing it will not do is jump over our OWN topmost windows: while
+/// Search or the focus room holds the foreground their stack is left alone.
+/// Preferences is deliberately NOT in that set — a normal window that already
+/// sits below the widget, so re-asserting past it changes nothing.
+///
+/// SWP_NOMOVE|SWP_NOSIZE means no WM_MOVE, so on_moved can't mistake it for a
+/// user drag; SWP_NOACTIVATE never steals focus; SWP_ASYNCWINDOWPOS posts
+/// instead of sends, so this resident watcher never blocks waiting for the
+/// main thread to pump — tao passes exactly these flags for its own
+/// always-on-top call, and this loop also drives click-through, so it must
+/// not inherit a main-thread stall (the PR #101/#103 hang class).
+fn reassert_topmost(window: &WebviewWindow, own_pid: u32) {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg == HWND::default() {
+            return; // secure desktop — nothing to lose z-order to
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid == own_pid && GetWindowLongPtrW(fg, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0 {
+            return; // Search / focus owns the front — leave our stack alone
+        }
+        let Ok(hwnd) = window.hwnd() else { return };
+        let _ = SetWindowPos(
+            HWND(hwnd.0),
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
 /// The fixed-size window's transparent gutter must not eat clicks meant for
 /// whatever is beneath: poll the cursor and toggle whole-window
 /// click-through (WS_EX_TRANSPARENT via set_ignore_cursor_events) so the
@@ -921,16 +992,34 @@ pub fn set_hit_size(dock: State<Dock>, width: f64, height: f64, mode_width: f64,
 /// suppressed mid-press so a drag/click can't have the window yanked out
 /// from under it. While hidden the loop parks on Dock::show_signal (woken by
 /// apply_visibility's show path) instead of polling.
+///
+/// This loop also carries the topmost re-assert (reassert_topmost): it is the
+/// one thread that already runs exactly while the widget is visible, at a
+/// cadence fast enough that the taskbar can't be seen winning, and it already
+/// holds the window rect. A foreground-window CHANGE is the trigger, so the
+/// per-poll cost is one GetForegroundWindow call.
 pub fn spawn_hit_watcher(window: WebviewWindow) {
     std::thread::Builder::new()
         .name("hit-watch".into())
         .spawn(move || {
             // Local mirror of the applied state — the window starts interactive.
             let mut ignoring = false;
+            let own_pid = std::process::id();
+            // Last foreground window seen, as a raw pointer value. Seeded with
+            // a sentinel so the first poll after launch opens a burst: the
+            // shell may already have raised the taskbar before we got here.
+            let mut last_fg: isize = -1;
+            // Burst deadline + last re-assert, driving the cadence above.
+            let mut burst_until = Instant::now();
+            let mut last_assert = Instant::now() - Duration::from_millis(TOPMOST_IDLE_MS);
             loop {
                 let mut near = false;
                 let visible = window.is_visible().unwrap_or(false);
                 if !visible {
+                    // Forget the foreground while hidden, so the show that
+                    // brings the widget back re-asserts instead of matching a
+                    // stale value and skipping.
+                    last_fg = -1;
                     // Park until a show wakes us (or the safety timeout). Re-check
                     // visibility under the lock so a show that landed between the
                     // check above and here isn't waited past (lost-wakeup guard);
@@ -948,6 +1037,25 @@ pub fn spawn_hit_watcher(window: WebviewWindow) {
                     }
                     *shown = false; // consume
                     continue;
+                }
+                // Z-order: keep the widget at the front of the topmost band.
+                // A foreground change opens a burst (the shell raises the
+                // taskbar over us around exactly that event, asynchronously);
+                // otherwise a slow heartbeat reconciles. See reassert_topmost.
+                let now = Instant::now();
+                let fg = unsafe { GetForegroundWindow().0 as isize };
+                if fg != last_fg {
+                    last_fg = fg;
+                    burst_until = now + Duration::from_millis(TOPMOST_BURST_MS);
+                }
+                let due = if now < burst_until {
+                    true
+                } else {
+                    now.duration_since(last_assert) >= Duration::from_millis(TOPMOST_IDLE_MS)
+                };
+                if due {
+                    last_assert = now;
+                    reassert_topmost(&window, own_pid);
                 }
                 {
                     let mut p = windows::Win32::Foundation::POINT::default();
