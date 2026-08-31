@@ -998,43 +998,48 @@ export function QueuePanel({
       onScroll={onScroll}
       className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain [scrollbar-width:none]"
     >
-      <div className="flex items-center gap-1.5 px-2 pb-0.5 pt-1.5">
-        <span className={`${s.label} uppercase tracking-widest text-muted`}>
-          Up next{rows.length > 0 && ` · ${rows.length}`}
-        </span>
-        <span className={`${s.label} text-muted/85`}>
-          {queueLive ? "Spotify · drag to reorder" : "Spotify"}
-        </span>
-        {/* aria-live chip: quiet feedback for queue/play actions. */}
-        <span aria-live="polite" className={`ml-auto min-w-0 truncate ${s.toast} text-fg`}>
-          {toast}
-        </span>
-        {/* More-like-this: fills the list with Last.fm-similar tracks for
-            the CURRENT track — seated where its output lands. HIDDEN without a
-            Last.fm key (an enabled button whose only answer is "add a key" is a
-            dead-end, 1.0 ship-blocker); with a key it disables in place when
-            the queue gate is closed or a run is in flight. */}
-        {hasKey && (
-          <button
-            type="button"
-            // The expanded garment nudges this onto the corner-chrome rail
-            // via [&_[data-sparkle]] (App.tsx queue layer) — the sparkle is
-            // persistent chrome there and must share the ViewToggle/bracket
-            // vertical line (Thien, 2026-07-16).
-            data-sparkle
-            aria-label={np?.title ? `More like ${np.title}` : "More like this"}
-            title={np?.title ? `More like ${np.title}` : "More like this"}
-            aria-disabled={!queueLive || !np?.title || seeding || undefined}
-            onClick={moreLikeThis}
-            className={`grid ${s.btn} shrink-0 place-items-center rounded-md [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] ${
-              !queueLive || !np?.title || seeding
-                ? "pointer-events-none text-muted opacity-30"
-                : "text-fg hover:bg-fg/10 active:scale-95"
-            }`}
-          >
-            <SparkleGlyph size={s.glyph} />
-          </button>
-        )}
+      <div className="px-2 pb-0.5 pt-1.5">
+        <div className="flex items-center gap-1.5">
+          <span className={`${s.label} uppercase tracking-widest text-muted`}>
+            Up next{rows.length > 0 && ` · ${rows.length}`}
+          </span>
+          <span className={`${s.label} text-muted/85`}>
+            {queueLive ? "Spotify · drag to reorder" : "Spotify"}
+          </span>
+          {/* More-like-this: fills the list with Last.fm-similar tracks for
+              the CURRENT track — seated where its output lands. HIDDEN without a
+              Last.fm key (an enabled button whose only answer is "add a key" is a
+              dead-end, 1.0 ship-blocker); with a key it disables in place when
+              the queue gate is closed or a run is in flight. */}
+          {hasKey && (
+            <button
+              type="button"
+              // The expanded garment nudges this onto the corner-chrome rail
+              // via [&_[data-sparkle]] (App.tsx queue layer) — the sparkle is
+              // persistent chrome there and must share the ViewToggle/bracket
+              // vertical line (Thien, 2026-07-16).
+              data-sparkle
+              aria-label={np?.title ? `More like ${np.title}` : "More like this"}
+              title={np?.title ? `More like ${np.title}` : "More like this"}
+              aria-disabled={!queueLive || !np?.title || seeding || undefined}
+              onClick={moreLikeThis}
+              className={`ml-auto grid ${s.btn} shrink-0 place-items-center rounded-md [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] ${
+                !queueLive || !np?.title || seeding
+                  ? "pointer-events-none text-muted opacity-30"
+                  : "text-fg hover:bg-fg/10 active:scale-95"
+              }`}
+            >
+              <SparkleGlyph size={s.glyph} />
+            </button>
+          )}
+        </div>
+        {/* Feedback on its own row — never competes with the sparkle for width
+            (a truncated "Last.fm doesn't know this o…" read as broken chrome). */}
+        {toast ? (
+          <p aria-live="polite" className={`m-0 pt-1 ${s.toast} leading-snug text-fg`}>
+            {toast}
+          </p>
+        ) : null}
       </div>
       {/* The gate NARRATES instead of hiding: the list persists across
           players/connection, and queued rows vanishing on an Apple Music
