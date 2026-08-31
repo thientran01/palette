@@ -244,19 +244,36 @@ async function computeResurfaced(
     taken.add(agg.key);
   }
 
-  const rows: SearchRow[] = [];
-  for (const p of picks.slice(0, 4)) {
-    rows.push({
+  const rows: SearchRow[] = await Promise.all(
+    picks.slice(0, 4).map(async (p) => ({
       key: p.agg.key,
       title: p.agg.title,
       artist: p.agg.artist,
-      artUrl: await commands.historyThumbUrl(p.agg.key),
+      artUrl: await artForHistory(p.agg),
       track: null,
       uri: p.agg.uri,
       reason: p.reason,
-    });
-  }
+    })),
+  );
   return { rows, pool, played };
+}
+
+/** Disk thumb first (captured while the widget was visible). Hidden listens
+ * and eviction leave a null — fall back to a Spotify cover so Search does
+ * not show the note glyph for a track the user has already heard. */
+async function artForHistory(agg: Agg): Promise<string | null> {
+  const thumb = await commands.historyThumbUrl(agg.key);
+  if (thumb) return thumb;
+  try {
+    const res = await commands.spotifySearch(
+      `track:${agg.title} artist:${agg.artist}`,
+      1,
+    );
+    if (res.status !== "ok") return null;
+    return res.tracks[0]?.art_url ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** A ghost of one result row — shown where real rows will land while a fetch
@@ -928,7 +945,7 @@ export default function Search() {
                       if (prev) setSelected(i);
                     }}
                     onClick={() => void playRow(row)}
-                    className={`flex min-h-[52px] cursor-pointer select-none items-start gap-3 rounded-md px-3.5 py-2 [transition:background-color_140ms_var(--ease-out-tk)] ${
+                    className={`flex h-[52px] cursor-pointer select-none items-center gap-3 rounded-md px-3.5 [transition:background-color_140ms_var(--ease-out-tk)] ${
                       flashKeys.has(row.key) ? "bg-fg/20" : i === sel ? "bg-fg/10" : ""
                     } ${!hasQuery && swapTick > 0 ? "row-swap-in" : ""}`}
                     style={
@@ -946,14 +963,21 @@ export default function Search() {
                   >
                     <RowThumb url={row.artUrl} size={32} />
                     <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="text-[14px] font-medium leading-5 text-fg">{row.title}</span>
-                      <span className="text-[12px] leading-4 text-muted">{row.artist}</span>
-                      {/* The pick's why lives under the identity — a side column
-                          truncated "Because you played …" (Thien, 2026-07-12). */}
-                      {row.reason ? (
-                        <span className="pt-0.5 text-[11px] leading-4 text-muted/85">{row.reason}</span>
-                      ) : null}
+                      <span className="truncate text-[14px] font-medium leading-5 text-fg">{row.title}</span>
+                      <span className="truncate text-[12px] leading-4 text-muted">{row.artist}</span>
                     </span>
+                    {/* Why, flush right — keeps the empty state at 7×52 so the
+                        born-at-size window seats every row (search.rs H=554).
+                        Native title carries the full string when the label is
+                        clipped; stacking it under identity blew past six rows. */}
+                    {row.reason ? (
+                      <span
+                        title={row.reason}
+                        className="max-w-[45%] shrink-0 truncate text-right text-[11px] text-muted/85"
+                      >
+                        {row.reason}
+                      </span>
+                    ) : null}
                   </div>
                     </Fragment>
                   );
