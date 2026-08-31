@@ -36,6 +36,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { commands, onSearchShown } from "./lib/backend";
 import { initReactive } from "./lib/reactive";
 import { RowThumb, useSpotifyStatus } from "./Queue";
+import { playNowNote } from "./lib/playNowStatus";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
 import type { HistoryEntry, QueueTrack } from "./types";
 
@@ -671,7 +672,11 @@ export default function Search() {
   const sel = Math.min(selected, Math.max(rows.length - 1, 0));
 
   const playRow = async (row: SearchRow) => {
-    if (busy.current) return;
+    // Double-press / slow resolve: tell the user instead of a dead click.
+    if (busy.current) {
+      showNote("Still working…");
+      return;
+    }
     busy.current = true;
     try {
       // Resolve BEFORE dismissing — it's one fast search for un-enriched
@@ -682,14 +687,25 @@ export default function Search() {
         showNote("Couldn't find it on Spotify");
         return;
       }
-      // Light exit (Thien's call, 2026-07-12): dismiss the INSTANT the
-      // intent is actionable — the music changing is the confirmation.
-      // The jump itself takes seconds and runs behind the dismissal; a
-      // rare post-dismiss failure is deliberately silent.
+      // Await the jump WHILE Search is still open. Dismissing first and
+      // ignoring the status (the old light-exit path) swallowed no_device /
+      // busy / diverged — the click felt dead. Hide only when playback
+      // actually started; keep the note seat for failures.
+      let status: string;
+      try {
+        status = await commands.playNow(uri);
+      } catch {
+        showNote("Spotify unreachable");
+        return;
+      }
+      const fail = playNowNote(status);
+      if (fail) {
+        showNote(fail);
+        return;
+      }
       setQuery("");
       setNote(null);
       commands.searchHide();
-      void commands.playNow(uri);
     } finally {
       busy.current = false;
     }
@@ -698,7 +714,10 @@ export default function Search() {
   const queueRow = async (row: SearchRow) => {
     // Same one-write-at-a-time gate as playRow: a held Shift+Enter
     // key-repeats, and upnext_add has no dedupe (quick-review catch).
-    if (busy.current) return;
+    if (busy.current) {
+      showNote("Still working…");
+      return;
+    }
     busy.current = true;
     try {
       const uri = await resolveUri(row);
@@ -706,16 +725,21 @@ export default function Search() {
         showNote("Couldn't find it on Spotify");
         return;
       }
-      commands.upnextAdd(
-        row.track ?? {
-          uri,
-          title: row.title,
-          artist: row.artist,
-          album: "",
-          duration_ms: 0,
-          art_url: row.artUrl,
-        },
-      );
+      try {
+        commands.upnextAdd(
+          row.track ?? {
+            uri,
+            title: row.title,
+            artist: row.artist,
+            album: "",
+            duration_ms: 0,
+            art_url: row.artUrl,
+          },
+        );
+      } catch {
+        showNote("Couldn't queue that");
+        return;
+      }
       flash(row.key);
       showNote(`Queued · ${row.title}`);
     } finally {
