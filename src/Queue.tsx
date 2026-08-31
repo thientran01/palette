@@ -26,6 +26,7 @@ import {
   onSpotifyStatus,
   onUpNextChanged,
 } from "./lib/backend";
+import { playNowNote } from "./lib/playNowStatus";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
 import { fmt } from "./Transport";
 import type {
@@ -588,23 +589,18 @@ function historyToTrack(e: HistoryEntry): QueueTrack | null {
 type Ghost = { x: number; y: number; entry: HistoryEntry; over: boolean };
 
 /** Search-resolved uris for entries logged before enrichment ran (v0.6.0
- * history, Apple Music listens). One resolve per track key per session;
- * null = Spotify had no match (cached too — no retry storm on hover-spam). */
-const uriCache = new Map<string, string | null>();
+ * history, Apple Music listens). Successes only — caching a null permanently
+ * dead-rows a pick after one transient miss (Search's uriCache discipline). */
+const uriCache = new Map<string, string>();
 
 /** The actionable form of a history entry: its enriched uri, a cached or
  * fresh search resolution, or null when Spotify can't find it. */
 async function resolveTrack(entry: HistoryEntry): Promise<QueueTrack | null> {
   const direct = historyToTrack(entry);
   if (direct) return direct;
-  let uri: string | null;
   const cached = uriCache.get(entry.key);
-  if (cached !== undefined) {
-    uri = cached;
-  } else {
-    uri = await commands.spotifyResolveUri(entry.title, entry.artist);
-    uriCache.set(entry.key, uri);
-  }
+  const uri = cached ?? (await commands.spotifyResolveUri(entry.title, entry.artist));
+  if (uri) uriCache.set(entry.key, uri);
   return uri
     ? {
         uri,
@@ -767,13 +763,12 @@ export function QueuePanel({
   };
   const playNow = (t: { uri: string; title: string; artist: string }) => {
     showToast(`Playing · ${t.title}`);
-    void playTrackNow(t).then((r) => {
-      if (r === "diverged" || r === "gone") showToast("Queue moved on — try again");
-      else if (r === "partial") showToast("Played — some items couldn't re-queue");
-      else if (r === "no_device") showToast("Open Spotify somewhere first");
-      else if (r === "busy") showToast("Still landing the last jump");
-      else if (r === "offline" || r === "disconnected") showToast("Spotify unreachable");
-    });
+    void playTrackNow(t)
+      .then((r) => {
+        const fail = playNowNote(r);
+        if (fail) showToast(fail);
+      })
+      .catch(() => showToast("Spotify unreachable"));
   };
 
   // ---- queue reorder drag (translateY follow + live swap, the 11a spec) ----
