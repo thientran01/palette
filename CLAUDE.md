@@ -296,11 +296,14 @@ src-tauri/src/
                 through the fetch interlude (lyricsLive flips while lyrics
                 re-key) — anything that must survive one lives outside the
                 swap. The room's QUEUE (2026-07-16) is a content surface in
-                the lyric column's exact box — QueuePanel scale="room",
+                the lyric column's box — QueuePanel scale="room",
                 opaque bg-surface over the still-running lyrics, always
                 mounted outside the swap; an open queue FORCES the split
                 composition so the identity stack holds the left seat even
-                with no lyrics (Esc peels the queue first).
+                with no lyrics (Esc peels the queue first). Wide rooms
+                (≥1100px, layout A) keep the identity seat and give the
+                list the right ~62% pane (no --art cap, duration on rows);
+                compact stays the art-capped lyric column.
                 This is the removed P3's want with the correct trigger:
                 invoked, never guessed
   prefs.rs      the Preferences window — third webview on the search.rs
@@ -379,8 +382,10 @@ src/Queue.tsx   the 11a queue & history UI: Palette's up-next list + the
                 toggles never move; and in the FOCUS ROOM, the same panel at
                 scale="room" (QSCALE: 56px rows, 40px thumbs, type one rung
                 up — drag/ghost math parameterized by rowH) seated IN the
-                lyric column's exact box (2026-07-16: the 380px popover read
-                as a widget lost in the room). The
+                lyric column's box (2026-07-16: the 380px popover read
+                as a widget lost in the room; 2026-08-21 layout A: ≥1100px
+                is a 38/62 pane — identity stays left, rows span the right
+                pane and show duration). The
                 garment follows effectiveMode, so continuity across the
                 ladder is free. WHILE THE POPOVER IS OPEN THE HIT RECT
                 UNIONS ITS BOX (App's footprint effect) — a consumer that

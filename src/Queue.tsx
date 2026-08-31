@@ -27,6 +27,7 @@ import {
   onUpNextChanged,
 } from "./lib/backend";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
+import { fmt } from "./Transport";
 import type {
   HistoryEntry,
   NowPlaying,
@@ -430,6 +431,15 @@ function SparkleGlyph({ size = 13 }: { size?: number }) {
   );
 }
 
+function RowDuration({ ms, s }: { ms: number; s: QueueScaleSpec }) {
+  if (ms <= 0) return null;
+  return (
+    <span className={`w-[3.25em] shrink-0 text-right tabular-nums ${s.artist} text-muted`}>
+      {fmt(ms)}
+    </span>
+  );
+}
+
 const QueueRowBase = function QueueRow({
   track,
   index,
@@ -438,6 +448,7 @@ const QueueRowBase = function QueueRow({
   settleDy,
   flash,
   s,
+  showDuration,
   onDragStart,
   onRemove,
   onKeyDown,
@@ -452,6 +463,9 @@ const QueueRowBase = function QueueRow({
   settleDy: number;
   flash: boolean;
   s: QueueScaleSpec;
+  /** Wide focus pane — duration has room on the trailing edge. Compact
+   * garments stay title/artist only (the 312px popover can't spare it). */
+  showDuration: boolean;
   onDragStart: (e: React.PointerEvent, index: number) => void;
   onRemove: (uri: string) => void;
   onKeyDown: (e: React.KeyboardEvent, index: number) => void;
@@ -493,6 +507,7 @@ const QueueRowBase = function QueueRow({
       <RowActionButton label="Remove from queue" onClick={() => onRemove(track.uri)} s={s}>
         <CrossGlyph size={s.glyph - 1} />
       </RowActionButton>
+      {showDuration && <RowDuration ms={track.duration_ms} s={s} />}
     </div>
   );
 };
@@ -502,6 +517,7 @@ const HistoryRowBase = function HistoryRow({
   entry,
   actionable,
   s,
+  showDuration,
   onPlayNow,
   onAdd,
   onGhostStart,
@@ -511,6 +527,7 @@ const HistoryRowBase = function HistoryRow({
   /** uri known AND Spotify connected — play-now/+/drag all need the uri. */
   actionable: boolean;
   s: QueueScaleSpec;
+  showDuration: boolean;
   onPlayNow: (e: HistoryEntry) => void;
   onAdd: (e: HistoryEntry) => void;
   onGhostStart: (ev: React.PointerEvent, e: HistoryEntry) => void;
@@ -548,6 +565,7 @@ const HistoryRowBase = function HistoryRow({
           </RowActionButton>
         </>
       )}
+      {showDuration && <RowDuration ms={entry.duration_ms} s={s} />}
     </div>
   );
 };
@@ -604,6 +622,7 @@ export function QueuePanel({
   connected,
   open,
   scale = "base",
+  pane = false,
 }: {
   np: NowPlaying | null;
   connected: boolean;
@@ -612,6 +631,9 @@ export function QueuePanel({
   /** Garment scale: "base" for the widget's popover/expanded garments,
    * "room" for the focus takeover's content column (see QSCALE). */
   scale?: QueueScale;
+  /** Focus room at the wide breakpoint: full-width rows, trailing duration.
+   * The widget garments never pass this. */
+  pane?: boolean;
 }) {
   const s = QSCALE[scale];
   const upnext = useUpNext();
@@ -1085,6 +1107,7 @@ export function QueuePanel({
                 settleDy={settle && settle.index === i && drag?.index !== i ? settle.dy : 0}
                 flash={flashUris.has(t.uri)}
                 s={s}
+                showDuration={pane}
                 onDragStart={onQueueDragStart}
                 onRemove={(uri) => commands.upnextRemove(uri)}
                 onKeyDown={onQueueKeyDown}
@@ -1113,6 +1136,7 @@ export function QueuePanel({
             entry={e}
             actionable={queueLive}
             s={s}
+            showDuration={pane}
             onPlayNow={playResolved}
             onAdd={(en) => addResolved(en)}
             onGhostStart={onGhostStart}
