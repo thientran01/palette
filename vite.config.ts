@@ -15,6 +15,11 @@ const mainRoot = /^(.*?)[\\/]\.claude[\\/]worktrees[\\/]/.exec(process.cwd())?.[
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
 
+  test: {
+    include: ["src/**/*.test.ts"],
+    exclude: [".cursor/**", "node_modules/**"],
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
