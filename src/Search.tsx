@@ -928,7 +928,7 @@ export default function Search() {
                       if (prev) setSelected(i);
                     }}
                     onClick={() => void playRow(row)}
-                    className={`flex h-[52px] cursor-pointer select-none items-center gap-3 rounded-md px-3.5 [transition:background-color_140ms_var(--ease-out-tk)] ${
+                    className={`flex min-h-[52px] cursor-pointer select-none items-start gap-3 rounded-md px-3.5 py-2 [transition:background-color_140ms_var(--ease-out-tk)] ${
                       flashKeys.has(row.key) ? "bg-fg/20" : i === sel ? "bg-fg/10" : ""
                     } ${!hasQuery && swapTick > 0 ? "row-swap-in" : ""}`}
                     style={
@@ -946,22 +946,14 @@ export default function Search() {
                   >
                     <RowThumb url={row.artUrl} size={32} />
                     <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-[14px] font-medium leading-5 text-fg">{row.title}</span>
-                      <span className="truncate text-[12px] leading-4 text-muted">{row.artist}</span>
+                      <span className="text-[14px] font-medium leading-5 text-fg">{row.title}</span>
+                      <span className="text-[12px] leading-4 text-muted">{row.artist}</span>
+                      {/* The pick's why lives under the identity — a side column
+                          truncated "Because you played …" (Thien, 2026-07-12). */}
+                      {row.reason ? (
+                        <span className="pt-0.5 text-[11px] leading-4 text-muted/85">{row.reason}</span>
+                      ) : null}
                     </span>
-                    {/* The pick's why, flush to the right edge — without it the
-                        picks read as a bug (Thien, 2026-07-12). No per-row mouse
-                        buttons compete for the slot: this surface is
-                        keyboard-first (↵ plays, ⇧↵ queues; a row click also
-                        plays), so the reason stays perfectly aligned, nothing
-                        shifts row to row (Thien's call, 2026-07-16). Capped +
-                        truncated so a long "Because you played …" can't crush
-                        the title column. */}
-                    {row.reason && (
-                      <span className="max-w-[45%] shrink-0 truncate text-[11px] text-muted/85">
-                        {row.reason}
-                      </span>
-                    )}
                   </div>
                     </Fragment>
                   );
@@ -990,7 +982,7 @@ export default function Search() {
         </div>
 
         {/* Quiet feedback line — the search's toast. */}
-        <p aria-live="polite" className="m-0 min-h-[30px] truncate border-t border-border/10 px-5 py-1.5 text-[12px] leading-[18px] text-muted">
+        <p aria-live="polite" className="m-0 min-h-[30px] border-t border-border/10 px-5 py-1.5 text-[12px] leading-[18px] text-muted">
           {note}
         </p>
       </div>
