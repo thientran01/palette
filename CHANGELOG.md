@@ -8,8 +8,20 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-31
+
+Palette 1.0. The widget you have been running since 0.7 is the product: free placement, synced lyrics, Search, queue, focus mode, and Spotify Connect. This cut lands the last reliability and polish fixes from the soak, and stamps the version that matches what it already is.
+
+### Added
+
+- Focus mode's open queue becomes a wide right pane (~62%) at ≥1100px, with full-width rows and trailing duration. Narrower takeovers keep the compact art-capped column.
+
 ### Fixed
 
+- Search play no longer dismisses and goes silent on failure. `no_device`, `busy`, and `diverged` stay on the Search footer so a dead click is honest. Queue play-now uses the same status copy and no longer caches a failed URI forever.
+- Search's empty state seats all seven picks again (4 history + 3 discovery) at the born-at-size 52px row height. History picks without a disk thumb fall back to a Spotify cover instead of the note glyph.
+- Queue and Search feedback lines wrap on their own row instead of fighting chrome and clipping mid-word.
+- The taskbar no longer covers the widget's bottom edge after switching apps. Palette re-asserts topmost while visible so the shell cannot permanently raise the taskbar over a flush-bottom park.
 - Search's "From your history" picks and the queue's Earlier feed no longer surface YouTube videos, anime, or other browser sessions. GSMTC often labels those as Music, so the previous video/image filter let them through; history now keeps Apple Music and Spotify listens only. Already-logged video rows disappear from those surfaces without clearing history.
 - A long sung hold no longer jumps the lyric highlight onto the five-dot rest row. LRC only has line starts, and the guessed ≤5s hold was inserting an instrumental break mid-phrase whenever the next stamp was far enough away. Rest dots now appear only for an uploader empty-timestamp marker (and the intro before the first line).
 
@@ -37,7 +49,6 @@ The placement + track-change release: the widget goes anywhere and stays put, an
 
 ### Fixed
 
-- The taskbar no longer covers the widget's bottom edge after switching apps. Windows had been raising the taskbar above it on every app switch; parked flush with the bottom of the screen, that clipped it.
 - Pill and card modes could throw the widget up to 392px away from where it was released when a drag crossed the middle of the screen.
 - A skip's piecemeal metadata delivery could rubber-band the outgoing album cover during the track-change slide.
 
@@ -243,7 +254,8 @@ First public release.
 - Synced lyrics (LRCLIB with disk cache), album-art adaptive accents, an audio-reactive "living separator", corner docking, morphing icons, and a monotonic position clock owning playback time.
 - Ships as a per-user NSIS installer — single-instance, opt-in start-at-login — with a GitHub Releases auto-update pipeline and an in-app updater.
 
-[Unreleased]: https://github.com/thientran01/palette/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/thientran01/palette/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/thientran01/palette/compare/v0.7.5...v1.0.0
 [0.7.5]: https://github.com/thientran01/palette/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/thientran01/palette/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/thientran01/palette/compare/v0.7.2...v0.7.3
