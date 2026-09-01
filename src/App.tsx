@@ -1665,6 +1665,22 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Warm-on-intent for the focus takeover: the expand-to-focus rung only
+  // exists in expanded, so entering expanded IS the open-intent signal —
+  // pre-create the focus window hidden (the WebView2 cold-create + React
+  // mount + seeds behind the click were the "takes really long" of the live
+  // verdict, 2026-09-01) so the bracket's click becomes geometry + show on
+  // an already-painted webview. The cleanup cools it on leaving expanded:
+  // focus_cool is gated on focus_open, so the OPEN takeover the widget sits
+  // behind (still in expanded) is never destroyed — only a warmed window
+  // whose intent signal lapsed. The bracket's own handler is untouched;
+  // an open with no warm window is just the old cold path.
+  useEffect(() => {
+    if (mode !== "expanded") return;
+    commands.focusWarm();
+    return () => commands.focusCool();
+  }, [mode]);
+
   // JS-owned hover: mousemove arms it, mouseleave clears it, and the Rust
   // cursor-left event clears it for gutter exits — once the window goes
   // click-through the webview receives no more mouse events at all, so a

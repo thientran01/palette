@@ -192,6 +192,19 @@ export function onSearchShown(cb: () => void): () => void {
   };
 }
 
+/** The focus takeover was just shown (focus.rs open) — a warmed realm
+ * re-keys its arrival choreography on it. Paired with commands.focusShown
+ * (the seed): a COLD open's emit fires while the webview is still loading,
+ * before this listener exists. Mock: never fires (a plain-browser focus
+ * window is always "shown"). */
+export function onFocusShown(cb: () => void): () => void {
+  if (!IN_TAURI) return () => {};
+  const un = listen("focus-shown", () => cb());
+  return () => {
+    un.then((f) => f());
+  };
+}
+
 /** Extra searchable fixtures beyond the ring so the mock search window has more
  * than three answers; their uris aren't in the ring, so playing one
  * exercises the "gone" failure path deliberately. */
@@ -1051,6 +1064,28 @@ export const commands = {
    * handler restores the widget to its exact prior intent. */
   focusClose(): void {
     if (IN_TAURI) void invoke("focus_close");
+  },
+  /** Warm the takeover window (focus.rs ensure — hidden, single-flight),
+   * called on the widget entering expanded: the expand-to-focus rung only
+   * exists there, so entering is the open-intent signal, and the eventual
+   * open lands on an already-painted webview. Mock: no window system. */
+  focusWarm(): void {
+    if (IN_TAURI) void invoke("focus_warm");
+  },
+  /** Destroy a warmed-but-never-OPENED takeover window (focus.rs cool —
+   * gated on focus_open, so an open takeover is never touched), called on
+   * the widget leaving expanded: the intent signal lapsed, and no resident
+   * third webview stays behind at rest. Mock: no window system. */
+  focusCool(): void {
+    if (IN_TAURI) void invoke("focus_cool");
+  },
+  /** Seed for the "focus-shown" event pair (onFocusShown): is this window
+   * already visible? A cold-opened realm mounts AFTER the show and missed
+   * the emit — it reads true here and runs its arrival immediately. Mock:
+   * always shown. */
+  async focusShown(): Promise<boolean> {
+    if (!IN_TAURI) return true;
+    return invoke<boolean>("focus_shown");
   },
   /** Fill up-next with Last.fm-similar tracks for the current track
    * (similar.rs). Statuses: ok:<n> | no_matches | no_data | no_key | busy |

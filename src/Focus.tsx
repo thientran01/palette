@@ -41,7 +41,13 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { MorphIcon } from "./icons/MorphIcon";
-import { commands, onNowPlaying, onSpotifyJump, onSpotifyJumpCancel } from "./lib/backend";
+import {
+  commands,
+  onFocusShown,
+  onNowPlaying,
+  onSpotifyJump,
+  onSpotifyJumpCancel,
+} from "./lib/backend";
 import { useArt, useArtAccent } from "./lib/artAccent";
 import { VOCAL_LEAD_MS } from "./lib/lrc";
 import * as posClock from "./lib/posClock";
@@ -60,7 +66,7 @@ import {
 } from "./Queue";
 import { ProgressBar, Transport } from "./Transport";
 import { SeparatorDot, Waveform } from "./Waveform";
-import type { NowPlaying, SpotifyDevice } from "./types";
+import { IN_TAURI, type NowPlaying, type SpotifyDevice } from "./types";
 
 /** How long the "No synced lyrics" caption stays before fading out — the
  * expanded view's rule (App.tsx NO_LYRICS_CAPTION_MS, kept in step): it's an
@@ -283,6 +289,34 @@ export default function Focus() {
     if (first) return;
     setAnnounceText(np.artist ? `${np.title} — ${np.artist}` : np.title);
   }, [np, announceSuppressed]);
+  // Warm-on-intent (focus.rs): this realm may mount HIDDEN — pre-created
+  // when the widget entered expanded — and show seconds later, or never
+  // (cooled). The arrival choreography (.room-in, the lyric cascade) is
+  // mount-driven, so an unguarded warm mount would play it invisibly and
+  // the takeover would SHOW already at rest. The room therefore keys on
+  // this phase: "focus-shown" (paired with the focus_shown seed, because a
+  // cold open's emit fires before this listener exists) remounts the room
+  // at show, replaying the mount-driven arrival exactly as a cold open
+  // does. Monotonic pending → warming → arrived; each window is shown at
+  // most once (destroy-on-close), so arrived is terminal. A mock realm
+  // (plain browser, /?window=focus) is born arrived — no window system.
+  const [phase, setPhase] = useState<"pending" | "warming" | "arrived">(
+    IN_TAURI ? "pending" : "arrived",
+  );
+  useEffect(() => {
+    if (!IN_TAURI) return;
+    const un = onFocusShown(() => {
+      // A track change while warming wrote announce text into a hidden live
+      // region; the remounted region must not speak it at show — entering
+      // the room "opened ON this track" and seeds silently.
+      setAnnounceText("");
+      setPhase("arrived");
+    });
+    void commands.focusShown().then((shown) => {
+      setPhase((p) => (p === "pending" ? (shown ? "arrived" : "warming") : p));
+    });
+    return un;
+  }, []);
   // The room's queue/history surface — same QueuePanel at room scale, this
   // realm's own open bit (the widget's queueOpen is another window's state).
   // Closed when no session, like the widget (the toggle that opens it is
@@ -330,8 +364,11 @@ export default function Focus() {
     // Queue-gated spend: the panel doesn't mount while the queue owns the
     // column, and a resolve behind it must not burn the cascade unseen —
     // the user's first actual sighting (queue close) earns it instead.
-    if (lyricsLive && !queueOpen) entranceSpent.current = true;
-  }, [lyricsLive, queueOpen]);
+    // Arrival-gated too: lyrics resolving into a WARMED (hidden) realm must
+    // not burn it either — the show's remount replays the cascade, and this
+    // spend fires on the first visible commit, like a cold open's.
+    if (phase === "arrived" && lyricsLive && !queueOpen) entranceSpent.current = true;
+  }, [phase, lyricsLive, queueOpen]);
 
   const caption = lyricsLive
     ? null
@@ -419,10 +456,21 @@ export default function Focus() {
     }),
   };
 
+  // One IPC round trip of blank while the shown-or-warming answer is in
+  // flight — the same bg-surface the pre-React window shows, so a COLD open
+  // never flashes one un-choreographed frame of the room before the arrival
+  // fade plays. Every hook above still runs, so the seeds (now-playing,
+  // lyrics, art) are already warming behind it.
+  if (phase === "pending") {
+    return <div className="h-screen w-screen bg-surface" />;
+  }
+
   return (
     // Opaque room, one 200ms opacity arrival for the whole surface — chrome
     // gets no theater; the lyrics cascade and the hero's own bloom are the
-    // arrival's only choreography.
+    // arrival's only choreography. Keyed on the arrival phase: a warmed
+    // realm remounts the whole room at show ("focus-shown" → arrived), so
+    // the mount-driven arrival plays exactly when the user first sees it.
     //
     // --art / --stack-top: the room's two layout constants, defined ONCE
     // here (every band derives from them — the identity seat, the lyric
@@ -441,7 +489,10 @@ export default function Focus() {
     // row (PR #109) — a remote-device session rides ~10px low.
     // --horizon-mb: the horizon's bottom margin, factored out so the
     // no-lyrics cluster can anchor off the SAME geometry (see its seat).
-    <div className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg [--art:min(560px,46vh,100vh_-_660px,40vw_-_390px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)] [--horizon-mb:calc((93vh_-_212px_-_var(--stack-top)_-_var(--art))/2)]">
+    <div
+      key={phase}
+      className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg [--art:min(560px,46vh,100vh_-_660px,40vw_-_390px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)] [--horizon-mb:calc((93vh_-_212px_-_var(--stack-top)_-_var(--art))/2)]"
+    >
       {/* Corner exit: hover-revealed + the has-[:focus-visible] keyboard
           reveal (the widget's contract). The contract-bracket verb, going
           home. */}

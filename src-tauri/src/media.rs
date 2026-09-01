@@ -113,9 +113,7 @@ impl ArtState {
     fn art_id(&self) -> Option<String> {
         match self {
             ArtState::Pending { .. } => None,
-            ArtState::Cached { key, rev, url, .. } => {
-                url.is_some().then(|| format!("{key}:{rev}"))
-            }
+            ArtState::Cached { key, rev, url, .. } => url.is_some().then(|| format!("{key}:{rev}")),
         }
     }
 }
@@ -125,9 +123,7 @@ impl ArtState {
 /// the frontend treats that as "a newer payload is coming" and retries.
 pub fn art_url(cache: &ArtCache, art_id: &str) -> Option<String> {
     match lock_art(cache).as_ref() {
-        Some(ArtState::Cached { key, rev, url, .. })
-            if format!("{key}:{rev}") == art_id =>
-        {
+        Some(ArtState::Cached { key, rev, url, .. }) if format!("{key}:{rev}") == art_id => {
             url.clone()
         }
         _ => None,
@@ -778,10 +774,7 @@ struct ArtRead {
 #[derive(Clone, Copy)]
 enum ArtSample {
     Pending,
-    Probe {
-        rev: u32,
-        fingerprint: Option<u64>,
-    },
+    Probe { rev: u32, fingerprint: Option<u64> },
 }
 
 /// Pure state transition for a completed art read (read None = the read
@@ -797,7 +790,13 @@ fn apply_art_read(
         // Deferred first read: Pending → Cached at rev 0. A failed read is
         // cached too (url None, art_id stays None — nothing to emit); probe
         // re-reads inside the window get to upgrade it.
-        (Some(ArtState::Pending { key: k, first_seen_ms }), ArtSample::Pending) if k == key => {
+        (
+            Some(ArtState::Pending {
+                key: k,
+                first_seen_ms,
+            }),
+            ArtSample::Pending,
+        ) if k == key => {
             let first_seen_ms = *first_seen_ms;
             let present = read.is_some();
             let (url, fingerprint) = match read {
@@ -1297,7 +1296,11 @@ mod tests {
             None,
         );
         assert!(!emit);
-        assert_eq!(state(&slot), (0, Some(7), false), "no information, no change");
+        assert_eq!(
+            state(&slot),
+            (0, Some(7), false),
+            "no information, no change"
+        );
     }
 
     #[test]
@@ -1348,7 +1351,10 @@ mod tests {
     #[test]
     fn pending_forces_probing_and_rearm_reopens_the_window() {
         let cache = ArtCache(Mutex::new(pending("a")));
-        assert!(art_probing(&cache), "a pending key must keep the loop ticking");
+        assert!(
+            art_probing(&cache),
+            "a pending key must keep the loop ticking"
+        );
         let cache = ArtCache(Mutex::new(cached("a", 0, Some(7), true)));
         assert!(!art_probing(&cache));
         art_rearm(&cache);

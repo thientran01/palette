@@ -786,10 +786,8 @@ mod tests {
     use super::*;
 
     fn step(latch: &mut SilenceLatch, quiet: bool, raw_awake: bool) -> LatchEmit {
-        if latch.is_latched() {
-            if !latch.consider_wake(raw_awake) {
-                return LatchEmit::None;
-            }
+        if latch.is_latched() && !latch.consider_wake(raw_awake) {
+            return LatchEmit::None;
         }
         latch.after_fft(quiet)
     }
