@@ -1,6 +1,5 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
 import ErrorBoundary from "./ErrorBoundary";
 import { commands } from "./lib/backend";
 import { WINDOW_MAX } from "./lib/sizes";
@@ -57,13 +56,19 @@ if (import.meta.env.DEV && params.has("lab")) {
     .catch(() => {
       // Failed lab chunk load must not strand a blank page. Main-window App
       // instance, so it carries the crash hook like the default branch.
-      root.render(
-        <React.StrictMode>
-          <ErrorBoundary onCrash={widenHitToWindow}>
-            <App />
-          </ErrorBoundary>
-        </React.StrictMode>,
-      );
+      import("./App")
+        .then(({ default: App }) => {
+          root.render(
+            <React.StrictMode>
+              <ErrorBoundary onCrash={widenHitToWindow}>
+                <App />
+              </ErrorBoundary>
+            </React.StrictMode>,
+          );
+        })
+        .catch(() => {
+          root.render(<p className="p-4 text-sm text-muted">Widget failed to load.</p>);
+        });
     });
 } else if (params.get("window") === "search") {
   import("./Search")
@@ -112,11 +117,17 @@ if (import.meta.env.DEV && params.has("lab")) {
       root.render(<p className="p-4 text-sm text-muted">Preferences failed to load.</p>);
     });
 } else {
-  root.render(
-    <React.StrictMode>
-      <ErrorBoundary onCrash={widenHitToWindow}>
-        <App />
-      </ErrorBoundary>
-    </React.StrictMode>,
-  );
+  import("./App")
+    .then(({ default: App }) => {
+      root.render(
+        <React.StrictMode>
+          <ErrorBoundary onCrash={widenHitToWindow}>
+            <App />
+          </ErrorBoundary>
+        </React.StrictMode>,
+      );
+    })
+    .catch(() => {
+      root.render(<p className="p-4 text-sm text-muted">Widget failed to load.</p>);
+    });
 }
