@@ -38,7 +38,7 @@ import { commands, onSearchShown } from "./lib/backend";
 import { RowThumb, useSpotifyStatus } from "./Queue";
 import { playNowNote } from "./lib/playNowStatus";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
-import type { HistoryEntry, QueueTrack } from "./types";
+import { IN_TAURI, type HistoryEntry, type QueueTrack } from "./types";
 
 const RESULT_LIMIT = 8;
 const DEBOUNCE_MS = 250;
@@ -459,6 +459,10 @@ export default function Search() {
   // not snap keyboard navigation back to whatever row it happens to cover
   // (quick-review catch).
   const lastMouse = useRef<{ x: number; y: number } | null>(null);
+  // Hidden at launch (search.rs create-once-hidden). Empty-state fetches wait
+  // for the first search-shown. The browser mock never fires that event (the
+  // page is already the shown window), so the mock starts already-shown.
+  const shownRef = useRef(!IN_TAURI);
 
   const showNote = (msg: string, holdMs = 2400) => {
     setNote(msg);
@@ -624,6 +628,7 @@ export default function Search() {
   useEffect(
     () =>
       onSearchShown(() => {
+        shownRef.current = true;
         inputRef.current?.focus();
         inputRef.current?.select();
         setNote(null);
@@ -636,12 +641,13 @@ export default function Search() {
       }),
     [refreshEmptyState],
   );
-  // Mount + whenever the Spotify connection resolves/flips: the initial
-  // render is disconnected until the status seed lands, and discovery needs a
-  // live session — so recompute when it settles (also refills discovery after
-  // a reconnect without waiting for the next summon).
+  // After the first show, a Spotify connect flip refills discovery without
+  // waiting for the next summon. Skip while still hidden so a launch-time
+  // status seed does not scan history or hit Last.fm for a window nobody
+  // summoned. After the first show this is the same flip-refresh as before.
   useEffect(() => {
     inputRef.current?.focus();
+    if (!shownRef.current) return;
     refreshCount.current = 0;
     discoveryShown.current.clear();
     void refreshEmptyState(0);
