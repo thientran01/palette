@@ -206,7 +206,13 @@ fn covers(inner: &RECT, outer: &RECT) -> bool {
 /// foreground window at all (lock screen / UAC secure desktop) — the caller
 /// must HOLD its current fullscreen state then, never reset it: the secure
 /// desktop says nothing about what's behind it.
-fn sample(widget_hwnd: Option<HWND>, own_pid: u32) -> Option<PresenceDebug> {
+///
+/// `want_exe` is the debug-subscriber flag. `exe_name` (OpenProcess +
+/// QueryFullProcessImageNameW) feeds only the presence-debug stream and a
+/// debug-level log line; the conceal verdict never reads it. Off → empty
+/// `fg_exe`. The settled "presence" payload is PresenceState (fullscreen,
+/// concealed) so this cannot trip that event's diff-suppression.
+fn sample(widget_hwnd: Option<HWND>, own_pid: u32, want_exe: bool) -> Option<PresenceDebug> {
     unsafe {
         let quns = SHQueryUserNotificationState().map(|s| s.0).unwrap_or(-1);
 
@@ -275,7 +281,11 @@ fn sample(widget_hwnd: Option<HWND>, own_pid: u32) -> Option<PresenceDebug> {
             || quns == 4; // PRESENTATION_MODE
 
         Some(PresenceDebug {
-            fg_exe: exe_name(pid),
+            fg_exe: if want_exe {
+                exe_name(pid)
+            } else {
+                String::new()
+            },
             fg_class: class,
             fg_pid: pid,
             rect_verdict,
@@ -321,7 +331,8 @@ pub fn spawn(app: AppHandle) {
                     .and_then(|w| w.hwnd().ok())
                     .map(|h| HWND(h.0));
 
-                let sampled = sample(widget_hwnd, own_pid);
+                let debug = app.state::<Presence>().debug.load(Ordering::Relaxed);
+                let sampled = sample(widget_hwnd, own_pid, debug);
                 // No foreground window (secure desktop): hold every derived
                 // state exactly where it was — emit nothing, decide nothing.
                 let Some(mut dbg) = sampled else {
@@ -347,6 +358,10 @@ pub fn spawn(app: AppHandle) {
                 // restores it and clears any manual-show snooze. All show/hide
                 // flows through apply_visibility, so a manual hide stays sticky
                 // and a snoozed episode stays visible without special cases here.
+                // apply_visibility → emit_now is a full GSMTC snapshot and can
+                // block for seconds behind WinRT; running it here would stall
+                // the 1s watcher and miss the next fullscreen transition. Same
+                // defer_main_action seam as hotkey/tray/summons.
                 let vis = app.state::<crate::VisIntent>();
                 let companion = vis.companion.load(Ordering::Relaxed);
                 let mut restore_pending = false;
@@ -357,15 +372,16 @@ pub fn spawn(app: AppHandle) {
                     if !vis.concealed.load(Ordering::Relaxed) && !crate::dock::primary_button_down()
                     {
                         vis.concealed.store(true, Ordering::Relaxed);
-                        crate::apply_visibility(&app);
+                        crate::defer_main_action(&app, crate::apply_visibility);
                     }
                 } else if vis.concealed.load(Ordering::Relaxed) {
                     vis.concealed.store(false, Ordering::Relaxed);
                     vis.conceal_snoozed.store(false, Ordering::Relaxed);
                     // Restore AFTER the emit below: the still-hidden webview
                     // gets the new state first, so the show lands with current
-                    // layout/hover state instead of a stale frame. Hides stay
-                    // immediate — there's nothing to mis-show on the way out.
+                    // layout/hover state instead of a stale frame. The hide
+                    // is queued the same way — apply_visibility never runs
+                    // on this thread.
                     restore_pending = true;
                 }
 
@@ -415,10 +431,10 @@ pub fn spawn(app: AppHandle) {
                 }
 
                 if restore_pending {
-                    crate::apply_visibility(&app);
+                    crate::defer_main_action(&app, crate::apply_visibility);
                 }
 
-                if presence.debug.load(Ordering::Relaxed) {
+                if debug {
                     dbg.fs_settled = fs_settled;
                     let _ = app.emit("presence-debug", &dbg);
                 }

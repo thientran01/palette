@@ -88,8 +88,8 @@ const DEBOUNCE_MS: u64 = 200;
 const FRAME_MS: u64 = 8;
 /// Drag-release watcher poll interval.
 const WATCH_MS: u64 = 60;
-/// Hit watcher cadence: fast while the cursor is near the window (the gate
-/// must flip before a click can land), relaxed when it's far away.
+/// Hit watcher cadence: fast while the cursor is near the interactive hit
+/// rect (the gate must flip before a click can land), relaxed when it's far.
 const HIT_NEAR_MS: u64 = 8;
 const HIT_FAR_MS: u64 = 40;
 /// While hidden the watcher PARKS on Dock::show_signal instead of polling — a
@@ -98,8 +98,8 @@ const HIT_FAR_MS: u64 = 40;
 /// post-show staleness). This is just the park's safety-timeout: if a wake
 /// signal were ever missed the watcher re-checks visibility this often, so a
 /// bug degrades to a slow correction, never a wedge or a stuck click-through.
-const HIT_PARK_SAFETY_MS: u64 = 250;
-/// "Near" halo around the window rect that switches the fast cadence on.
+const HIT_PARK_SAFETY_MS: u64 = 2000;
+/// "Near" halo around the interactive hit rect that switches the fast cadence on.
 const HIT_NEAR_PAD: i32 = 64;
 /// Post-corner-change grace: the webview shell glides to its new seat for
 /// SNAP_MS (App.tsx FLIP), so until it lands the corner-anchored hit rect
@@ -1068,11 +1068,15 @@ pub fn spawn_hit_watcher(window: WebviewWindow) {
                         {
                             let (wx, wy) = (pos.x, pos.y);
                             let (ww, wh) = (size.width as i32, size.height as i32);
-                            near = p.x >= wx - HIT_NEAR_PAD
-                                && p.x < wx + ww + HIT_NEAR_PAD
-                                && p.y >= wy - HIT_NEAR_PAD
-                                && p.y < wy + wh + HIT_NEAR_PAD;
+                            // Near keys on the same rect as the ignore gate
+                            // (frontend hit box, or the whole window during
+                            // HIT_GRACE_MS). The oversized WINDOW_MAX gutter
+                            // must not run the 8ms path against thin air.
                             let (l, t, hw, hh) = hit_rect(&window, wx, wy, ww, wh);
+                            near = p.x >= l - HIT_NEAR_PAD
+                                && p.x < l + hw + HIT_NEAR_PAD
+                                && p.y >= t - HIT_NEAR_PAD
+                                && p.y < t + hh + HIT_NEAR_PAD;
                             let inside = p.x >= l && p.x < l + hw && p.y >= t && p.y < t + hh;
                             // inside == ignoring means the state is wrong-way —
                             // flip it, unless a press is in flight. The mirror
