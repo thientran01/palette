@@ -156,6 +156,7 @@ impl Candidate {
 
 /// One (started_at, byte offset) pair per well-formed line of history.jsonl,
 /// in file (≈ chronological) order.
+#[derive(Clone, Copy)]
 struct IndexEntry {
     started_at_ms: i64,
     offset: u64,
@@ -452,56 +453,61 @@ impl Inner {
             }
         }
     }
+}
 
-    /// Newest-first page of entries strictly older than `before` (None = from
-    /// the newest). The index is in append order, ≈ ascending started_at — a
-    /// wall-clock jump can locally disorder it, in which case partition_point
-    /// lands on a valid nearby boundary (accepted; entries are never lost,
-    /// only page boundaries shift).
-    fn page(&self, before_started_at_ms: Option<i64>, limit: usize) -> Vec<HistoryEntry> {
-        let Some(dir) = &self.dir else {
-            return Vec::new();
-        };
-        let end = match before_started_at_ms {
-            Some(ts) => self.index.partition_point(|e| e.started_at_ms < ts),
-            None => self.index.len(),
-        };
-        if end == 0 || limit == 0 {
-            return Vec::new();
-        }
-        let Ok(file) = std::fs::File::open(log_path(dir)) else {
-            return Vec::new();
-        };
-        let mut reader = BufReader::new(file);
-        let mut out = Vec::with_capacity(limit);
-        // Fill-to-limit, newest→oldest: skip non-music rows and keep scanning
-        // rather than taking a fixed window, so a page short of `limit` means
-        // "reached the start" — the exhausted signal both consumers rely on
-        // (Search RESURFACE scan, Queue loadMore). Deliberately uncapped: the
-        // cursor advances past the oldest RETURNED row each loadMore, so rows
-        // above it are never re-read — total work is O(index) across a full
-        // scroll, not per-call. A scan cap would be wrong here: returning
-        // < limit while music remains below would falsely mark the feed
-        // exhausted and silently truncate it.
-        for i in (0..end).rev() {
-            if out.len() >= limit {
-                break;
-            }
-            if reader.seek(SeekFrom::Start(self.index[i].offset)).is_err() {
-                continue;
-            }
-            let mut line = String::new();
-            if reader.read_line(&mut line).is_err() {
-                continue;
-            }
-            if let Ok(e) = serde_json::from_str::<HistoryEntry>(line.trim_end()) {
-                if is_music(&e) {
-                    out.push(e);
-                }
-            }
-        }
-        out
+/// Index prefix a `before` cursor selects: entries strictly older than
+/// `before` (None = the whole index). The index is in append order, ≈
+/// ascending started_at — a wall-clock jump can locally disorder it, in
+/// which case partition_point lands on a valid nearby boundary (accepted;
+/// entries are never lost, only page boundaries shift).
+fn snapshot_offsets(index: &[IndexEntry], before_started_at_ms: Option<i64>) -> &[IndexEntry] {
+    let end = match before_started_at_ms {
+        Some(ts) => index.partition_point(|e| e.started_at_ms < ts),
+        None => index.len(),
+    };
+    &index[..end]
+}
+
+/// Newest-first fill-to-limit over a snapshotted index prefix. Skips
+/// non-music rows and keeps scanning rather than taking a fixed window, so
+/// a page short of `limit` means "reached the start" — the exhausted signal
+/// both consumers rely on (Search RESURFACE scan, Queue loadMore).
+/// Deliberately uncapped: the caller cursor advances past the oldest
+/// RETURNED row each loadMore, so rows above it are never re-read — total
+/// work is O(index) across a full scroll, not per-call. A scan cap would be
+/// wrong here: returning < limit while music remains below would falsely
+/// mark the feed exhausted and silently truncate it.
+///
+/// File I/O lives here, never under the Inner lock. The snapshot is a copy
+/// of offsets; appends only add to the end of the file and the index, so
+/// they cannot invalidate a prefix already taken.
+fn read_page(path: &Path, index: &[IndexEntry], limit: usize) -> Vec<HistoryEntry> {
+    if index.is_empty() || limit == 0 {
+        return Vec::new();
     }
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let mut reader = BufReader::new(file);
+    let mut out = Vec::with_capacity(limit);
+    for entry in index.iter().rev() {
+        if out.len() >= limit {
+            break;
+        }
+        if reader.seek(SeekFrom::Start(entry.offset)).is_err() {
+            continue;
+        }
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() {
+            continue;
+        }
+        if let Ok(e) = serde_json::from_str::<HistoryEntry>(line.trim_end()) {
+            if is_music(&e) {
+                out.push(e);
+            }
+        }
+    }
+    out
 }
 
 /// Music gate: Search + queue history are Apple Music / Spotify only.
@@ -576,20 +582,32 @@ pub async fn history_page(
 ) -> Result<Vec<HistoryEntry>, ()> {
     tauri::async_runtime::spawn_blocking(move || {
         let tracker = app.state::<Tracker>();
-        let mut inner = lock(&tracker);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !inner.index_ready {
-            let now = Instant::now();
-            if now >= deadline {
-                break;
+        let limit = (limit as usize).min(200);
+        let snap = {
+            let mut inner = lock(&tracker);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !inner.index_ready {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                let (guard, _) = tracker
+                    .index_built
+                    .wait_timeout(inner, deadline - now)
+                    .unwrap_or_else(PoisonError::into_inner);
+                inner = guard;
             }
-            let (guard, _) = tracker
-                .index_built
-                .wait_timeout(inner, deadline - now)
-                .unwrap_or_else(PoisonError::into_inner);
-            inner = guard;
+            inner.dir.as_ref().map(|dir| {
+                (
+                    dir.clone(),
+                    snapshot_offsets(&inner.index, before_started_at_ms).to_vec(),
+                )
+            })
+        };
+        match snap {
+            Some((dir, slice)) => read_page(&log_path(&dir), &slice, limit),
+            None => Vec::new(),
         }
-        inner.page(before_started_at_ms, (limit as usize).min(200))
     })
     .await
     .map_err(|_| ())
@@ -749,5 +767,131 @@ mod tests {
         assert!(!is_music(&entry("other", "video")));
         assert!(!is_music(&entry("other", "")));
         assert!(!is_music(&entry("none", "music")));
+    }
+
+    fn ie(started_at_ms: i64, offset: u64) -> IndexEntry {
+        IndexEntry {
+            started_at_ms,
+            offset,
+        }
+    }
+
+    fn entry_at(player: &str, media_kind: &str, started_at_ms: i64) -> HistoryEntry {
+        let mut e = entry(player, media_kind);
+        e.started_at_ms = started_at_ms;
+        e
+    }
+
+    fn temp_dir() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "palette-hist-page-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn write_log(dir: &Path, rows: &[HistoryEntry]) -> Vec<IndexEntry> {
+        let _ = std::fs::remove_file(log_path(dir));
+        rows.iter()
+            .map(|row| IndexEntry {
+                started_at_ms: row.started_at_ms,
+                offset: append(dir, row).expect("append"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn snapshot_offsets_none_is_whole_index() {
+        let idx = [ie(10, 0), ie(20, 10), ie(30, 20)];
+        assert_eq!(snapshot_offsets(&idx, None).len(), 3);
+    }
+
+    #[test]
+    fn snapshot_offsets_before_cuts_at_partition() {
+        let idx = [ie(10, 0), ie(20, 10), ie(30, 20)];
+        let snap = snapshot_offsets(&idx, Some(30));
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].started_at_ms, 10);
+        assert_eq!(snap[1].started_at_ms, 20);
+    }
+
+    #[test]
+    fn read_page_skips_non_music_and_fills_limit() {
+        let dir = temp_dir();
+        let rows = [
+            entry_at("spotify", "music", 10),
+            entry_at("other", "music", 20),
+            entry_at("apple_music", "music", 30),
+            entry_at("other", "video", 40),
+            entry_at("spotify", "music", 50),
+        ];
+        let index = write_log(&dir, &rows);
+        let page = read_page(&log_path(&dir), &index, 2);
+        assert_eq!(
+            page.iter().map(|e| e.started_at_ms).collect::<Vec<_>>(),
+            vec![50, 30]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_page_short_of_limit_means_exhausted() {
+        let dir = temp_dir();
+        let rows = [
+            entry_at("spotify", "music", 10),
+            entry_at("spotify", "music", 20),
+            entry_at("spotify", "music", 30),
+        ];
+        let index = write_log(&dir, &rows);
+        let page = read_page(&log_path(&dir), &index, 10);
+        assert_eq!(page.len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_page_ignores_rows_appended_after_snapshot() {
+        let dir = temp_dir();
+        let rows = [
+            entry_at("spotify", "music", 10),
+            entry_at("spotify", "music", 20),
+            entry_at("spotify", "music", 30),
+        ];
+        let snap = write_log(&dir, &rows);
+        append(&dir, &entry_at("spotify", "music", 40)).expect("append after snapshot");
+        let page = read_page(&log_path(&dir), &snap, 10);
+        assert_eq!(
+            page.iter().map(|e| e.started_at_ms).collect::<Vec<_>>(),
+            vec![30, 20, 10]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_more_cursor_does_not_overlap() {
+        let dir = temp_dir();
+        let rows = [
+            entry_at("spotify", "music", 10),
+            entry_at("spotify", "music", 20),
+            entry_at("spotify", "music", 30),
+            entry_at("spotify", "music", 40),
+        ];
+        let index = write_log(&dir, &rows);
+        let first = read_page(&log_path(&dir), snapshot_offsets(&index, None), 2);
+        assert_eq!(
+            first.iter().map(|e| e.started_at_ms).collect::<Vec<_>>(),
+            vec![40, 30]
+        );
+        let oldest = first.last().unwrap().started_at_ms;
+        let second = read_page(&log_path(&dir), snapshot_offsets(&index, Some(oldest)), 2);
+        assert_eq!(
+            second.iter().map(|e| e.started_at_ms).collect::<Vec<_>>(),
+            vec![20, 10]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
