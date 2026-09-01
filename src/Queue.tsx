@@ -36,6 +36,7 @@ import type {
   SpotifyDevice,
   SpotifyStatus,
 } from "./types";
+import { SeparatorDot } from "./Waveform";
 
 const HISTORY_PAGE = 30;
 /** Popover garment box (the handoff's 312×330, height re-derived from the
@@ -45,11 +46,11 @@ export const POPOVER_GAP = 12;
 
 /** Per-scale clothes + physics (the LyricsPanel SCALE precedent: same
  * grammar, two rooms). "base" is the widget's 44px grid — rowH is the drag
- * math's grid, swapAt just past half a row. "room" dresses the SAME panel
- * for the focus takeover's content column, where the widget-sized rows read
- * as a miniature lost in the room (Thien, 2026-07-16): taller rows, bigger
- * art, type stepped up one rung. Row height and the swap threshold move
- * together — the reorder drag and the ghost drop compute in rowH units. */
+ * math's grid, swapAt just past half a row. "room" is the focus takeover's
+ * setlist (2026-09-01): a reading column, not a one-rung-up popover —
+ * taller rows, 52px art, type in the room's metadata register. Row height
+ * and the swap threshold move together — the reorder drag and the ghost
+ * drop compute in rowH units. */
 export type QueueScale = "base" | "room";
 const QSCALE = {
   base: {
@@ -70,18 +71,18 @@ const QSCALE = {
     glyph: 13,
   },
   room: {
-    rowH: 56,
-    swapAt: 32,
-    thumb: 40,
-    row: "h-[56px] gap-3 rounded-lg px-2",
-    title: "text-[15px]",
-    artist: "text-[13px]",
-    label: "text-[11px]",
-    toast: "text-[12px]",
-    prose: "text-[13px]",
-    btn: "h-[30px] w-[30px]",
-    grip: "h-[30px] w-[20px]",
-    glyph: 15,
+    rowH: 68,
+    swapAt: 38,
+    thumb: 52,
+    row: "h-[68px] gap-4 rounded-xl px-1",
+    title: "text-[20px] leading-tight",
+    artist: "text-[15px] leading-5",
+    label: "text-[15px]",
+    toast: "text-[15px]",
+    prose: "text-[15px] leading-5",
+    btn: "h-[36px] w-[36px]",
+    grip: "h-[36px] w-[22px]",
+    glyph: 16,
   },
 } as const satisfies Record<QueueScale, unknown>;
 type QueueScaleSpec = (typeof QSCALE)[QueueScale];
@@ -432,11 +433,26 @@ function SparkleGlyph({ size = 13 }: { size?: number }) {
   );
 }
 
-function RowDuration({ ms, s }: { ms: number; s: QueueScaleSpec }) {
-  if (ms <= 0) return null;
+/** Artist line, with duration packed beside the name (room setlist) so a
+ * far-right time column never appears. Duration is omitted at 0 / missing. */
+function RowMeta({
+  artist,
+  durationMs,
+  s,
+}: {
+  artist: string;
+  durationMs?: number;
+  s: QueueScaleSpec;
+}) {
   return (
-    <span className={`w-[3.25em] shrink-0 text-right tabular-nums ${s.artist} text-muted`}>
-      {fmt(ms)}
+    <span className="flex min-w-0 items-baseline">
+      <span className={`truncate ${s.artist} text-muted`}>{artist}</span>
+      {durationMs !== undefined && durationMs > 0 && (
+        <>
+          <SeparatorDot />
+          <span className={`${s.artist} shrink-0 tabular-nums text-muted`}>{fmt(durationMs)}</span>
+        </>
+      )}
     </span>
   );
 }
@@ -465,8 +481,8 @@ const QueueRowBase = function QueueRow({
   settleDy: number;
   flash: boolean;
   s: QueueScaleSpec;
-  /** Wide focus pane — duration has room on the trailing edge. Compact
-   * garments stay title/artist only (the 312px popover can't spare it). */
+  /** Room setlist packs duration on the artist line. Widget garments stay
+   * title/artist only (the 312px popover can't spare it). */
   showDuration: boolean;
   onDragStart: (e: React.PointerEvent, index: number) => void;
   onRemove: (uri: string) => void;
@@ -492,7 +508,7 @@ const QueueRowBase = function QueueRow({
       <RowThumb url={track.art_url} size={s.thumb} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className={`truncate ${s.title} font-medium text-fg`}>{track.title}</span>
-        <span className={`truncate ${s.artist} text-muted`}>{track.artist}</span>
+        <RowMeta artist={track.artist} durationMs={showDuration ? track.duration_ms : undefined} s={s} />
       </span>
       <span
         aria-hidden
@@ -503,7 +519,6 @@ const QueueRowBase = function QueueRow({
       <RowActionButton label="Remove from queue" onClick={() => onRemove(track.uri)} s={s}>
         <CrossGlyph size={s.glyph - 1} />
       </RowActionButton>
-      {showDuration && <RowDuration ms={track.duration_ms} s={s} />}
     </div>
   );
 };
@@ -549,7 +564,7 @@ const HistoryRowBase = function HistoryRow({
       <RowThumb url={thumb} size={s.thumb} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className={`truncate ${s.title} font-medium text-fg`}>{entry.title}</span>
-        <span className={`truncate ${s.artist} text-muted`}>{entry.artist}</span>
+        <RowMeta artist={entry.artist} durationMs={showDuration ? entry.duration_ms : undefined} s={s} />
       </span>
       {actionable && (
         <>
@@ -561,7 +576,6 @@ const HistoryRowBase = function HistoryRow({
           </RowActionButton>
         </>
       )}
-      {showDuration && <RowDuration ms={entry.duration_ms} s={s} />}
     </div>
   );
 };
@@ -615,20 +629,17 @@ export function QueuePanel({
   connected,
   open,
   scale = "base",
-  pane = false,
 }: {
   np: NowPlaying | null;
   connected: boolean;
   /** The history feed activates on first open; rows stay mounted after. */
   open: boolean;
   /** Garment scale: "base" for the widget's popover/expanded garments,
-   * "room" for the focus takeover's content column (see QSCALE). */
+   * "room" for the focus takeover's setlist (see QSCALE). */
   scale?: QueueScale;
-  /** Focus room at the wide breakpoint: full-width rows, trailing duration.
-   * The widget garments never pass this. */
-  pane?: boolean;
 }) {
   const s = QSCALE[scale];
+  const room = scale === "room";
   const upnext = useUpNext();
   const { entries, loadMore, exhausted } = useHistoryFeed(open);
   const spotifyActive = np?.player === "spotify";
@@ -1134,14 +1145,27 @@ export function QueuePanel({
       onScroll={onScroll}
       className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain [scrollbar-width:none]"
     >
-      <div className="px-2 pb-0.5 pt-1.5">
-        <div className="flex items-center gap-1.5">
-          <span className={`${s.label} uppercase tracking-widest text-muted`}>
-            Up next{rows.length > 0 && ` · ${rows.length}`}
-          </span>
-          <span className={`${s.label} text-muted/85`}>
-            {queueLive ? "Spotify · drag to reorder" : "Spotify"}
-          </span>
+      <div className={room ? "px-1 pb-3 pt-1" : "px-2 pb-0.5 pt-1.5"}>
+        <div className={room ? "flex items-end gap-3" : "flex items-center gap-1.5"}>
+          {room ? (
+            <div className="min-w-0 flex-1">
+              <p className="text-[22px] font-medium leading-tight text-fg">
+                Up next{rows.length > 0 && ` · ${rows.length}`}
+              </p>
+              <p className={`${s.label} mt-0.5 text-muted/85`}>
+                {queueLive ? "Spotify · drag to reorder" : "Spotify"}
+              </p>
+            </div>
+          ) : (
+            <>
+              <span className={`${s.label} uppercase tracking-widest text-muted`}>
+                Up next{rows.length > 0 && ` · ${rows.length}`}
+              </span>
+              <span className={`${s.label} text-muted/85`}>
+                {queueLive ? "Spotify · drag to reorder" : "Spotify"}
+              </span>
+            </>
+          )}
           {/* More-like-this: fills the list with Last.fm-similar tracks for
               the CURRENT track — seated where its output lands. HIDDEN without a
               Last.fm key (an enabled button whose only answer is "add a key" is a
@@ -1220,7 +1244,7 @@ export function QueuePanel({
                 settleDy={settle && settle.index === i && drag?.index !== i ? settle.dy : 0}
                 flash={flashUris.has(t.uri)}
                 s={s}
-                showDuration={pane}
+                showDuration={room}
                 onDragStart={rowActions.onDragStart}
                 onRemove={rowActions.onRemove}
                 onKeyDown={rowActions.onKeyDown}
@@ -1229,8 +1253,12 @@ export function QueuePanel({
           });
         })()}
       </div>
-      <div className="px-2 pb-0.5 pt-2.5">
-        <span className={`${s.label} uppercase tracking-widest text-muted`}>Earlier</span>
+      <div className={room ? "px-1 pb-2 pt-8" : "px-2 pb-0.5 pt-2.5"}>
+        {room ? (
+          <p className="text-[22px] font-medium leading-tight text-fg">Earlier</p>
+        ) : (
+          <span className={`${s.label} uppercase tracking-widest text-muted`}>Earlier</span>
+        )}
       </div>
       <div role="list" aria-label="Earlier" className="flex flex-col">
         {entries.length === 0 && (
@@ -1249,7 +1277,7 @@ export function QueuePanel({
             entry={e}
             actionable={queueLive}
             s={s}
-            showDuration={pane}
+            showDuration={room}
             onPlayNow={rowActions.onPlayNow}
             onAdd={rowActions.onAdd}
             onGhostStart={rowActions.onGhostStart}
