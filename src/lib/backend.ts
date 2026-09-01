@@ -1014,7 +1014,7 @@ export const commands = {
       verse(84, 100);
       verse(124, 156); // unmarked gap before this verse keeps the prior lyric
       lines.push(`${stamp(160)} `); // vocal-end marker → outro to durationMs
-      return { synced: lines.join("\n"), plain: null };
+      return { synced: lines.join("\n") };
     }
     return lyricsLatestWins(() => invoke("media_lyrics", { artist, title, album, durationMs }));
   },
@@ -1272,9 +1272,9 @@ export const commands = {
 /** `offline` (lyrics.rs) distinguishes a transport failure from a served "no
  * lyrics" answer, so a caption can read "unavailable — offline" vs "No synced
  * lyrics". Optional/false everywhere except a genuine offline bail. */
-type Lyrics = { synced: string | null; plain: string | null; offline?: boolean };
-const LYRICS_MISS: Lyrics = { synced: null, plain: null };
-const LYRICS_OFFLINE: Lyrics = { synced: null, plain: null, offline: true };
+type Lyrics = { synced: string | null; offline?: boolean };
+const LYRICS_MISS: Lyrics = { synced: null };
+const LYRICS_OFFLINE: Lyrics = { synced: null, offline: true };
 
 let lyricsGen = 0;
 
@@ -1286,12 +1286,9 @@ let lyricsGen = 0;
  * fetch from even STARTING — the "next song sits ~10s before lyrics show up"
  * stall. Here every call invokes immediately; a fetch superseded by a newer one
  * resolves to a miss (its track key is already stale, so useLyrics' lastKey
- * guard drops it regardless). There is no hard concurrency cap: a fast scrub
- * through several uncached tracks can put a few fetches in flight at once, and
- * a quick A→B→A flip can even fetch A twice before its cache write lands. That
- * is acceptable here — fetches are human-paced and idempotent, and each track
- * short-circuits on the Rust-side disk cache / session-miss set next time — but
- * it is NOT the prior single-flight gate's hard "one in flight" guarantee.
+ * guard drops it regardless). The Rust registry caps NETWORK fetches at 2 and
+ * joins same-key callers; this latest-wins layer stays as the last defense
+ * for a result that still arrives after the UI has moved on.
  */
 function lyricsLatestWins(start: () => Promise<Lyrics>): Promise<Lyrics> {
   const gen = ++lyricsGen;

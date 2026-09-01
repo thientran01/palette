@@ -13,10 +13,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::settings::{json_capped, JSON_CAP};
@@ -45,6 +45,8 @@ struct Offline;
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Lyrics {
     pub synced: Option<String>,
+    /// Disk-cache + picker only. The frontend never reads it; `LyricsOut`
+    /// is what `media_lyrics` serializes.
     pub plain: Option<String>,
     /// True only when the fetch bailed on a transport failure (offline, DNS,
     /// timeout) rather than a served "no lyrics" answer — lets the caption
@@ -54,6 +56,23 @@ pub struct Lyrics {
     /// never an offline result.
     #[serde(default)]
     pub offline: bool,
+}
+
+/// IPC payload for `media_lyrics`. Omits `plain` (unread in `src/`).
+#[derive(Serialize, Clone, Default)]
+pub struct LyricsOut {
+    pub synced: Option<String>,
+    #[serde(default)]
+    pub offline: bool,
+}
+
+impl From<Lyrics> for LyricsOut {
+    fn from(lyrics: Lyrics) -> Self {
+        Self {
+            synced: lyrics.synced,
+            offline: lyrics.offline,
+        }
+    }
 }
 
 impl Lyrics {
@@ -252,6 +271,269 @@ fn evict_old(cache_dir: &Path) {
     }
 }
 
+/// Cap on concurrent LRCLIB HTTP fetches. Same-key callers join; a new key
+/// at cap replaces the single not-yet-started waiter (newest wins). Running
+/// ureq calls cannot be cancelled and still write the disk cache.
+const NETWORK_CAP: usize = 2;
+
+enum Phase {
+    Waiting,
+    Running,
+    Done(Lyrics),
+    Evicted,
+}
+
+struct Slot {
+    phase: Mutex<Phase>,
+    cv: Condvar,
+}
+
+enum Enter {
+    Start(Arc<Slot>),
+    Join(Arc<Slot>),
+    Park(Arc<Slot>),
+}
+
+/// Process-wide in-flight network fetches, keyed by cache key.
+///
+/// Join waits on the slot condvar, not the registry mutex. `enter` /
+/// `release` / `evict` take the registry lock, touch a slot, and drop the
+/// registry lock before any wait or ureq call, so the owner can always
+/// publish. Waiters therefore cannot deadlock.
+struct FetchRegistry {
+    inner: Mutex<Inner>,
+    #[cfg(test)]
+    joins: std::sync::atomic::AtomicUsize,
+}
+
+struct Inner {
+    running: HashMap<String, Arc<Slot>>,
+    /// At most one not-yet-started key. A newer key displaces it.
+    waiting: Option<(String, Arc<Slot>)>,
+}
+
+impl Slot {
+    fn new(phase: Phase) -> Arc<Self> {
+        Arc::new(Self {
+            phase: Mutex::new(phase),
+            cv: Condvar::new(),
+        })
+    }
+
+    fn lock_phase(&self) -> std::sync::MutexGuard<'_, Phase> {
+        self.phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn publish(&self, lyrics: Lyrics) {
+        let mut g = self.lock_phase();
+        *g = Phase::Done(lyrics);
+        self.cv.notify_all();
+    }
+
+    fn evict(&self) {
+        let mut g = self.lock_phase();
+        *g = Phase::Evicted;
+        self.cv.notify_all();
+    }
+
+    fn promote(&self) {
+        let mut g = self.lock_phase();
+        if matches!(*g, Phase::Waiting) {
+            *g = Phase::Running;
+        }
+        self.cv.notify_all();
+    }
+
+    fn wait_done(&self) -> Lyrics {
+        let mut g = self.lock_phase();
+        loop {
+            let done = match &*g {
+                Phase::Done(lyrics) => Some(lyrics.clone()),
+                Phase::Evicted => Some(Lyrics::default()),
+                Phase::Waiting | Phase::Running => None,
+            };
+            if let Some(lyrics) = done {
+                return lyrics;
+            }
+            g = self
+                .cv
+                .wait(g)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn wait_run_or_evict(&self) -> bool {
+        let mut g = self.lock_phase();
+        loop {
+            let resume = match &*g {
+                Phase::Waiting => None,
+                Phase::Evicted => Some(false),
+                Phase::Running | Phase::Done(_) => Some(true),
+            };
+            if let Some(run) = resume {
+                return run;
+            }
+            g = self
+                .cv
+                .wait(g)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
+impl FetchRegistry {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(Inner {
+                running: HashMap::new(),
+                waiting: None,
+            }),
+            #[cfg(test)]
+            joins: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn run(&self, key: String, work: impl FnOnce() -> Lyrics) -> Lyrics {
+        match self.enter(key.clone()) {
+            Enter::Start(slot) => self.drive(key, slot, work),
+            Enter::Join(slot) => slot.wait_done(),
+            Enter::Park(slot) => {
+                if !slot.wait_run_or_evict() {
+                    return Lyrics::default();
+                }
+                {
+                    let g = slot.lock_phase();
+                    match &*g {
+                        Phase::Done(lyrics) => return lyrics.clone(),
+                        Phase::Evicted | Phase::Waiting => return Lyrics::default(),
+                        Phase::Running => {}
+                    }
+                }
+                self.drive(key, slot, work)
+            }
+        }
+    }
+
+    fn enter(&self, key: String) -> Enter {
+        let mut inner = self.lock();
+        if let Some(slot) = inner.running.get(&key) {
+            let slot = Arc::clone(slot);
+            drop(inner);
+            #[cfg(test)]
+            self.joins.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return Enter::Join(slot);
+        }
+        if let Some((wait_key, slot)) = inner.waiting.as_ref() {
+            if wait_key == &key {
+                let slot = Arc::clone(slot);
+                drop(inner);
+                #[cfg(test)]
+                self.joins.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Enter::Join(slot);
+            }
+        }
+        if inner.running.len() < NETWORK_CAP {
+            let slot = Slot::new(Phase::Running);
+            inner.running.insert(key, Arc::clone(&slot));
+            log::info!("lyrics network start ({} in flight)", inner.running.len());
+            return Enter::Start(slot);
+        }
+        if let Some((wait_key, slot)) = inner.waiting.take() {
+            log::info!("lyrics drop waiter {wait_key}, newest wins");
+            slot.evict();
+        }
+        let slot = Slot::new(Phase::Waiting);
+        inner.waiting = Some((key, Arc::clone(&slot)));
+        Enter::Park(slot)
+    }
+
+    fn drive(&self, key: String, slot: Arc<Slot>, work: impl FnOnce() -> Lyrics) -> Lyrics {
+        let guard = DriveGuard {
+            reg: self,
+            key,
+            slot,
+            done: false,
+        };
+        let lyrics = work();
+        guard.finish(lyrics.clone());
+        lyrics
+    }
+
+    fn release(&self, key: &str, slot: &Arc<Slot>) {
+        let mut inner = self.lock();
+        if inner
+            .running
+            .get(key)
+            .is_some_and(|held| Arc::ptr_eq(held, slot))
+        {
+            inner.running.remove(key);
+        }
+        if let Some((wait_key, wait_slot)) = inner.waiting.take() {
+            wait_slot.promote();
+            inner.running.insert(wait_key, Arc::clone(&wait_slot));
+            log::info!("lyrics network start ({} in flight)", inner.running.len());
+        }
+    }
+
+    #[cfg(test)]
+    fn running_len(&self) -> usize {
+        self.lock().running.len()
+    }
+
+    #[cfg(test)]
+    fn waiter_key(&self) -> Option<String> {
+        self.lock().waiting.as_ref().map(|(k, _)| k.clone())
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        let inner = self.lock();
+        inner.running.is_empty() && inner.waiting.is_none()
+    }
+
+    #[cfg(test)]
+    fn join_count(&self) -> usize {
+        self.joins.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+struct DriveGuard<'a> {
+    reg: &'a FetchRegistry,
+    key: String,
+    slot: Arc<Slot>,
+    done: bool,
+}
+
+impl DriveGuard<'_> {
+    fn finish(mut self, lyrics: Lyrics) {
+        self.slot.publish(lyrics);
+        self.reg.release(&self.key, &self.slot);
+        self.done = true;
+    }
+}
+
+impl Drop for DriveGuard<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.slot.publish(Lyrics::default());
+            self.reg.release(&self.key, &self.slot);
+        }
+    }
+}
+
+fn network_registry() -> &'static FetchRegistry {
+    static REG: OnceLock<FetchRegistry> = OnceLock::new();
+    REG.get_or_init(FetchRegistry::new)
+}
+
 pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_ms: i64) -> Lyrics {
     if artist.is_empty() && title.is_empty() {
         return Lyrics::default();
@@ -275,109 +557,111 @@ pub fn fetch(cache_dir: &Path, artist: &str, title: &str, album: &str, duration_
         }
     }
 
-    // Any transport failure → bail WITHOUT recording a miss (offline ≠ no lyrics).
-    let lookup = || -> Result<Option<LrclibRecord>, Offline> {
-        // Start the raw-title /api/search CONCURRENTLY with the exact lookup.
-        // Apple Music's exact /api/get almost always 404s (its album carries a
-        // "- Single"/"- EP" suffix), so the search is on the common path and
-        // used to run only AFTER the exact call's full latency — overlapping
-        // them turns that miss-then-hit from a SUM into a MAX. The exact call
-        // keeps precedence; its result decides how long the search matters:
-        // an original-script exact hit returns immediately (never blocks on
-        // the heavier search), a Latin-only exact hit gives the search
-        // UPGRADE_GRACE to offer an original-script candidate (it can't be
-        // told apart from a romanized upload of a non-Latin song without the
-        // comparison), and an exact miss waits for the search in full — the
-        // search IS the answer then. The result travels over a channel so
-        // the grace wait can time out; a panicked worker drops its sender
-        // and reads as Offline, never a false miss.
-        let (tx, rx) = std::sync::mpsc::channel();
-        let (artist_owned, title_owned) = (artist.to_string(), title.to_string());
-        std::thread::spawn(move || {
-            let _ = tx.send(search(&artist_owned, &title_owned, duration_s));
-        });
+    network_registry().run(key.clone(), || {
+        // Any transport failure → bail WITHOUT recording a miss (offline ≠ no lyrics).
+        let lookup = || -> Result<Option<LrclibRecord>, Offline> {
+            // Start the raw-title /api/search CONCURRENTLY with the exact lookup.
+            // Apple Music's exact /api/get almost always 404s (its album carries a
+            // "- Single"/"- EP" suffix), so the search is on the common path and
+            // used to run only AFTER the exact call's full latency — overlapping
+            // them turns that miss-then-hit from a SUM into a MAX. The exact call
+            // keeps precedence; its result decides how long the search matters:
+            // an original-script exact hit returns immediately (never blocks on
+            // the heavier search), a Latin-only exact hit gives the search
+            // UPGRADE_GRACE to offer an original-script candidate (it can't be
+            // told apart from a romanized upload of a non-Latin song without the
+            // comparison), and an exact miss waits for the search in full — the
+            // search IS the answer then. The result travels over a channel so
+            // the grace wait can time out; a panicked worker drops its sender
+            // and reads as Offline, never a false miss.
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (artist_owned, title_owned) = (artist.to_string(), title.to_string());
+            std::thread::spawn(move || {
+                let _ = tx.send(search(&artist_owned, &title_owned, duration_s));
+            });
 
-        // Hit precedence unchanged: exact (non-empty) > raw search > norm
-        // search — the script upgrade is the one carve-out, and a search
-        // failure or grace timeout can never lose a served exact result.
-        let exact = get_exact(artist, title, album, duration_s);
-        let exact_offline = exact.is_err();
-        let exact_hit = match exact {
-            Ok(Some(r)) if !r.is_empty_record() => Some(r),
-            _ => None,
-        };
-        if let Some(r) = exact_hit {
-            if r.has_original_script() {
-                return Ok(Some(r)); // the search worker detaches, its result unused
-            }
-            if let Ok(Ok(Some(s))) = rx.recv_timeout(UPGRADE_GRACE) {
-                if s.has_original_script() {
-                    return Ok(Some(s));
+            // Hit precedence unchanged: exact (non-empty) > raw search > norm
+            // search — the script upgrade is the one carve-out, and a search
+            // failure or grace timeout can never lose a served exact result.
+            let exact = get_exact(artist, title, album, duration_s);
+            let exact_offline = exact.is_err();
+            let exact_hit = match exact {
+                Ok(Some(r)) if !r.is_empty_record() => Some(r),
+                _ => None,
+            };
+            if let Some(r) = exact_hit {
+                if r.has_original_script() {
+                    return Ok(Some(r)); // the search worker detaches, its result unused
                 }
-            }
-            return Ok(Some(r));
-        }
-
-        // Exact missed; the search result now matters. Wait for it in full
-        // (it has been running alongside the exact call the whole time).
-        let raw = rx.recv().unwrap_or(Err(Offline));
-        let raw_offline = raw.is_err();
-        if let Ok(Some(r)) = raw {
-            return Ok(Some(r));
-        }
-
-        // The normalized-title search is a last resort, reached only when both
-        // prior attempts SERVED a negative. Skipping it when either was Offline
-        // matches the old `?`-propagation (which bailed on the first transport
-        // error) AND caps the degraded-network bail at one timeout window
-        // instead of chaining a third sequential 15s attempt.
-        let norm = norm_title(title);
-        let norm_res = if !exact_offline && !raw_offline && !norm.is_empty() && norm != title {
-            search(artist, &norm, duration_s)
-        } else {
-            Ok(None)
-        };
-        let norm_offline = norm_res.is_err();
-        if let Ok(Some(r)) = norm_res {
-            return Ok(Some(r));
-        }
-
-        // No hit anywhere. A transport failure on ANY attempt means we can't
-        // conclude the track has no lyrics — bail without recording a miss
-        // (offline ≠ miss). Only an all-served-negative result is a real miss,
-        // which matches the old sequential `?`-propagation exactly.
-        if exact_offline || raw_offline || norm_offline {
-            Err(Offline)
-        } else {
-            Ok(None)
-        }
-    };
-    let record = match lookup() {
-        Ok(r) => r,
-        // A transport failure is NOT a "no lyrics" verdict — flag it so the
-        // caption can say "unavailable — offline" instead of "No synced
-        // lyrics", and (as before) don't record a session miss.
-        Err(Offline) => return Lyrics::offline(),
-    };
-
-    let lyrics = record.map(LrclibRecord::into_lyrics).unwrap_or_default();
-    if lyrics.is_empty() {
-        session_misses()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key);
-    } else {
-        match std::fs::create_dir_all(cache_dir) {
-            Ok(()) => {
-                if let Ok(json) = serde_json::to_string(&lyrics) {
-                    let _ = std::fs::write(&cache_file, json);
+                if let Ok(Ok(Some(s))) = rx.recv_timeout(UPGRADE_GRACE) {
+                    if s.has_original_script() {
+                        return Ok(Some(s));
+                    }
                 }
-                evict_old(cache_dir);
+                return Ok(Some(r));
             }
-            Err(e) => log::warn!("lyrics cache dir unavailable ({e}) — running uncached"),
+
+            // Exact missed; the search result now matters. Wait for it in full
+            // (it has been running alongside the exact call the whole time).
+            let raw = rx.recv().unwrap_or(Err(Offline));
+            let raw_offline = raw.is_err();
+            if let Ok(Some(r)) = raw {
+                return Ok(Some(r));
+            }
+
+            // The normalized-title search is a last resort, reached only when both
+            // prior attempts SERVED a negative. Skipping it when either was Offline
+            // matches the old `?`-propagation (which bailed on the first transport
+            // error) AND caps the degraded-network bail at one timeout window
+            // instead of chaining a third sequential 15s attempt.
+            let norm = norm_title(title);
+            let norm_res = if !exact_offline && !raw_offline && !norm.is_empty() && norm != title {
+                search(artist, &norm, duration_s)
+            } else {
+                Ok(None)
+            };
+            let norm_offline = norm_res.is_err();
+            if let Ok(Some(r)) = norm_res {
+                return Ok(Some(r));
+            }
+
+            // No hit anywhere. A transport failure on ANY attempt means we can't
+            // conclude the track has no lyrics — bail without recording a miss
+            // (offline ≠ miss). Only an all-served-negative result is a real miss,
+            // which matches the old sequential `?`-propagation exactly.
+            if exact_offline || raw_offline || norm_offline {
+                Err(Offline)
+            } else {
+                Ok(None)
+            }
+        };
+        let record = match lookup() {
+            Ok(r) => r,
+            // A transport failure is NOT a "no lyrics" verdict — flag it so the
+            // caption can say "unavailable — offline" instead of "No synced
+            // lyrics", and (as before) don't record a session miss.
+            Err(Offline) => return Lyrics::offline(),
+        };
+
+        let lyrics = record.map(LrclibRecord::into_lyrics).unwrap_or_default();
+        if lyrics.is_empty() {
+            session_misses()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key);
+        } else {
+            match std::fs::create_dir_all(cache_dir) {
+                Ok(()) => {
+                    if let Ok(json) = serde_json::to_string(&lyrics) {
+                        let _ = std::fs::write(&cache_file, json);
+                    }
+                    evict_old(cache_dir);
+                }
+                Err(e) => log::warn!("lyrics cache dir unavailable ({e}) — running uncached"),
+            }
         }
-    }
-    lyrics
+        lyrics
+    })
 }
 
 #[cfg(test)]
@@ -464,5 +748,175 @@ mod tests {
             "expected hangul lyrics, got: {}",
             &synced[..synced.len().min(200)]
         );
+    }
+
+    #[test]
+    fn ipc_payload_omits_plain() {
+        let json = serde_json::to_string(&LyricsOut::from(Lyrics {
+            synced: Some("s".into()),
+            plain: Some("p".into()),
+            offline: false,
+        }))
+        .unwrap();
+        assert!(!json.contains("plain"));
+        assert!(json.contains("synced"));
+    }
+
+    #[test]
+    fn disk_cache_still_writes_plain() {
+        let json = serde_json::to_string(&Lyrics {
+            synced: Some("s".into()),
+            plain: Some("p".into()),
+            offline: false,
+        })
+        .unwrap();
+        assert!(json.contains("\"plain\""));
+    }
+
+    fn tag(s: &str) -> Lyrics {
+        Lyrics {
+            synced: Some(s.to_string()),
+            plain: None,
+            offline: false,
+        }
+    }
+
+    fn wait_until(pred: impl Fn() -> bool) {
+        let start = std::time::Instant::now();
+        while !pred() {
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "timed out waiting for registry state"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn same_key_joins_one_network_fetch() {
+        let reg = FetchRegistry::new();
+        let hits = std::sync::atomic::AtomicUsize::new(0);
+        let hold = std::sync::Barrier::new(2);
+        std::thread::scope(|s| {
+            let first = s.spawn(|| {
+                reg.run("k".into(), || {
+                    hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    hold.wait();
+                    tag("a")
+                })
+            });
+            wait_until(|| hits.load(std::sync::atomic::Ordering::SeqCst) == 1);
+            let second = s.spawn(|| {
+                reg.run("k".into(), || {
+                    hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tag("b")
+                })
+            });
+            wait_until(|| reg.join_count() == 1);
+            hold.wait();
+            let a = first.join().unwrap();
+            let b = second.join().unwrap();
+            assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(a.synced.as_deref(), Some("a"));
+            assert_eq!(b.synced.as_deref(), Some("a"));
+        });
+        assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn cap_displaces_oldest_waiter_newest_runs() {
+        let reg = FetchRegistry::new();
+        let started: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let in_work = std::sync::atomic::AtomicUsize::new(0);
+        let max = std::sync::atomic::AtomicUsize::new(0);
+        let hold = std::sync::Barrier::new(3);
+
+        let mark = |key: &str| {
+            started
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(key.to_string());
+            let n = in_work.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            max.fetch_max(n, std::sync::atomic::Ordering::SeqCst);
+        };
+        let unmark = || {
+            in_work.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        };
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                reg.run("1".into(), || {
+                    mark("1");
+                    hold.wait();
+                    unmark();
+                    tag("1")
+                })
+            });
+            s.spawn(|| {
+                reg.run("2".into(), || {
+                    mark("2");
+                    hold.wait();
+                    unmark();
+                    tag("2")
+                })
+            });
+            wait_until(|| in_work.load(std::sync::atomic::Ordering::SeqCst) == 2);
+            let t3 = s.spawn(|| {
+                reg.run("3".into(), || {
+                    mark("3");
+                    unmark();
+                    tag("3")
+                })
+            });
+            wait_until(|| reg.waiter_key().as_deref() == Some("3"));
+            let t4 = s.spawn(|| {
+                reg.run("4".into(), || {
+                    mark("4");
+                    unmark();
+                    tag("4")
+                })
+            });
+            wait_until(|| reg.waiter_key().as_deref() == Some("4"));
+            let t5 = s.spawn(|| {
+                reg.run("5".into(), || {
+                    mark("5");
+                    unmark();
+                    tag("5")
+                })
+            });
+            wait_until(|| reg.waiter_key().as_deref() == Some("5"));
+            hold.wait();
+            assert!(t3.join().unwrap().is_empty());
+            assert!(t4.join().unwrap().is_empty());
+            assert_eq!(t5.join().unwrap().synced.as_deref(), Some("5"));
+        });
+        let got = started
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert!(got.contains(&"1".into()));
+        assert!(got.contains(&"2".into()));
+        assert!(got.contains(&"5".into()));
+        assert!(!got.contains(&"3".into()));
+        assert!(!got.contains(&"4".into()));
+        assert!(max.load(std::sync::atomic::Ordering::SeqCst) <= 2);
+        assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn completed_fetch_clears_registry_slot() {
+        let reg = FetchRegistry::new();
+        assert_eq!(
+            reg.run("k".into(), || tag("x")).synced.as_deref(),
+            Some("x")
+        );
+        assert!(reg.is_empty());
+        assert_eq!(reg.running_len(), 0);
+        assert_eq!(reg.waiter_key(), None);
+        assert_eq!(
+            reg.run("k".into(), || tag("y")).synced.as_deref(),
+            Some("y")
+        );
+        assert!(reg.is_empty());
     }
 }
