@@ -422,7 +422,7 @@ fn set_reactive_enabled(enabled: bool, window: tauri::WebviewWindow, state: Stat
     votes.insert(window.label().to_string(), enabled);
 }
 
-/// Fetch synced/plain lyrics for a track (LRCLIB + disk cache). Worst case
+/// Fetch synced lyrics for a track (LRCLIB + disk cache). Worst case
 /// ~45s of blocking network I/O (three sequential 15s-timeout calls), so the
 /// fetch runs on tokio's dedicated blocking pool — an async worker occupied
 /// that long would contend with every other command on the small shared pool.
@@ -433,21 +433,21 @@ async fn media_lyrics(
     title: String,
     album: String,
     duration_ms: i64,
-) -> lyrics::Lyrics {
+) -> lyrics::LyricsOut {
     let dir = app
         .path()
         .app_data_dir()
         .map(|d| d.join("lyrics"))
         .unwrap_or_else(|_| std::env::temp_dir().join("pulse-lyrics"));
     tauri::async_runtime::spawn_blocking(move || {
-        lyrics::fetch(&dir, &artist, &title, &album, duration_ms)
+        lyrics::LyricsOut::from(lyrics::fetch(&dir, &artist, &title, &album, duration_ms))
     })
     .await
     // Join error = the fetch panicked; degrade to a miss, not a dead IPC
     // call — but say so, or a release build swallows the panic invisibly.
     .unwrap_or_else(|e| {
         log::error!("lyrics fetch panicked: {e}");
-        lyrics::Lyrics::default()
+        lyrics::LyricsOut::default()
     })
 }
 
