@@ -13,6 +13,14 @@
 //! gate) AND something is playing. The owner thread opens/drops the capture
 //! on demand — dropping releases the device/stream entirely, so a hidden or
 //! paused app costs zero audio work.
+//!
+//! Emits target the main and focus windows only. Search and prefs never
+//! render the waveform. A silence latch stops the FFT and emit once
+//! smoothed output has sat below ZERO_EPS for LATCH_AFTER_TICKS (~396ms):
+//! one terminating zero payload (the same `Bands::default()` the switch-off
+//! arm already sends), then a cheap raw-RMS peek until energy returns.
+//! Process-path staleness still zeros the ring at 250ms so the bars fall;
+//! the latch arms on that fallen envelope and does not replace the zeroing.
 
 use crate::loopback;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -52,6 +60,19 @@ const DYN_FLOOR: f32 = 0.35;
 /// here would duck every bar in lockstep — the pump the staggered bins
 /// exist to avoid. Attack reuses ATTACK so a drop lands immediately.
 const DYN_RELEASE: f32 = 0.03;
+/// Consecutive quiet ticks before Live → Latched. 12 × 33ms ≈ 396ms,
+/// inside the 250–500ms arm window: long enough that process-path
+/// staleness (250ms zero) plus envelope release can fall, short enough
+/// that a remote-device silence does not keep FFTing for a second.
+const LATCH_AFTER_TICKS: u8 = 12;
+/// Visual silence on the 0–1 smoothed payload. Sits between Waveform's
+/// IDLE_EPS (0.004) and WAKE_LEVEL (0.02), so the latch arms after the
+/// bars have already gone visually dead, not mid-fall.
+const ZERO_EPS: f32 = 0.01;
+/// Raw sample-RMS wake. Different unit from ZERO_EPS. Just above the
+/// 1e-4 gain floor so WASAPI hiss does not unlatch, well below real
+/// playback.
+const RAW_WAKE: f32 = 1e-3;
 
 #[derive(Serialize, Clone, Copy, Default)]
 pub struct Bands {
@@ -101,12 +122,105 @@ impl Ring {
         };
         self.pos = (self.pos + 1) % self.buf.len();
     }
-    /// Snapshot in chronological order.
+    /// Snapshot in chronological order into `out`. `out` must be `buf.len()`.
+    pub(crate) fn snapshot_into(&self, out: &mut [f32]) {
+        let n = self.buf.len();
+        debug_assert_eq!(out.len(), n);
+        let tail = n - self.pos;
+        out[..tail].copy_from_slice(&self.buf[self.pos..]);
+        out[tail..].copy_from_slice(&self.buf[..self.pos]);
+    }
+
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Vec<f32> {
-        let mut out = Vec::with_capacity(self.buf.len());
-        out.extend_from_slice(&self.buf[self.pos..]);
-        out.extend_from_slice(&self.buf[..self.pos]);
+        let mut out = vec![0.0; self.buf.len()];
+        self.snapshot_into(&mut out);
         out
+    }
+
+    fn rms(&self) -> f32 {
+        let n = self.buf.len().max(1) as f32;
+        (self.buf.iter().map(|s| s * s).sum::<f32>() / n).sqrt()
+    }
+}
+
+/// Owner-loop silence latch. Live FFTs and emits; Latched peeks raw RMS
+/// only. One fact drives each transition: smoothed output below ZERO_EPS
+/// for LATCH_AFTER_TICKS consecutive ticks arms it, raw RMS above RAW_WAKE
+/// wakes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SilenceLatch {
+    Live { quiet_ticks: u8 },
+    Latched,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LatchEmit {
+    Bands,
+    Zero,
+    None,
+}
+
+impl SilenceLatch {
+    const fn new() -> Self {
+        Self::Live { quiet_ticks: 0 }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    fn is_latched(&self) -> bool {
+        matches!(self, Self::Latched)
+    }
+
+    /// Latched peek. `true` means fall through and run the FFT this tick.
+    fn consider_wake(&mut self, raw_awake: bool) -> bool {
+        match *self {
+            Self::Latched if raw_awake => {
+                *self = Self::Live { quiet_ticks: 0 };
+                true
+            }
+            Self::Latched => false,
+            Self::Live { .. } => true,
+        }
+    }
+
+    fn after_fft(&mut self, quiet: bool) -> LatchEmit {
+        match *self {
+            Self::Latched => LatchEmit::None,
+            Self::Live { quiet_ticks } => {
+                if quiet {
+                    let n = quiet_ticks.saturating_add(1);
+                    if n >= LATCH_AFTER_TICKS {
+                        *self = Self::Latched;
+                        LatchEmit::Zero
+                    } else {
+                        *self = Self::Live { quiet_ticks: n };
+                        LatchEmit::Bands
+                    }
+                } else {
+                    *self = Self::Live { quiet_ticks: 0 };
+                    LatchEmit::Bands
+                }
+            }
+        }
+    }
+}
+
+fn bands_quiet(b: &Bands) -> bool {
+    b.bass <= ZERO_EPS
+        && b.mid <= ZERO_EPS
+        && b.high <= ZERO_EPS
+        && b.level <= ZERO_EPS
+        && b.spectrum.iter().all(|&s| s <= ZERO_EPS)
+}
+
+/// Search and prefs never consume this event. emit_to on a missing focus
+/// window (create-on-open) filters to zero listeners and returns Ok.
+fn emit_bands(app: &AppHandle, bands: Bands) {
+    for label in ["main", "focus"] {
+        let _ = app.emit_to(label, "audio-bands", bands);
     }
 }
 
@@ -332,6 +446,8 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
         let mut rms_ref = 1e-4f32;
         let mut smoothed_dyn = 0.0f32;
         let mut scratch = vec![Complex::default(); FFT_SIZE];
+        let mut snap = vec![0.0f32; FFT_SIZE];
+        let mut latch = SilenceLatch::new();
         // Stream-health watchdog: the callback bumps `frames`; if it stalls
         // while we're supposedly capturing (default device changed, stream
         // silently died — cpal never signals this), drop and reopen.
@@ -357,7 +473,8 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                     smoothed = [0.0; 3];
                     smoothed_spec = [0.0; SPECTRUM_BINS];
                     smoothed_dyn = 0.0;
-                    let _ = app.emit("audio-bands", Bands::default());
+                    emit_bands(&app, Bands::default());
+                    latch.reset();
                 }
             } else if active.is_none() {
                 // Open: process-scoped first (the playing app's tree only),
@@ -570,15 +687,33 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
             // bars fall instead of freezing on the last-heard spectrum.
             let stale =
                 matches!(cap, Capture::Process(p, _) if p.ms_since_data() > SILENCE_AFTER_MS);
-            let samples = if stale {
-                vec![0.0; FFT_SIZE]
+
+            if latch.is_latched() {
+                // Stale process-path packets leave the last-heard samples
+                // in the ring. Peeking that RMS would unlatch forever.
+                let raw_awake = if stale {
+                    false
+                } else {
+                    let ring = ring
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    ring.rms() > RAW_WAKE
+                };
+                if !latch.consider_wake(raw_awake) {
+                    std::thread::sleep(EMIT_INTERVAL);
+                    continue;
+                }
+            }
+
+            if stale {
+                snap.fill(0.0);
             } else {
                 let ring = ring
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                ring.snapshot()
-            };
-            for (i, s) in samples.iter().enumerate() {
+                ring.snapshot_into(&mut snap);
+            }
+            for (i, s) in snap.iter().enumerate() {
                 scratch[i] = Complex::new(s * window[i], 0.0);
             }
             fft.process(&mut scratch);
@@ -589,7 +724,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
             // sections — every bin re-normalizes to its own recent peak — so
             // this factor scales the *visual* targets back down during quiet
             // passages. sqrt eases the curve (half amplitude → ~0.7, not 0.5).
-            let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+            let rms = (snap.iter().map(|s| s * s).sum::<f32>() / snap.len() as f32).sqrt();
             rms_ref = (rms_ref * RMS_DECAY).max(rms).max(1e-4);
             let dyn_target = (rms / rms_ref).clamp(0.0, 1.0).sqrt();
             let dk = if dyn_target > smoothed_dyn {
@@ -635,9 +770,85 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                 level: (norm[0] * 0.5 + norm[1] * 0.35 + norm[2] * 0.15).clamp(0.0, 1.0),
                 spectrum: spectrum.map(|s| s * dyn_scale),
             };
-            let _ = app.emit("audio-bands", bands);
+            match latch.after_fft(bands_quiet(&bands)) {
+                LatchEmit::Bands => emit_bands(&app, bands),
+                LatchEmit::Zero => emit_bands(&app, Bands::default()),
+                LatchEmit::None => {}
+            }
             std::thread::sleep(EMIT_INTERVAL);
         }
         })
         .expect("spawn audio-owner thread");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn step(latch: &mut SilenceLatch, quiet: bool, raw_awake: bool) -> LatchEmit {
+        if latch.is_latched() {
+            if !latch.consider_wake(raw_awake) {
+                return LatchEmit::None;
+            }
+        }
+        latch.after_fft(quiet)
+    }
+
+    #[test]
+    fn silence_emits_one_zero_then_stops() {
+        let mut latch = SilenceLatch::new();
+        let mut saw = Vec::new();
+        for _ in 0..LATCH_AFTER_TICKS as usize + 5 {
+            saw.push(step(&mut latch, true, false));
+        }
+        let live = LATCH_AFTER_TICKS as usize - 1;
+        assert!(
+            saw[..live].iter().all(|e| *e == LatchEmit::Bands),
+            "expected {live} live emits before the latch, got {saw:?}"
+        );
+        assert_eq!(saw[live], LatchEmit::Zero);
+        assert!(
+            saw[live + 1..].iter().all(|e| *e == LatchEmit::None),
+            "expected no further emits after the zero, got {saw:?}"
+        );
+        assert!(latch.is_latched());
+    }
+
+    #[test]
+    fn energy_resumes_immediately() {
+        let mut latch = SilenceLatch::new();
+        for _ in 0..LATCH_AFTER_TICKS {
+            step(&mut latch, true, false);
+        }
+        assert!(latch.is_latched());
+        assert_eq!(step(&mut latch, false, true), LatchEmit::Bands);
+        assert!(!latch.is_latched());
+    }
+
+    #[test]
+    fn brief_quiet_does_not_latch() {
+        let mut latch = SilenceLatch::new();
+        for _ in 0..LATCH_AFTER_TICKS - 1 {
+            assert_eq!(step(&mut latch, true, false), LatchEmit::Bands);
+        }
+        assert_eq!(step(&mut latch, false, true), LatchEmit::Bands);
+        assert!(!latch.is_latched());
+    }
+
+    #[test]
+    fn snapshot_into_is_chronological() {
+        let mut ring = Ring::new();
+        for i in 0..FFT_SIZE {
+            ring.push_frame(i as f32);
+        }
+        let mut out = vec![0.0; FFT_SIZE];
+        ring.snapshot_into(&mut out);
+        for (i, v) in out.iter().enumerate() {
+            assert_eq!(*v, i as f32);
+        }
+        ring.push_frame(999.0);
+        ring.snapshot_into(&mut out);
+        assert_eq!(out[0], 1.0);
+        assert_eq!(out[FFT_SIZE - 1], 999.0);
+    }
 }
