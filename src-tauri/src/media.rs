@@ -483,7 +483,10 @@ impl SessionWatch {
         // one per second for position, and the heartbeat already bounds
         // position staleness at the same interval the frontend interpolates
         // over. Events buy latency only where polling is visibly slow —
-        // track/art/status changes.
+        // track/art/status changes. Position-only ticks don't marshal
+        // metadata either (plan_beat's reuse), so the pair stays: events
+        // for the fields that announce themselves, the tick for the one
+        // that doesn't.
         match (t_props, t_play) {
             (Ok(t_props), Ok(t_play)) => {
                 self.watched = Some((session, id, [t_props, t_play]));
@@ -499,6 +502,16 @@ impl SessionWatch {
             }
             (Err(_), Err(_)) => {}
         }
+    }
+
+    /// The app_id whose change handlers are currently attached. plan_beat's
+    /// position-only reuse is licensed by this: "metadata cannot change
+    /// without MediaPropertiesChanged waking us" only holds while the
+    /// CURRENT session's handlers are live — degraded to pure polling (no
+    /// SessionWatch) or inside a failed-attach window, the heartbeat's full
+    /// marshal is back to being the only thing that catches a track change.
+    pub fn watching(&self) -> Option<&str> {
+        self.watched.as_ref().map(|(_, id, _)| id.as_str())
     }
 }
 
@@ -919,6 +932,23 @@ pub fn art_rearm(cache: &ArtCache) {
     }
 }
 
+/// Convert the raw timeline ticks (Position TimeSpan, LastUpdatedTime
+/// FILETIME) to the emitted (position_ms, position_at_ms) pair. THE one
+/// conversion, shared by raw_timeline (every full snapshot) and the media
+/// loop's position-only reuse path (which derives the pair from tick_key's
+/// raw ticks) — two copies would let the reused pair drift from what a full
+/// snapshot would have emitted this beat. Updated ticks 0 covers both "read
+/// failed" and "never stamped"; it converts to the documented position_at_ms
+/// sentinel 0, never the negative FILETIME-epoch artifact.
+pub fn position_pair_from_ticks(position_ticks: i64, updated_ticks: i64) -> (i64, i64) {
+    let position_at_ms = if updated_ticks == 0 {
+        0
+    } else {
+        updated_ticks / TICKS_PER_MS - FILETIME_EPOCH_OFFSET_MS
+    };
+    (position_ticks / TICKS_PER_MS, position_at_ms)
+}
+
 /// Raw GSMTC timeline triple: (position_ms, duration_ms, last_updated_unix_ms).
 /// Deliberately NO staleness projection — re-projecting each snapshot is what
 /// let Apple Music's 1s-quantized pushes land behind the previous projection
@@ -932,12 +962,10 @@ fn raw_timeline(session: &Session) -> (i64, i64, i64) {
     let Ok(t) = t else {
         return (0, 0, 0);
     };
-    let pos = t.Position().map(|d| d.Duration / TICKS_PER_MS).unwrap_or(0);
+    let pos_ticks = t.Position().map(|d| d.Duration).unwrap_or(0);
     let end = t.EndTime().map(|d| d.Duration / TICKS_PER_MS).unwrap_or(0);
-    let updated = t
-        .LastUpdatedTime()
-        .map(|d| d.UniversalTime / TICKS_PER_MS - FILETIME_EPOCH_OFFSET_MS)
-        .unwrap_or(0);
+    let updated_ticks = t.LastUpdatedTime().map(|d| d.UniversalTime).unwrap_or(0);
+    let (pos, updated) = position_pair_from_ticks(pos_ticks, updated_ticks);
     (pos, end, updated)
 }
 
@@ -984,11 +1012,15 @@ pub fn current_player() -> &'static str {
 
 /// Cheap heartbeat probe: (app_id, timeline Position + LastUpdatedTime ticks,
 /// status). The media loop skips the full snapshot (metadata marshal + art
-/// work + emit) when this hasn't moved since the previous tick. Position is
-/// included on its own because a player may move it without re-stamping
-/// LastUpdatedTime (unverified for programmatic Spotify seeks) — the post-seek
-/// UI bound must stay one heartbeat, not one push cadence. Metadata-only
-/// changes still snapshot: MediaPropertiesChanged wakes force one.
+/// work + emit) when this hasn't moved since the previous tick, and when ONLY
+/// the timeline pair moved it republishes the last emitted payload with the
+/// fresh pair instead of marshaling (see plan_beat) — Apple Music floors
+/// position to 1s, so a full marshal per tick meant waking the player process
+/// every second for the length of every song. Position is included on its own
+/// because a player may move it without re-stamping LastUpdatedTime
+/// (unverified for programmatic Spotify seeks) — the post-seek UI bound must
+/// stay one heartbeat, not one push cadence. Metadata-only changes still
+/// snapshot: MediaPropertiesChanged wakes force one.
 pub type TickKey = (String, i64, i64, &'static str);
 
 pub fn tick_key() -> Option<TickKey> {
@@ -1011,23 +1043,84 @@ pub fn tick_key() -> Option<TickKey> {
     Some((app_id, position, updated, playback_status(&session)))
 }
 
-/// True while the art pipeline needs the media loop to keep ticking full
-/// snapshots on an unchanged tick_key: a Pending key waiting for its
-/// deferred first read, or an unsettled Cached entry inside the distrust
-/// window (art_pump re-reads each tick then). Settled or window-expired
-/// entries stop forcing snapshots.
+/// True while the art pipeline needs the media loop to run full snapshots
+/// (where art_pump lives): a Pending key waiting for its deferred first
+/// read, or an unsettled Cached entry inside the distrust window (art_pump
+/// re-reads each tick then). Settled or window-expired Cached entries stop
+/// forcing snapshots. Pending probes REGARDLESS of age, matching art_pump's
+/// own sampling rule: a key claimed by an off-loop snapshot (hotkey emit
+/// while hidden) can outlive the window before the loop ever pumps it, and
+/// the position-only reuse path would otherwise starve that first read
+/// forever — pre-reuse, the position-forced full snapshots healed it by
+/// accident.
 pub fn art_probing(cache: &ArtCache) -> bool {
-    lock_art(cache).as_ref().is_some_and(|e| {
-        let (settled, first_seen_ms) = match e {
-            ArtState::Pending { first_seen_ms, .. } => (false, *first_seen_ms),
-            ArtState::Cached {
-                settled,
-                first_seen_ms,
-                ..
-            } => (*settled, *first_seen_ms),
-        };
-        !settled && now_ms() - first_seen_ms < ART_PROBE_WINDOW_MS
+    lock_art(cache).as_ref().is_some_and(|e| match e {
+        ArtState::Pending { .. } => true,
+        ArtState::Cached {
+            settled,
+            first_seen_ms,
+            ..
+        } => !settled && now_ms() - first_seen_ms < ART_PROBE_WINDOW_MS,
     })
+}
+
+/// What the media loop's heartbeat does this beat (see plan_beat).
+#[derive(Debug, PartialEq)]
+pub enum BeatAction {
+    /// Nothing moved — no snapshot, no emit.
+    Skip,
+    /// Only the raw timeline pair moved and the last emitted payload is
+    /// reusable: republish it with a fresh position pair (lib.rs
+    /// emit_position_refresh), no metadata marshal, no art_pump.
+    ReusePosition,
+    /// Full snapshot: metadata marshal, emit, art_pump.
+    Snapshot,
+}
+
+/// The heartbeat escalation decision, pure so the branch is testable.
+/// `last_payload` summarizes the last payload actually emitted, as
+/// (app_id, status); None = nothing emitted yet. `subscribed` = the tick's
+/// session is the one SessionWatch currently holds handlers on.
+///
+/// Reusing on a position-only delta is sound because metadata cannot change
+/// without MediaPropertiesChanged firing, and that wake sets `force` before
+/// the next beat; status is part of the tick itself. Every other delta
+/// escalates to the full marshal:
+/// - `force` (event wakes, first beat after launch/show) and `probing` (the
+///   art pipeline needs the full path — art_pump only runs there).
+/// - Session appear/vanish (either tick None), or an app_id/status delta.
+/// - A missing or mismatched last payload: a session that vanished and came
+///   back must re-marshal, and an empty app_id is never trusted as identity.
+/// - `subscribed` false: without live handlers the reuse premise is gone —
+///   a track auto-advance would republish stale metadata under fresh
+///   positions for the rest of playback. The heartbeat marshal is the
+///   pre-reuse safety net ("missed events are never fatal"); keep it.
+pub fn plan_beat(
+    tick: Option<&TickKey>,
+    last_tick: Option<&TickKey>,
+    force: bool,
+    probing: bool,
+    subscribed: bool,
+    last_payload: Option<(&str, &str)>,
+) -> BeatAction {
+    if force || probing {
+        return BeatAction::Snapshot;
+    }
+    if tick == last_tick {
+        return BeatAction::Skip;
+    }
+    let (Some((app_id, _, _, status)), Some((last_app, _, _, last_status))) = (tick, last_tick)
+    else {
+        return BeatAction::Snapshot;
+    };
+    let position_only = !app_id.is_empty() && app_id == last_app && status == last_status;
+    let payload_matches =
+        last_payload.is_some_and(|(p_app, p_status)| p_app == app_id && p_status == *status);
+    if position_only && payload_matches && subscribed {
+        BeatAction::ReusePosition
+    } else {
+        BeatAction::Snapshot
+    }
 }
 
 pub fn play_pause() -> bool {
@@ -1273,5 +1366,221 @@ mod tests {
         assert_eq!(art_url(&cache, "b:1"), None, "different key");
         let cache = ArtCache(Mutex::new(pending("a")));
         assert_eq!(art_url(&cache, "a:0"), None, "pending has no bytes yet");
+    }
+
+    #[test]
+    fn pending_probes_regardless_of_window_age() {
+        // A key claimed off-loop (hotkey emit while hidden) can outlive the
+        // probe window before the loop ever pumps it — position-only reuse
+        // must not starve that first read.
+        let cache = ArtCache(Mutex::new(Some(ArtState::Pending {
+            key: "a".into(),
+            first_seen_ms: now_ms() - ART_PROBE_WINDOW_MS - 60_000,
+        })));
+        assert!(
+            art_probing(&cache),
+            "aged Pending still owes its first read"
+        );
+    }
+
+    fn tick(app: &str, pos: i64, updated: i64, status: &'static str) -> TickKey {
+        (app.into(), pos, updated, status)
+    }
+
+    #[test]
+    fn position_only_delta_reuses_the_last_payload() {
+        let last = tick("am", 10_000_000, 500, "playing");
+        let now = tick("am", 20_000_000, 600, "playing");
+        assert_eq!(
+            plan_beat(
+                Some(&now),
+                Some(&last),
+                false,
+                false,
+                true,
+                Some(("am", "playing")),
+            ),
+            BeatAction::ReusePosition
+        );
+        // LastUpdatedTime re-stamped without the position moving is still a
+        // timeline-pair-only delta.
+        let restamped = tick("am", 10_000_000, 900, "playing");
+        assert_eq!(
+            plan_beat(
+                Some(&restamped),
+                Some(&last),
+                false,
+                false,
+                true,
+                Some(("am", "playing")),
+            ),
+            BeatAction::ReusePosition
+        );
+    }
+
+    #[test]
+    fn app_id_or_status_delta_escalates() {
+        let last = tick("am", 10, 500, "playing");
+        let switched = tick("spotify", 20, 600, "playing");
+        assert_eq!(
+            plan_beat(
+                Some(&switched),
+                Some(&last),
+                false,
+                false,
+                true,
+                Some(("am", "playing")),
+            ),
+            BeatAction::Snapshot
+        );
+        let paused = tick("am", 20, 600, "paused");
+        assert_eq!(
+            plan_beat(
+                Some(&paused),
+                Some(&last),
+                false,
+                false,
+                true,
+                Some(("am", "playing")),
+            ),
+            BeatAction::Snapshot
+        );
+    }
+
+    #[test]
+    fn force_or_probing_escalates_even_unchanged() {
+        let t = tick("am", 10, 500, "playing");
+        let payload = Some(("am", "playing"));
+        assert_eq!(
+            plan_beat(Some(&t), Some(&t), true, false, true, payload),
+            BeatAction::Snapshot
+        );
+        assert_eq!(
+            plan_beat(Some(&t), Some(&t), false, true, true, payload),
+            BeatAction::Snapshot
+        );
+    }
+
+    #[test]
+    fn unsubscribed_session_escalates() {
+        // No live MediaPropertiesChanged handler on this session (degraded
+        // polling-only mode, or a failed-attach window) — the reuse premise
+        // is gone, so a position-only delta still marshals.
+        let last = tick("am", 10, 500, "playing");
+        let now = tick("am", 20, 600, "playing");
+        assert_eq!(
+            plan_beat(
+                Some(&now),
+                Some(&last),
+                false,
+                false,
+                false,
+                Some(("am", "playing")),
+            ),
+            BeatAction::Snapshot
+        );
+    }
+
+    #[test]
+    fn missing_or_mismatched_last_payload_escalates() {
+        let last = tick("am", 10, 500, "playing");
+        let now = tick("am", 20, 600, "playing");
+        assert_eq!(
+            plan_beat(Some(&now), Some(&last), false, false, true, None),
+            BeatAction::Snapshot,
+            "nothing emitted yet"
+        );
+        assert_eq!(
+            plan_beat(
+                Some(&now),
+                Some(&last),
+                false,
+                false,
+                true,
+                Some(("spotify", "playing")),
+            ),
+            BeatAction::Snapshot,
+            "payload from a different app"
+        );
+        assert_eq!(
+            plan_beat(
+                Some(&now),
+                Some(&last),
+                false,
+                false,
+                true,
+                Some(("am", "paused")),
+            ),
+            BeatAction::Snapshot,
+            "payload's playing-shape out of step with the tick"
+        );
+    }
+
+    #[test]
+    fn session_edges_and_empty_identity_escalate_or_skip() {
+        let t = tick("am", 10, 500, "playing");
+        let payload = Some(("am", "playing"));
+        assert_eq!(
+            plan_beat(None, Some(&t), false, false, true, payload),
+            BeatAction::Snapshot,
+            "session vanished"
+        );
+        assert_eq!(
+            plan_beat(Some(&t), None, false, false, true, payload),
+            BeatAction::Snapshot,
+            "session appeared"
+        );
+        assert_eq!(
+            plan_beat(None, None, false, false, true, None),
+            BeatAction::Skip,
+            "no session on both beats is an unchanged tick"
+        );
+        let anon_last = tick("", 10, 500, "playing");
+        let anon_now = tick("", 20, 600, "playing");
+        assert_eq!(
+            plan_beat(
+                Some(&anon_now),
+                Some(&anon_last),
+                false,
+                false,
+                true,
+                Some(("", "playing")),
+            ),
+            BeatAction::Snapshot,
+            "an empty app_id is never trusted as identity"
+        );
+    }
+
+    #[test]
+    fn unchanged_tick_skips() {
+        let t = tick("am", 10, 500, "playing");
+        assert_eq!(
+            plan_beat(
+                Some(&t),
+                Some(&t),
+                false,
+                false,
+                true,
+                Some(("am", "playing"))
+            ),
+            BeatAction::Skip
+        );
+    }
+
+    #[test]
+    fn position_pair_conversion_matches_raw_timeline() {
+        // 3_000 ms of 100ns ticks; a known unix stamp through the FILETIME
+        // epoch offset — the same math raw_timeline applies.
+        let unix_ms = 1_756_700_000_123i64;
+        let updated_ticks = (unix_ms + FILETIME_EPOCH_OFFSET_MS) * TICKS_PER_MS;
+        assert_eq!(
+            position_pair_from_ticks(3_000 * TICKS_PER_MS, updated_ticks),
+            (3_000, unix_ms)
+        );
+        assert_eq!(
+            position_pair_from_ticks(0, 0),
+            (0, 0),
+            "updated 0 = never stamped, the documented sentinel"
+        );
     }
 }

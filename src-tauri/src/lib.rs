@@ -568,6 +568,79 @@ pub(crate) fn emit_now(app: &AppHandle) -> media::NowPlaying {
     np
 }
 
+/// (app_id, status) of the last payload actually emitted — plan_beat's
+/// last-payload summary. One brief lock; the authoritative re-check happens
+/// under the same lock inside emit_position_refresh.
+fn last_emit_summary(app: &AppHandle) -> Option<(String, String)> {
+    let last = app.state::<LastEmit>();
+    let st = last
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    st.payload
+        .as_ref()
+        .map(|p| (p.app_id.clone(), p.status.clone()))
+}
+
+/// The media loop's position-only publish (BeatAction::ReusePosition):
+/// clone the last emitted payload, overwrite exactly the raw position pair
+/// with the tick's values (position_pair_from_ticks — the SAME conversion a
+/// full snapshot's raw_timeline applies, so the pair is byte-for-byte what a
+/// marshal would have read this beat, never extrapolated), and publish
+/// through emit_now's gate: seq claimed up front, publish only at the
+/// high-water mark, diff-suppressed against the full payload.
+///
+/// The payload match (app_id + status against the tick) re-runs HERE, under
+/// the lock: plan_beat's summary was read lock-free earlier in the beat, and
+/// a racing emitter (hotkey transport emit_now) may have replaced the payload
+/// since. None = the reuse is void — the caller escalates to the full
+/// snapshot path. Residual race: an emitter whose snapshot STARTED before
+/// our claim can publish first with a lower seq and a fresher-by-milliseconds
+/// position; our pair still wins the gate. That inversion is bounded by the
+/// tick-to-claim gap (microseconds, no WinRT in between) and any transport
+/// action behind such an emit fires a wake, so the next beat force-marshals.
+///
+/// Never runs art_pump: nothing but position moved, and art work is the full
+/// path's job — plan_beat routes every probing beat there.
+fn emit_position_refresh(app: &AppHandle, tick: &media::TickKey) -> Option<media::NowPlaying> {
+    let (app_id, position_ticks, updated_ticks, status) = tick;
+    let my_seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let (position_ms, position_at_ms) =
+        media::position_pair_from_ticks(*position_ticks, *updated_ticks);
+    let last = app.state::<LastEmit>();
+    let mut st = last
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let payload = st.payload.as_ref()?;
+    if payload.app_id != *app_id || payload.status != *status {
+        return None;
+    }
+    let mut np = payload.clone();
+    // base_snapshot's clamp, against the (unchanged) emitted duration.
+    np.position_ms = if np.duration_ms > 0 {
+        position_ms.clamp(0, np.duration_ms)
+    } else {
+        position_ms
+    };
+    np.position_at_ms = position_at_ms;
+    if my_seq < st.published_seq {
+        // Outrun by a later-started snapshot — same discard as emit_now; the
+        // clone still feeds history/upnext this beat.
+        return Some(np);
+    }
+    st.published_seq = my_seq;
+    if st.payload.as_ref() != Some(&np) {
+        let stamped = Stamped {
+            seq: my_seq,
+            now: np.clone(),
+        };
+        let _ = app.emit("now-playing", &stamped);
+        st.payload = Some(stamped.now);
+    }
+    Some(np)
+}
+
 // ── Main-thread liveness ─────────────────────────────────────────────────
 // Every historical "Application Hang" in this app was a blocking call landing
 // on the main/STA thread and freezing the Win32 message pump — GSMTC `.get()`
@@ -1579,9 +1652,12 @@ pub fn run() {
                     let mut watch = media::SessionWatch::new(wake_tx);
                     let mut resubscribe = true;
                     // Event wakes force a full snapshot; heartbeat ticks first
-                    // probe tick_key and skip the snapshot (metadata marshal, art
-                    // work, emit) when nothing moved — except while the art probe
-                    // window is open, which needs every tick.
+                    // probe tick_key and plan_beat routes the beat: unchanged →
+                    // skip entirely; timeline-pair-only movement → republish the
+                    // last payload with the fresh raw pair (no metadata marshal —
+                    // AM's 1s position floor otherwise re-marshaled every second);
+                    // anything else, a forced beat, or an open art probe window →
+                    // the full snapshot.
                     let mut force_snapshot = true;
                     let mut last_tick: Option<media::TickKey> = None;
                     // Hidden-window history cadence: probe every Nth heartbeat
@@ -1612,31 +1688,75 @@ pub fn run() {
                             hidden_beats = 0;
                             let tick = media::tick_key();
                             let probing = media::art_probing(&handle.state::<ArtCache>());
-                            let p = if std::mem::take(&mut force_snapshot)
-                                || probing
-                                || tick != last_tick
-                            {
-                                let np = emit_now(&handle);
-                                // Deferred art: the emit above never blocks on a
-                                // thumbnail read — the pump runs the read here,
-                                // and when the cached art_id changed the follow-up
-                                // emit publishes it (diff-suppression makes that
-                                // exactly one extra event).
-                                if media::art_pump(&handle.state::<ArtCache>(), &np) {
-                                    emit_now(&handle);
+                            let summary = last_emit_summary(&handle);
+                            // Reuse is licensed only while THIS session's
+                            // change handlers are attached (see plan_beat's
+                            // `subscribed` doc) — degraded polling-only mode
+                            // keeps the pre-reuse full marshals.
+                            let subscribed = watch
+                                .as_ref()
+                                .and_then(|w| w.watching())
+                                .is_some_and(|id| tick.as_ref().is_some_and(|t| t.0 == id));
+                            let plan = media::plan_beat(
+                                tick.as_ref(),
+                                last_tick.as_ref(),
+                                std::mem::take(&mut force_snapshot),
+                                probing,
+                                subscribed,
+                                summary.as_ref().map(|(a, s)| (a.as_str(), s.as_str())),
+                            );
+                            let p = match plan {
+                                media::BeatAction::Skip => {
+                                    tick.as_ref().is_some_and(|k| k.3 == "playing")
                                 }
-                                // A play_now jump flickers intermediate tracks as
-                                // "playing" (and a slow skip can hold one past the
-                                // 1s history floor) — those are navigation, not
-                                // listening. upnext::tick still runs: it owns the
-                                // jump-aware bookkeeping.
-                                if !spotify::jump_active(&handle) {
-                                    history::ingest(&handle, &np);
+                                media::BeatAction::ReusePosition | media::BeatAction::Snapshot => {
+                                    // Position-only beats republish the last
+                                    // payload with the tick's fresh raw pair —
+                                    // no metadata marshal, no art_pump (nothing
+                                    // but position moved; art_probing beats
+                                    // route to Snapshot, where the pump lives,
+                                    // so the pump never starves). A racing
+                                    // emitter voids the reuse (None) and the
+                                    // beat escalates to the full path.
+                                    let reused = match &plan {
+                                        media::BeatAction::ReusePosition => tick
+                                            .as_ref()
+                                            .and_then(|t| emit_position_refresh(&handle, t)),
+                                        media::BeatAction::Skip | media::BeatAction::Snapshot => {
+                                            None
+                                        }
+                                    };
+                                    let np = match reused {
+                                        Some(np) => np,
+                                        None => {
+                                            let np = emit_now(&handle);
+                                            // Deferred art: the emit above never
+                                            // blocks on a thumbnail read — the pump
+                                            // runs the read here, and when the
+                                            // cached art_id changed the follow-up
+                                            // emit publishes it (diff-suppression
+                                            // makes that exactly one extra event).
+                                            if media::art_pump(&handle.state::<ArtCache>(), &np) {
+                                                emit_now(&handle);
+                                            }
+                                            np
+                                        }
+                                    };
+                                    // A play_now jump flickers intermediate tracks as
+                                    // "playing" (and a slow skip can hold one past the
+                                    // 1s history floor) — those are navigation, not
+                                    // listening. upnext::tick still runs: it owns the
+                                    // jump-aware bookkeeping. Both ride position-only
+                                    // beats too: ms_listened is wall-clock but the
+                                    // replay detection reads raw position, and the
+                                    // feeder's FEED_REMAINING_MS estimate needs the
+                                    // fresh pair.
+                                    if !spotify::jump_active(&handle) {
+                                        history::ingest(&handle, &np);
+                                    }
+                                    upnext::tick(&handle, &np);
+                                    np.status == "playing"
                                 }
-                                upnext::tick(&handle, &np);
-                                np.status == "playing"
-                            } else {
-                                tick.as_ref().is_some_and(|k| k.3 == "playing")
                             };
                             last_tick = tick;
                             p
