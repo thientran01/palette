@@ -323,6 +323,12 @@ const SHELL_GUTTER_PX = 12;
  * side. Change the seat inset or border, change this. */
 const SHELL_CHROME_PX = 14;
 
+/** Trailing debounce for the popover ResizeObserver's hit-rect updates: the
+ * popover's max-height rides the 200ms mode glide, so a glide at cap fires
+ * the observer per frame — the hit rect only has to be right once the
+ * height settles (mid-glide the union is held too BIG, never too small). */
+const RO_SETTLE_MS = 90;
+
 /** Where the gliding shell seats within the window: on the docked corner, so
  * its size glide radiates out of the one corner that never moves. */
 const SHELL_SEAT: Record<DockCorner, string> = {
@@ -1704,49 +1710,67 @@ function App() {
   // hit rect must union it while open or its clicks fall through to the
   // desktop (the worst failure class in this app).
   const popoverVisible = queueOpen && mode !== "expanded" && !nothing;
+  // ONE QueuePanel per mode: inside expanded the peer layer owns the
+  // garment, so the popover's PANEL unmounts there (two resident panels
+  // doubled the upnext/history subscriptions and every render fan-out).
+  // Continuity across the ladder is the shared queueOpen BIT (the 11a rule)
+  // — the expanded garment always had its own panel instance, so this mount
+  // never carried state across garments. The popover WRAPPER stays mounted
+  // (it's inert chrome, and the 140ms open/close fades are CSS transitions
+  // that need a resident node); only the panel unmounts, delayed past the
+  // close fade so expanding with it open dissolves rows, not an empty box.
+  const popGarment = mode !== "expanded";
+  const [popMounted, setPopMounted] = useState(popGarment);
+  useEffect(() => {
+    if (popGarment) {
+      setPopMounted(true);
+      return;
+    }
+    const t = window.setTimeout(() => setPopMounted(false), DUR[2]);
+    return () => window.clearTimeout(t);
+  }, [popGarment]);
   // The popover CONTENT-sizes under its max-height cap (a 2-row list ends
   // far short of the pill's 330 cap), so the union must use its REAL box:
   // a full-cap union put the dead band above a short popover inside the hit
   // rect, and the root mousedown there (which excludes only
   // button/[role=slider]) started a native window drag from what looked
   // like bare desktop. Measured off the wrapper via ResizeObserver — live as
-  // rows load/collapse, and through the mode glide's max-height ride. null
-  // until the first measurement lands: the union falls back to the full-cap
-  // formula then, because the hit rect must NEVER be narrower than anything
-  // visible (one over-tall frame is invisible; a hole over a visible surface
-  // is the failure class above). Cleared on close so a stale height can't
-  // seed the next open.
+  // rows load/collapse. A REF, not state: the height feeds only the
+  // setHitSize IPC below, and the popover's max-height rides the 200ms mode
+  // glide, so a glide at cap fires the observer per frame (measured 27
+  // fires/glide) — as state that was ~27 full App renders and IPC calls per
+  // glide. null until the first measurement lands: the union falls back to
+  // the full-cap formula then, because the hit rect must NEVER be narrower
+  // than anything visible (one over-tall frame is invisible; a hole over a
+  // visible surface is the failure class above). Cleared on close so a
+  // stale height can't seed the next open.
   const popoverRef = useRef<HTMLDivElement>(null);
-  const [popMeasuredH, setPopMeasuredH] = useState<number | null>(null);
-  // The open's FIRST footprint command rides the full-cap fallback; the
-  // measured command one commit later shrinks past nothing visible (the band
-  // above a content-sized popover never painted), so that ONE shrink skips
-  // the glide defer below — deferred, the dead band the measurement exists
-  // to remove stayed drag-interactive for DUR[3]+80 after every open. Holds
-  // the mode|overlay context of a just-commanded fallback rect: if either
-  // moved by the time the measurement lands, the shrink is no longer purely
-  // the measurement and takes the normal defer.
-  const popFallbackKey = useRef<string | null>(null);
-  useEffect(() => {
-    const el = popoverRef.current;
-    if (!popoverVisible || !el) {
-      setPopMeasuredH(null);
-      return;
-    }
-    // offsetHeight: border-box, integral CSS px — the same logical-px space
-    // set_hit_size speaks.
-    const measure = () => setPopMeasuredH(el.offsetHeight);
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [popoverVisible]);
-  useEffect(() => {
+  const popMeasuredH = useRef<number | null>(null);
+  // The cap the last measurement was taken under — a measurement that sits
+  // AT its cap is clamped and says nothing about where the next glide ends.
+  const popPrevCap = useRef<number | null>(null);
+  const hitShrinkTimer = useRef<number | null>(null);
+  const hitLastSent = useRef<string | null>(null);
+  // One writer for the hit rect, shared by the mode/overlay effect and the
+  // measurement path. `measurementSettled` marks a settled RO reading: the
+  // popover's height has stopped moving, so what it reports is exactly
+  // what's painted — its shrinks apply NOW (this also covers the open's
+  // first measurement: the fallback rect's dead band must not stay
+  // drag-interactive for the defer). Mode/overlay shrinks defer past the
+  // glide as before: the hit rect must never undercut the shell/popover
+  // still visibly shrinking on screen; the union may only ever be too BIG
+  // mid-glide, never too small.
+  const applyHitSize = (measurementSettled: boolean) => {
     const [mw, mh] = MODE_SIZES[mode];
-    // Measured real height once known, else the max-height cap it renders
-    // under (a FULL popover measures exactly that cap, so the full-list
-    // numbers are unchanged: pill 318×384, card's 296 band).
-    const popH = popMeasuredH ?? Math.min(330, WINDOW_MAX[1] - mh - POPOVER_GAP);
+    const cap = Math.min(330, WINDOW_MAX[1] - mh - POPOVER_GAP);
+    const m = popMeasuredH.current;
+    const clamped = m !== null && popPrevCap.current !== null && m >= popPrevCap.current;
+    popPrevCap.current = popoverVisible ? cap : null;
+    // A clamped measurement mid mode-change anticipates the NEW cap (a grow
+    // glide must be interactive over its whole travel; the settled
+    // re-measure trims any overshoot). A full popover therefore keeps the
+    // full-cap numbers: pill 318×384, card's 296 band.
+    const popH = m === null || (clamped && !measurementSettled) ? cap : Math.min(m, cap);
     // Popover extent from the docked corner: the 6px near-side inset + its
     // box (NOT the full 12px both-sides gutter — a fatter rect would let the
     // widget capture a 6px band of desktop past the popover's far edge).
@@ -1758,9 +1782,6 @@ function App() {
     // to the desktop. Max'd with the popover extent so it never shrinks below it.
     const w1 = overlayOpen ? Math.max(pw, WINDOW_MAX[0]) : pw;
     const h1 = overlayOpen ? Math.max(ph, WINDOW_MAX[1]) : ph;
-    const ctxKey = `${mode}|${overlayOpen}`;
-    const firstMeasure = popMeasuredH !== null && popFallbackKey.current === ctxKey;
-    popFallbackKey.current = popoverVisible && popMeasuredH === null ? ctxKey : null;
     const [cw, ch] = hitCommanded.current ?? [w1, h1];
     const uw = Math.max(w1, cw);
     const uh = Math.max(h1, ch);
@@ -1768,19 +1789,66 @@ function App() {
     // The mode box rides along unchanged through every union/deferred-shrink
     // step below: Rust places the widget by THAT box, never the union (a
     // corner flip compensated with the popover's extent would teleport).
-    commands.setHitSize(uw, uh, mw, mh);
-    let timer: number | undefined;
+    // Dedupe on the full tuple — settled re-measures at an unchanged height
+    // must not re-send.
+    const sig = `${uw},${uh},${mw},${mh}`;
+    if (sig !== hitLastSent.current) {
+      hitLastSent.current = sig;
+      commands.setHitSize(uw, uh, mw, mh);
+    }
+    if (hitShrinkTimer.current !== null) window.clearTimeout(hitShrinkTimer.current);
+    hitShrinkTimer.current = null;
     if (uw !== w1 || uh !== h1) {
-      timer = window.setTimeout(
+      hitShrinkTimer.current = window.setTimeout(
         () => {
+          hitShrinkTimer.current = null;
           hitCommanded.current = [w1, h1];
+          hitLastSent.current = `${w1},${h1},${mw},${mh}`;
           commands.setHitSize(w1, h1, mw, mh);
         },
-        reducedMotion || firstMeasure ? 0 : DUR[3] + 80,
+        reducedMotion || measurementSettled ? 0 : DUR[3] + 80,
       );
     }
-    return () => window.clearTimeout(timer);
-  }, [mode, reducedMotion, popoverVisible, popMeasuredH, overlayOpen]);
+  };
+  const applyHitSizeRef = useRef(applyHitSize);
+  applyHitSizeRef.current = applyHitSize;
+  useEffect(() => {
+    applyHitSizeRef.current(false);
+  }, [mode, reducedMotion, popoverVisible, overlayOpen]);
+  useEffect(
+    () => () => {
+      if (hitShrinkTimer.current !== null) window.clearTimeout(hitShrinkTimer.current);
+    },
+    [],
+  );
+  useEffect(() => {
+    const el = popoverRef.current;
+    if (!popoverVisible || !el) {
+      popMeasuredH.current = null;
+      return;
+    }
+    // offsetHeight: border-box, integral CSS px — the same logical-px space
+    // set_hit_size speaks. The sync read keeps the open's first trim
+    // immediate (the mode/overlay effect above just commanded the fallback).
+    popMeasuredH.current = el.offsetHeight;
+    applyHitSizeRef.current(true);
+    let settle: number | undefined;
+    const ro = new ResizeObserver(() => {
+      // Trailing debounce past the glide's per-frame fires — the hit rect
+      // only has to be right at the endpoints, and the anticipated cap
+      // above keeps the union over the travel.
+      window.clearTimeout(settle);
+      settle = window.setTimeout(() => {
+        popMeasuredH.current = el.offsetHeight;
+        applyHitSizeRef.current(true);
+      }, RO_SETTLE_MS);
+    });
+    ro.observe(el);
+    return () => {
+      window.clearTimeout(settle);
+      ro.disconnect();
+    };
+  }, [popoverVisible]);
 
   const morph = {
     // Opacity ONLY — no scale. The shell's size glide is the mode swap's
@@ -2098,11 +2166,13 @@ function App() {
           missing from the list — with a content-full list, stepping the
           ladder glided the near edge while the far edge snapped 34px,
           motion pass 2026-07-16); reveal is 140ms opacity with visibility
-          deferred (always mounted — the scroll position and history feed
-          survive closing). Max height re-derived from the REAL 440px window
-          (prototype frame was 520): pill 330, card 290. While open, the hit
-          rect unions this box's MEASURED height (the footprint effect above
-          holds the ref — content-sized, not the cap). */}
+          deferred (the panel stays mounted through pill/card so the scroll
+          position and history feed survive closing WITHIN this garment; in
+          expanded the peer layer owns the queue and the panel unmounts —
+          see popMounted above). Max height re-derived from the REAL 440px
+          window (prototype frame was 520): pill 330, card 290. While open,
+          the hit rect unions this box's MEASURED height (the footprint
+          effect above holds the ref — content-sized, not the cap). */}
       {!nothing && (
         <div
           ref={popoverRef}
@@ -2123,7 +2193,7 @@ function App() {
               : { top: MODE_SIZES[mode][1] - SHELL_GUTTER_PX + 6 + POPOVER_GAP }),
           }}
         >
-          <QueuePanel np={np} connected={spotifyConnected} open={popoverVisible} />
+          {popMounted && <QueuePanel np={np} connected={spotifyConnected} open={popoverVisible} />}
         </div>
       )}
       {/* Dismiss scrim — full-window while a transient overlay is open. Its

@@ -15,7 +15,7 @@
  * flickers via isAnnounceSuppressed (the target's arrival announces once,
  * normally).
  */
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { MorphIcon } from "./icons/MorphIcon";
 import {
   commands,
@@ -445,7 +445,6 @@ const QueueRowBase = function QueueRow({
   track,
   index,
   dragging,
-  dragDy,
   settleDy,
   flash,
   s,
@@ -456,8 +455,10 @@ const QueueRowBase = function QueueRow({
 }: {
   track: QueueTrack;
   index: number;
+  /** While true this row's translateY is written IMPERATIVELY by the panel's
+   * drag machinery (per-pointermove geometry never enters React state) — the
+   * row must render no transform of its own so those writes survive renders. */
   dragging: boolean;
-  dragDy: number;
   /** Nonzero for one frame after a live swap displaced this row: it renders
    * seated at its OLD slot with the transform transition muted, then the
    * clear glides it home on that transition (QueuePanel's FLIP-lite). */
@@ -486,13 +487,7 @@ const QueueRowBase = function QueueRow({
             ? "z-0 hover:bg-fg/5"
             : "z-0 [transition:transform_140ms_var(--ease-out-tk),background-color_600ms_var(--ease-out-tk)] hover:bg-fg/5"
       } ${flash && !dragging ? "bg-accent/15" : ""}`}
-      style={
-        dragging
-          ? { transform: `translateY(${dragDy}px)` }
-          : settleDy
-            ? { transform: `translateY(${settleDy}px)` }
-            : undefined
-      }
+      style={!dragging && settleDy ? { transform: `translateY(${settleDy}px)` } : undefined}
     >
       <RowThumb url={track.art_url} size={s.thumb} />
       <span className="flex min-w-0 flex-1 flex-col">
@@ -586,7 +581,9 @@ function historyToTrack(e: HistoryEntry): QueueTrack | null {
   };
 }
 
-type Ghost = { x: number; y: number; entry: HistoryEntry; over: boolean };
+/** The ghost drag's DISCRETE facts only — the chip's x/y are per-frame
+ * geometry and ride a ref + direct transform writes (see onGhostStart). */
+type Ghost = { entry: HistoryEntry; over: boolean };
 
 /** Search-resolved uris for entries logged before enrichment ran (v0.6.0
  * history, Apple Music listens). Successes only — caching a null permanently
@@ -772,8 +769,44 @@ export function QueuePanel({
   };
 
   // ---- queue reorder drag (translateY follow + live swap, the 11a spec) ----
-  const [drag, setDrag] = useState<{ index: number; dy: number } | null>(null);
+  // State holds the drag's DISCRETE facts only (which slot is dragging; it
+  // changes on arm, swap, release). The continuous dy is per-frame geometry
+  // and follows the posClock → useProgressDom rule: a ref + a direct
+  // transform write per pointermove — as state it re-rendered the whole
+  // panel at pointer rate (120Hz+ mice).
+  const [drag, setDrag] = useState<{ index: number } | null>(null);
   const [order, setOrder] = useState<QueueTrack[] | null>(null); // drag overlay
+  // The up-next list box — the reorder drag's row lookup and the ghost
+  // drag's drop zone (declared here, used by both).
+  const zoneRef = useRef<HTMLDivElement>(null);
+  const dragLive = useRef<{ index: number; dy: number } | null>(null);
+  // The slot whose DOM node is the dragged row RIGHT NOW: a swap's setState
+  // commits a beat after the pointer math, so transform writes in that gap
+  // must offset by the not-yet-rendered slot delta. Rows are the zone's only
+  // children (the empty-state <p> can't coexist with a drag).
+  const dragRenderedIndex = useRef(0);
+  const dragRowEl = () =>
+    (zoneRef.current?.children[dragRenderedIndex.current] as HTMLElement | undefined) ?? null;
+  // The just-released row, cleared post-commit so the release glides home on
+  // the row's re-armed transform transition (see the layout effect below).
+  const dragClearEl = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (dragClearEl.current) {
+      // The release commit just re-armed the row's 140ms transform
+      // transition; clearing the inline offset NOW eases it into its slot —
+      // the same glide React used to own when dy lived in state.
+      dragClearEl.current.style.transform = "";
+      dragClearEl.current = null;
+    }
+    const live = dragLive.current;
+    if (!drag || !live) return;
+    // Post-commit: React just seated (or, for duplicate-uri keys, remounted)
+    // the dragged row at drag.index — re-find it there and re-seat the
+    // transform relative to its new slot.
+    dragRenderedIndex.current = drag.index;
+    const el = dragRowEl();
+    if (el) el.style.transform = `translateY(${live.dy}px)`;
+  });
   // FLIP-lite for the displaced neighbor: a live swap re-renders it a full
   // row away in one frame — the only un-eased motion in the drag grammar
   // (its declared transform transition never fired; nothing changed on the
@@ -821,7 +854,7 @@ export function QueuePanel({
       // (the ProgressBar precedent).
     }
     // Closure-local drag math (no state-updater side effects — StrictMode
-    // double-invokes updaters); state only mirrors it for rendering.
+    // double-invokes updaters); state only mirrors its discrete facts.
     const startY = e.clientY;
     let y0 = startY;
     let i = index;
@@ -833,7 +866,9 @@ export function QueuePanel({
         if (Math.abs(ev.clientY - startY) < 4) return;
         armed = true;
         list = [...upnextRef.current];
+        dragRenderedIndex.current = index;
         setOrder(list);
+        setDrag({ index });
       }
       dy = ev.clientY - y0;
       let moved = false;
@@ -860,9 +895,14 @@ export function QueuePanel({
       }
       if (moved) {
         setOrder([...list]);
+        setDrag({ index: i });
         if (displaced) setSettle({ ...displaced, tick: ++settleTick.current });
       }
-      setDrag({ index: i, dy });
+      dragLive.current = { index: i, dy };
+      // Write against the slot the DOM still shows — a swap's commit lands a
+      // beat later, and the layout effect re-seats to plain dy then.
+      const el = dragRowEl();
+      if (el) el.style.transform = `translateY(${dy + (i - dragRenderedIndex.current) * s.rowH}px)`;
     };
     const finish = (commit: boolean) => {
       window.removeEventListener("pointermove", move);
@@ -871,6 +911,10 @@ export function QueuePanel({
       dragTeardown.current = null;
       if (!armed) return;
       if (commit && i !== index) commands.upnextMove(index, i);
+      // The inline offset stays for this frame; the layout effect clears it
+      // after the release commit so the row glides home eased (see above).
+      dragLive.current = null;
+      dragClearEl.current = dragRowEl();
       setDrag(null);
       // Hold the overlay one tick so the committed order's event replaces it
       // without a flash of the pre-drag order.
@@ -898,8 +942,25 @@ export function QueuePanel({
   };
 
   // ---- history → queue ghost drag ----
-  const zoneRef = useRef<HTMLDivElement>(null);
+  // Same state/ref split as the reorder drag: `ghost` carries the discrete
+  // facts (dragged entry, over-the-zone), the chip's cursor-follow x/y ride
+  // ghostPos + direct transform writes — as state, every pointermove
+  // re-rendered the panel and all its rows for two changed numbers.
   const [ghost, setGhost] = useState<Ghost | null>(null);
+  const ghostPos = useRef({ x: 0, y: 0 });
+  const ghostEl = useRef<HTMLDivElement | null>(null);
+  const moveGhostChip = useRef(() => {
+    const el = ghostEl.current;
+    if (el) {
+      el.style.transform = `translate3d(${ghostPos.current.x + 10}px, ${ghostPos.current.y - 16}px, 0)`;
+    }
+  }).current;
+  // Callback ref: the chip mounts one render AFTER the arming pointermove,
+  // so its first position must land at attach, not at the next move.
+  const attachGhostChip = useRef((el: HTMLDivElement | null) => {
+    ghostEl.current = el;
+    if (el) moveGhostChip();
+  }).current;
   const ghostTeardown = useRef<(() => void) | null>(null);
   useEffect(
     () => () => {
@@ -943,32 +1004,53 @@ export function QueuePanel({
       // Pointer already gone — window listeners still track it.
     }
     let started = false;
+    let over = false;
     const startY = e.clientY;
-    const overZone = (ev: PointerEvent) => {
-      const r = zoneRef.current?.getBoundingClientRect();
-      return !!(
-        r &&
-        r.width > 0 &&
-        ev.clientX >= r.left &&
-        ev.clientX <= r.right &&
-        ev.clientY >= r.top &&
-        ev.clientY <= r.bottom
-      );
+    // The zone's box, read once per drag instead of per pointermove (a
+    // forced-layout read at pointer rate). The popover can't move mid-drag —
+    // the window never resizes and a mode step needs the pointer — but a
+    // wheel scroll of the panel still shifts the zone, so scrolls re-read.
+    let zoneBox = zoneRef.current?.getBoundingClientRect() ?? null;
+    const refreshZone = () => {
+      zoneBox = zoneRef.current?.getBoundingClientRect() ?? null;
     };
+    const inZone = (x: number, y: number) =>
+      !!(
+        zoneBox &&
+        zoneBox.width > 0 &&
+        x >= zoneBox.left &&
+        x <= zoneBox.right &&
+        y >= zoneBox.top &&
+        y <= zoneBox.bottom
+      );
     const move = (ev: PointerEvent) => {
       // A ghost is a drag, not a click — arm it only past a small slop.
       if (!started && Math.abs(ev.clientY - startY) < 4) return;
-      started = true;
-      setGhost({ x: ev.clientX, y: ev.clientY, entry, over: overZone(ev) });
+      ghostPos.current = { x: ev.clientX, y: ev.clientY };
+      if (!started) {
+        started = true;
+        over = inZone(ev.clientX, ev.clientY);
+        setGhost({ entry, over }); // the chip seats itself at attach
+        return;
+      }
+      moveGhostChip();
+      const o = inZone(ev.clientX, ev.clientY);
+      if (o !== over) {
+        over = o;
+        setGhost({ entry, over: o }); // discrete flip: zone glow + chip scale
+      }
     };
     const finish = (ev: PointerEvent | null) => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("scroll", refreshZone, true);
       ghostTeardown.current = null;
       setGhost(null);
-      if (!ev || !started || !overZone(ev)) return;
-      const r = zoneRef.current!.getBoundingClientRect();
+      if (!ev || !started) return;
+      refreshZone(); // exact box at the drop — one read per drag
+      if (!inZone(ev.clientX, ev.clientY)) return;
+      const r = zoneBox!;
       const at = Math.max(
         0,
         Math.min(Math.round((ev.clientY - r.top - s.rowH / 2) / s.rowH), upnextRef.current.length),
@@ -981,6 +1063,7 @@ export function QueuePanel({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", cancel);
+    window.addEventListener("scroll", refreshZone, true);
   };
 
   const onHistoryKeyDown = (e: React.KeyboardEvent, entry: HistoryEntry) => {
@@ -994,6 +1077,42 @@ export function QueuePanel({
     if (e.shiftKey) playResolved(entry);
     else addResolved(entry);
   };
+
+  // ---- stable row callbacks ----
+  // The rows are memo'd, and a fresh closure per render defeats that: every
+  // toast/flash/drag/ghost state change re-rendered every mounted row. The
+  // wrappers below never change identity; the ref always points at this
+  // render's closures, so the handlers still see fresh rows/queueLive/toast
+  // state without the rows re-rendering for it.
+  const rowHandlers = useRef({
+    onQueueDragStart,
+    onQueueKeyDown,
+    playResolved,
+    addResolved,
+    onGhostStart,
+    onHistoryKeyDown,
+  });
+  rowHandlers.current = {
+    onQueueDragStart,
+    onQueueKeyDown,
+    playResolved,
+    addResolved,
+    onGhostStart,
+    onHistoryKeyDown,
+  };
+  const [rowActions] = useState(() => ({
+    onDragStart: (e: React.PointerEvent, index: number) =>
+      rowHandlers.current.onQueueDragStart(e, index),
+    onRemove: (uri: string) => commands.upnextRemove(uri),
+    onKeyDown: (e: React.KeyboardEvent, index: number) =>
+      rowHandlers.current.onQueueKeyDown(e, index),
+    onPlayNow: (entry: HistoryEntry) => rowHandlers.current.playResolved(entry),
+    onAdd: (entry: HistoryEntry) => rowHandlers.current.addResolved(entry),
+    onGhostStart: (ev: React.PointerEvent, entry: HistoryEntry) =>
+      rowHandlers.current.onGhostStart(ev, entry),
+    onHistoryKeyDown: (ev: React.KeyboardEvent, entry: HistoryEntry) =>
+      rowHandlers.current.onHistoryKeyDown(ev, entry),
+  }));
 
   // Infinite scroll: page when the scroll bottom nears.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1098,14 +1217,13 @@ export function QueuePanel({
                 track={t}
                 index={i}
                 dragging={drag?.index === i}
-                dragDy={drag?.index === i ? drag.dy : 0}
                 settleDy={settle && settle.index === i && drag?.index !== i ? settle.dy : 0}
                 flash={flashUris.has(t.uri)}
                 s={s}
                 showDuration={pane}
-                onDragStart={onQueueDragStart}
-                onRemove={(uri) => commands.upnextRemove(uri)}
-                onKeyDown={onQueueKeyDown}
+                onDragStart={rowActions.onDragStart}
+                onRemove={rowActions.onRemove}
+                onKeyDown={rowActions.onKeyDown}
               />
             );
           });
@@ -1132,26 +1250,28 @@ export function QueuePanel({
             actionable={queueLive}
             s={s}
             showDuration={pane}
-            onPlayNow={playResolved}
-            onAdd={(en) => addResolved(en)}
-            onGhostStart={onGhostStart}
-            onKeyDown={onHistoryKeyDown}
+            onPlayNow={rowActions.onPlayNow}
+            onAdd={rowActions.onAdd}
+            onGhostStart={rowActions.onGhostStart}
+            onKeyDown={rowActions.onHistoryKeyDown}
           />
         ))}
       </div>
       {/* Ghost chip — fixed within the (window-sized) webview, riding the
           cursor; pure decoration, the pointer handlers own the semantics.
           Two layers, two clocks: the OUTER transform is the cursor-follow
-          (translate3d, untransitioned — cursor-locked, compositor-only; it
-          was left/top layout mutations per move) and the INNER carries the
-          drop-zone scale on an eased transition — on one element the scale
-          snapped at the zone boundary while the zone's own glow eased 140ms
-          (motion pass, 2026-07-16). */}
+          (translate3d, untransitioned — cursor-locked, compositor-only,
+          written imperatively per pointermove via attachGhostChip /
+          moveGhostChip; it was left/top layout mutations per move, then
+          React state per move) and the INNER carries the drop-zone scale on
+          an eased transition — on one element the scale snapped at the zone
+          boundary while the zone's own glow eased 140ms (motion pass,
+          2026-07-16). */}
       {ghost && (
         <div
+          ref={attachGhostChip}
           aria-hidden
           className="pointer-events-none fixed left-0 top-0 z-50 will-change-transform"
-          style={{ transform: `translate3d(${ghost.x + 10}px, ${ghost.y - 16}px, 0)` }}
         >
           <div
             className={`flex items-center gap-2 rounded-lg border border-border/15 bg-surface-2 py-1 pl-1.5 pr-3 shadow-xl shadow-black/40 [transition:scale_140ms_var(--ease-out-tk)] ${
