@@ -109,9 +109,9 @@ fn ensure(app: &AppHandle) {
     create(app);
 }
 
-/// First-paint warm. Deferred so set_window_size's settle returns before
-/// the cold-create runs (the create still lands on the pump, just after
-/// first paint, where a brief block is invisible). Fire-and-forget —
+/// First-paint warm. defer_main_action runs ensure on the blocking pool
+/// (like focus.rs's off-main create), so set_window_size's settle returns
+/// immediately and the cold-create never sits on the pump. Fire-and-forget —
 /// joining would deadlock if build() hops back onto the STA that called us.
 pub fn schedule_warm(app: &AppHandle) {
     crate::defer_main_action(app, ensure);
