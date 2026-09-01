@@ -1614,6 +1614,14 @@ pub fn run() {
                                 || tick != last_tick
                             {
                                 let np = emit_now(&handle);
+                                // Deferred art: the emit above never blocks on a
+                                // thumbnail read — the pump runs the read here,
+                                // and when the cached art_id changed the follow-up
+                                // emit publishes it (diff-suppression makes that
+                                // exactly one extra event).
+                                if media::art_pump(&handle.state::<ArtCache>(), &np) {
+                                    emit_now(&handle);
+                                }
                                 // A play_now jump flickers intermediate tracks as
                                 // "playing" (and a slow skip can hold one past the
                                 // 1s history floor) — those are navigation, not
@@ -1661,6 +1669,12 @@ pub fn run() {
                                 }
                                 resubscribe = changed;
                                 force_snapshot = true;
+                                // A wake inside the probe window re-opens art
+                                // distrust: AM attaches the new thumbnail after
+                                // the metadata and announces it as exactly this
+                                // wake — without the re-arm, two early identical
+                                // reads settle on the OLD cover for good.
+                                media::art_rearm(&handle.state::<ArtCache>());
                             }
                             Err(RecvTimeoutError::Timeout) => {}
                             // Only reachable when SessionWatch never constructed
