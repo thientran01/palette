@@ -34,7 +34,7 @@ import {
 import { useArt, useArtAccent } from "./lib/artAccent";
 import * as posClock from "./lib/posClock";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
-import { initReactive, setReactiveEnabledSetting } from "./lib/reactive";
+import { initReactive } from "./lib/reactive";
 import { MODE_SIZES, WINDOW_MAX, type Mode } from "./lib/sizes";
 import { DUR, EASE } from "./lib/tokens";
 import {
@@ -1462,17 +1462,13 @@ function App() {
   const [introOpen, setIntroOpen] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const didIntro = useRef(false);
-  // Assert the reduced-motion capture vote even before any separator mounts,
-  // then compose the persisted "Audio-reactive separator" preference on top:
-  // seed it once from prefsSeed and keep it live via "settings-changed" (a
-  // prefs toggle emits it). reactive.ts ANDs it with reduced motion and gates
-  // both the visual subscription and backend audio capture.
+  // initReactive owns the capture vote (pref seed + settings-changed). This
+  // prefsSeed is the onboarding / hotkey / launch-mode snapshot.
   useEffect(() => {
     initReactive();
     let alive = true;
     void commands.prefsSeed().then((s) => {
       if (!alive) return;
-      setReactiveEnabledSetting(s.reactive_separator);
       // Live hotkey chords power the empty-state nudge + first-run bubble, so
       // onboarding copy tracks a rebind instead of hardcoding a default.
       setHotkeys(s.hotkeys);
@@ -1482,11 +1478,10 @@ function App() {
       writeLaunchMode(s.launch_mode);
     });
     const un = onSettingsChanged(({ key, value }) => {
-      if (key === "reactive_separator") setReactiveEnabledSetting(Boolean(value));
       // A prefs change to the default launch mode updates the mirror so the next
       // launch honors it. Launch-only by design: we deliberately don't setMode —
       // changing the default must not resize the running widget.
-      else if (key === "launch_mode") writeLaunchMode(String(value));
+      if (key === "launch_mode") writeLaunchMode(String(value));
     });
     const unHotkeys = onHotkeysChanged(setHotkeys);
     return () => {
