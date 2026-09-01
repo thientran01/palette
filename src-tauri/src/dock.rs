@@ -839,6 +839,9 @@ pub fn set_window_size(
     mode_width: f64,
     mode_height: f64,
 ) {
+    // First-paint signal: React has mounted. Warm Search off this thread
+    // so the settle is not the next WebView2 cold-create.
+    crate::search::schedule_warm(window.app_handle());
     dock.epoch.fetch_add(1, Ordering::SeqCst); // cancel any in-flight glide
 
     // Seed the placement box so the launch settle — and any Moved that beats

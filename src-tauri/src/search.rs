@@ -1,10 +1,13 @@
 /*
  * The summon search — Pulse's FIRST second window (multi-window pioneer;
- * focus mode reuses these seams). Created ONCE, hidden, at setup: WebView2
- * cold-creation costs hundreds of ms, and a summon hotkey that lags is a
- * dead feature. Show = center high on the CURSOR's monitor (the summon's
- * context) + focus; hide = plain hide; blur (lib.rs's Focused(false)
- * handler) and Esc (frontend → search_hide) both dismiss.
+ * focus mode reuses these seams). Created ONCE, hidden, after the main
+ * window's first paint (set_window_size is the signal): WebView2
+ * cold-creation costs hundreds of ms, and putting that on the setup stack
+ * blocked the already-visible widget. A summon before the warm create
+ * falls back to create-then-show. Show = center high on the CURSOR's
+ * monitor (the summon's context) + focus; hide = plain hide; blur
+ * (lib.rs's Focused(false) handler) and Esc (frontend → search_hide)
+ * both dismiss.
  *
  * Visibility here is deliberately OUTSIDE lib.rs's VisIntent /
  * apply_visibility — that composition owns the MAIN window's intent
@@ -20,7 +23,11 @@
  * never restores a stale position); dock::on_moved is label-guarded to
  * "main"; UiReactive votes are keyed per window label.
  */
+use std::sync::Mutex;
+
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+static CREATE: Mutex<()> = Mutex::new(());
 
 pub const LABEL: &str = "search";
 /// Born at this logical size, never resized (house rule). The webview keeps
@@ -36,9 +43,10 @@ pub const LABEL: &str = "search";
 const W: f64 = 680.0;
 const H: f64 = 554.0;
 
-/// Setup-time create-once-hidden. A failure downgrades gracefully: the
-/// hotkey and tray simply find no window.
-pub fn init(app: &AppHandle) {
+/// Create-once-hidden. Idempotent under CREATE: two callers (first-paint
+/// warm and an early summon) converge on one window. A failure downgrades
+/// gracefully: the hotkey and tray simply find no window.
+fn create(app: &AppHandle) {
     let result = WebviewWindowBuilder::new(
         app,
         LABEL,
@@ -81,12 +89,36 @@ pub fn init(app: &AppHandle) {
             }
         }
         Err(e) => {
-            log::error!("search: window create failed ({e}) — summon disabled this run");
+            log::error!("search: window create failed ({e})");
         }
     }
 }
 
+/// Single-flight create. Safe from any thread that can build a webview
+/// (focus.rs already does this from a tokio worker).
+fn ensure(app: &AppHandle) {
+    if app.get_webview_window(LABEL).is_some() {
+        return;
+    }
+    let _gate = CREATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if app.get_webview_window(LABEL).is_some() {
+        return;
+    }
+    create(app);
+}
+
+/// First-paint warm. defer_main_action runs ensure on the blocking pool
+/// (like focus.rs's off-main create), so set_window_size's settle returns
+/// immediately and the cold-create never sits on the pump. Fire-and-forget —
+/// joining would deadlock if build() hops back onto the STA that called us.
+pub fn schedule_warm(app: &AppHandle) {
+    crate::defer_main_action(app, ensure);
+}
+
 pub fn toggle(app: &AppHandle) {
+    ensure(app);
     let Some(win) = app.get_webview_window(LABEL) else {
         return;
     };
