@@ -74,24 +74,6 @@ import { IN_TAURI, type NowPlaying, type SpotifyDevice } from "./types";
  * metadata forever. The reserved slot keeps its height, so nothing moves. */
 const NO_LYRICS_CAPTION_MS = 4000;
 
-/** Layout A (identity | queue panes). Below this the queue stays the compact
- * lyric-column garment so a small-monitor takeover / `/?window=focus` mock
- * doesn't crush into a 38/62 split. */
-const QUEUE_PANE_MIN_PX = 1100;
-
-function useMinWidth(px: number): boolean {
-  const query = `(min-width: ${px}px)`;
-  const [wide, setWide] = useState(() => window.matchMedia(query).matches);
-  useEffect(() => {
-    const mq = window.matchMedia(query);
-    const onChange = () => setWide(mq.matches);
-    onChange();
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [query]);
-  return wide;
-}
-
 /** Identity fields — the same re-render gate App.tsx uses (position lives
  * in posClock, never in React state). */
 const IDENTITY_FIELDS = [
@@ -322,10 +304,6 @@ export default function Focus() {
   // Closed when no session, like the widget (the toggle that opens it is
   // hidden then too).
   const [queueOpen, setQueueOpen] = useState(false);
-  // Layout A: a wide focus window gives the open queue the remaining desktop
-  // width instead of the art-capped lyric column. Compact below the breakpoint.
-  const wideRoom = useMinWidth(QUEUE_PANE_MIN_PX);
-  const queuePane = queueOpen && wideRoom;
 
   // Esc peels one layer: the queue panel first, then the room.
   const queueOpenRef = useRef(queueOpen);
@@ -662,44 +640,30 @@ export default function Focus() {
             </AnimatePresence>
           </div>
 
-          {/* THE QUEUE — the room's content surface. Compact (<1100px): seated
-              IN THE LYRIC COLUMN (2026-07-16: the widget-sized 380px popover
-              read as a miniature lost on the big screen — Thien) — same
-              px/gap flex row as the split seat, --art spacer, 11vh ladder
-              top, bottom edge on the art's bottom line, capped at --art so
-              full-column rows don't go sparse. Layout A (≥1100px): the
-              identity stack STAYS in its left seat (cover never moves) and
-              the list becomes the right pane (~38/62 of the window) —
-              remaining desktop width, no --art cap. Opaque bg-surface
-              covers the still-running lyrics behind it; opacity-only
+          {/* THE QUEUE — the room's setlist, seated AT THE LYRIC COLUMN'S
+              LEFT EDGE (same px/gap flex row + --art spacer, same 11vh
+              ladder top, same bottom on the art's bottom line). Identity
+              holds the left seat (queue-forced split above). This is NOT
+              the widget popover scaled up: max-w-[40rem] is a reading
+              measure, independent of --art (art shrinks on short monitors;
+              a setlist shouldn't) and independent of the lyric column's
+              leftover width (full-column rows read as a sparse table —
+              Thien, 2026-09-01). Void to the right is the room breathing,
+              same as lyrics fading out. Opaque bg-surface; opacity-only
               crossfade (in 200 / out 140, visibility deferred), inert when
               hidden, always MOUNTED so scroll + the history feed survive
               the toggle. */}
-          <div
-            className={
-              queuePane
-                ? "pointer-events-none absolute inset-0 z-20 flex items-stretch"
-                : "pointer-events-none absolute inset-0 z-20 flex items-stretch gap-[7%] px-[10%]"
-            }
-          >
-            <div className={queuePane ? "w-[38%] shrink-0" : "w-(--art) shrink-0"} />
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-stretch gap-[7%] px-[10%]">
+            <div className="w-(--art) shrink-0" />
             <div
               inert={!queueOpen}
-              className={`pointer-events-auto mt-[11vh] flex h-[calc(var(--stack-top)_+_var(--art)_-_11vh)] min-w-0 flex-col bg-surface ${
-                queuePane ? "flex-1 pr-[5%]" : "w-full max-w-(--art)"
-              } ${
+              className={`pointer-events-auto mt-[11vh] flex h-[calc(var(--stack-top)_+_var(--art)_-_11vh)] min-w-0 max-w-[40rem] flex-1 flex-col bg-surface ${
                 queueOpen
                   ? "opacity-100 [transition:opacity_200ms_var(--ease-out-tk)]"
                   : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),visibility_0s_140ms]"
               }`}
             >
-              <QueuePanel
-                np={np}
-                connected={spotify.connected}
-                open={queueOpen}
-                scale="room"
-                pane={queuePane}
-              />
+              <QueuePanel np={np} connected={spotify.connected} open={queueOpen} scale="room" />
             </div>
           </div>
 
