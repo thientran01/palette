@@ -6,9 +6,13 @@
  * key is the second). All writers go through set_value now.
  *
  * Writes are serialized by a module mutex — two tray toggles can't interleave
- * their read-modify-write. The file is tiny, writers are rare (tray clicks,
- * hand edits while the app is closed), and hand edits during a live write
- * lose politely (last writer wins whole-file).
+ * their read-modify-write. The parsed root lives behind that same mutex:
+ * first read populates the cache, later get_value calls serve it, set_value
+ * merges then write_atomic's the file. A hand-edit to settings.json while
+ * the app is running is not picked up by later reads. It never was reliable
+ * (a live set_value already clobbered the file wholesale). Writers are rare
+ * (tray clicks, hand edits while the app is closed), and a hand-edit during
+ * a live write still loses politely (last writer wins whole-file).
  */
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -17,7 +21,39 @@ use std::sync::Mutex;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-static WRITE_GATE: Mutex<()> = Mutex::new(());
+/// In-memory settings.json object. `from_disk` runs at most once per
+/// instance — the test seam that proves a set/get round-trip is cache-only.
+struct Cache {
+    root: Option<Value>,
+}
+
+impl Cache {
+    const fn new() -> Self {
+        Self { root: None }
+    }
+
+    fn load(&mut self, from_disk: impl FnOnce() -> Value) -> &mut Value {
+        self.root.get_or_insert_with(from_disk)
+    }
+
+    fn get(&mut self, key: &str, from_disk: impl FnOnce() -> Value) -> Option<Value> {
+        self.load(from_disk).get(key).cloned()
+    }
+
+    fn set(&mut self, key: &str, value: Value, from_disk: impl FnOnce() -> Value) {
+        self.load(from_disk)
+            .as_object_mut()
+            .expect("cached root is always an object")
+            .insert(key.to_string(), value);
+    }
+}
+
+static GATE: Mutex<Cache> = Mutex::new(Cache::new());
+
+fn lock() -> std::sync::MutexGuard<'static, Cache> {
+    GATE.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn path(app: &AppHandle) -> Option<PathBuf> {
     app.path()
@@ -26,7 +62,7 @@ fn path(app: &AppHandle) -> Option<PathBuf> {
         .map(|d| d.join("settings.json"))
 }
 
-fn read_root(app: &AppHandle) -> Value {
+fn read_disk(app: &AppHandle) -> Value {
     path(app)
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
@@ -35,7 +71,7 @@ fn read_root(app: &AppHandle) -> Value {
 }
 
 pub fn get_value(app: &AppHandle, key: &str) -> Option<Value> {
-    read_root(app).get(key).cloned()
+    lock().get(key, || read_disk(app))
 }
 
 pub fn get_string(app: &AppHandle, key: &str) -> Option<String> {
@@ -49,17 +85,17 @@ pub fn get_bool(app: &AppHandle, key: &str, default: bool) -> bool {
 }
 
 pub fn set_value(app: &AppHandle, key: &str, value: Value) {
-    let _gate = WRITE_GATE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = lock();
+    cache.set(key, value, || read_disk(app));
     let Some(p) = path(app) else { return };
-    let mut root = read_root(app);
-    root.as_object_mut()
-        .expect("read_root always yields an object")
-        .insert(key.to_string(), value);
-    // In-session behavior rides in-memory state either way; a failed write
+    let serialized = cache
+        .root
+        .as_ref()
+        .expect("set populates the root")
+        .to_string();
+    // In-session behavior rides the cache either way; a failed write
     // only surfaces at next launch — say so instead of diverging silently.
-    if let Err(e) = write_atomic(&p, root.to_string().as_bytes()) {
+    if let Err(e) = write_atomic(&p, serialized.as_bytes()) {
         log::warn!("settings: {key} not persisted: {e}");
     }
 }
@@ -121,4 +157,49 @@ pub(crate) fn json_capped<T: serde::de::DeserializeOwned>(
     cap: u64,
 ) -> serde_json::Result<T> {
     serde_json::from_reader(resp.into_reader().take(cap))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::cell::Cell;
+
+    #[test]
+    fn set_then_get_does_not_reload() {
+        let mut cache = Cache::new();
+        let loads = Cell::new(0);
+        cache.set("a", json!(1), || {
+            loads.set(loads.get() + 1);
+            json!({})
+        });
+        assert_eq!(loads.get(), 1);
+        let got = cache.get("a", || {
+            loads.set(loads.get() + 1);
+            panic!("disk re-read");
+        });
+        assert_eq!(got, Some(json!(1)));
+        assert_eq!(loads.get(), 1);
+    }
+
+    #[test]
+    fn merge_keeps_both_keys() {
+        let mut cache = Cache::new();
+        let loads = Cell::new(0);
+        cache.set("a", json!(1), || {
+            loads.set(loads.get() + 1);
+            json!({})
+        });
+        cache.set("b", json!(2), || {
+            loads.set(loads.get() + 1);
+            json!({"a": 0})
+        });
+        assert_eq!(
+            loads.get(),
+            1,
+            "second set must merge the cache, not reload"
+        );
+        assert_eq!(cache.get("a", || panic!("disk re-read")), Some(json!(1)));
+        assert_eq!(cache.get("b", || panic!("disk re-read")), Some(json!(2)));
+    }
 }

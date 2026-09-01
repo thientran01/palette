@@ -1437,13 +1437,16 @@ pub fn run() {
                 .show_menu_on_left_click(true)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     // toggle/reset/companion reach apply_visibility → emit_now,
-                    // whose GSMTC .get() blocks; on_menu_event runs on the main
-                    // thread, so run them OFF it (see defer_main_action) — this
-                    // is what kept the tray from freezing the pump.
+                    // whose GSMTC .get() blocks; prefs/shortcuts create a
+                    // WebView2. on_menu_event runs on the main thread, so run
+                    // them OFF it (see defer_main_action) — this is what kept
+                    // the tray from freezing the pump.
                     "toggle" => defer_main_action(app, toggle_widget),
                     "reset" => defer_main_action(app, dock::reset_position),
-                    "prefs" => prefs::open(app, None),
-                    "shortcuts" => prefs::open(app, Some("hotkeys".to_string())),
+                    "prefs" => defer_main_action(app, |app| prefs::open(app, None)),
+                    "shortcuts" => {
+                        defer_main_action(app, |app| prefs::open(app, Some("hotkeys".to_string())))
+                    }
                     // Toggle from the registry's actual state, through the
                     // shared helper so the tray checkmark + prefs mirror stay
                     // in sync (the check item does NOT auto-toggle itself).
@@ -1541,9 +1544,9 @@ pub fn run() {
             let audio_switch = Arc::new(AtomicBool::new(false));
             audio::spawn(app.handle().clone(), audio_switch.clone());
             let ui_reactive = app.state::<UiReactive>().0.clone();
-            // The search window: create-once-hidden so Ctrl+Alt+S is
-            // instant (WebView2 cold-create costs hundreds of ms).
-            search::init(app.handle());
+            // Search warms after main first paint (dock::set_window_size →
+            // search::schedule_warm). Creating it here blocked the visible
+            // widget on a second WebView2 cold-create.
 
             // Media loop → "now-playing" events: a heartbeat poll plus GSMTC
             // change events that cut the wait short, so track changes,
