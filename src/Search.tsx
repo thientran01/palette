@@ -16,8 +16,9 @@
  * rows, not on the chrome.
  *
  * Realm notes (this is the codebase's first second window): this module
- * runs in its own JS realm — its own backend listeners, its own
- * initReactive vote (the per-window vote map in lib.rs), no posClock (the
+ * runs in its own JS realm — its own backend listeners, no reactive vote
+ * (this pane renders no Waveform; lib.rs ORs only inserted keys, so a
+ * missing Search entry is not a true vote), no posClock (the
  * search window never renders position). Announcement suppression for a play
  * lives in the MAIN realm, armed by the backend's "spotify-jump" emit —
  * never armed from here.
@@ -34,7 +35,6 @@
  */
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { commands, onSearchShown } from "./lib/backend";
-import { initReactive } from "./lib/reactive";
 import { RowThumb, useSpotifyStatus } from "./Queue";
 import { playNowNote } from "./lib/playNowStatus";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
@@ -459,11 +459,6 @@ export default function Search() {
   // not snap keyboard navigation back to whatever row it happens to cover
   // (quick-review catch).
   const lastMouse = useRef<{ x: number; y: number } | null>(null);
-
-  // The per-window reactive vote (lib.rs vote map) — the search window renders no
-  // reactive surface, but a realm that never votes would leave the previous
-  // default standing for it.
-  useEffect(() => initReactive(), []);
 
   const showNote = (msg: string, holdMs = 2400) => {
     setNote(msg);

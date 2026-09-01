@@ -33,9 +33,10 @@
  * Realm notes: own onNowPlaying → posClock.ingest loop (posClock is
  * per-realm), own lyric fetch (disk cache makes the second fetch ~free),
  * own art + accent extraction (each window owns its document's --accent),
- * own initReactive vote (lib.rs's per-window map). The media loop and the
- * audio capture gate are widened backend-side to keep feeding this window
- * while the main widget hides behind it.
+ * own initReactive vote (seeded from the persisted pref, same path as
+ * main). The media loop and the audio capture gate are widened
+ * backend-side to keep feeding this window while the main widget hides
+ * behind it.
  */
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
