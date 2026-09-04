@@ -8,6 +8,19 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-03
+
+A patch for installed 1.0 copies: the focus queue is a setlist again, and launch/playback got lighter.
+
+### Changed
+
+- Focus mode's queue is a reading-width setlist next to the art (room type, duration on the artist line) instead of the widescreen pane that stretched rows to the screen edge.
+- Launch and playback are cheaper. Search and Preferences warm after first paint. Lyrics fetches are capped and joined. Position-only media ticks skip the art marshal. Queue reorder no longer re-renders on every pointer move. Expanding toward focus starts warming the takeover window.
+
+### Fixed
+
+- The living-separator preference is applied before any window votes, so a realm no longer flashes the default before the saved setting lands.
+
 ## [1.0.0] - 2026-08-31
 
 Palette 1.0. The widget you have been running since 0.7 is the product: free placement, synced lyrics, Search, queue, focus mode, and Spotify Connect. This cut lands the last reliability and polish fixes from the soak, and stamps the version that matches what it already is.
@@ -254,7 +267,8 @@ First public release.
 - Synced lyrics (LRCLIB with disk cache), album-art adaptive accents, an audio-reactive "living separator", corner docking, morphing icons, and a monotonic position clock owning playback time.
 - Ships as a per-user NSIS installer — single-instance, opt-in start-at-login — with a GitHub Releases auto-update pipeline and an in-app updater.
 
-[Unreleased]: https://github.com/thientran01/palette/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/thientran01/palette/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/thientran01/palette/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/thientran01/palette/compare/v0.7.5...v1.0.0
 [0.7.5]: https://github.com/thientran01/palette/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/thientran01/palette/compare/v0.7.3...v0.7.4
