@@ -1,6 +1,6 @@
 [package]
 name = "pulse"
-version = "1.0.0"
+version = "1.0.1"
 description = "Palette — mini music player widget for Windows"
 authors = ["Thien Tran"]
 edition = "2021"
