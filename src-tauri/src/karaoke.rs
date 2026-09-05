@@ -19,9 +19,11 @@ const MAX_SAMPLES: usize = 16_000 * 60 * 8;
 const ARM_NEAR_START_MS: i64 = 8_000;
 const PEAK_ABORT: f32 = 1e-3;
 const MIN_LINE_COVERAGE: u32 = 30;
-/// v3: the spectral-flux aligner (v2 files were energy-rise placements —
-/// re-record rather than keep their word times).
-const STORE_V: u32 = 3;
+/// v2 = the energy-rise aligner. A spectral-flux + DP aligner shipped
+/// briefly as v3 (2026-09-04) and regressed live — it latched onto beat
+/// onsets and its pre-stamp window merged lines; any v3 file on disk is
+/// dropped on read and the track re-records under v2.
+const STORE_V: u32 = 2;
 /// Wall-clock deficit past which the capture is judged to have delivered
 /// nothing for a stretch (process loopback goes quiet with its target) —
 /// the gap is padded with silence so later word times don't drift early.
