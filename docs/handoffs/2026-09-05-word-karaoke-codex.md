@@ -16,7 +16,7 @@ attack; do not retune them from a synthetic test. Codex now owns the branch;
 Claude is stopped. Review fixes are in this PR; merging still needs the
 accuracy gate below resolved.
 
-## Measurement correction â€” read before tuning
+## Measurement correction — read before tuning
 
 The original tap page exported audio-relative seconds. The original scorer
 compared those directly to song-relative predictions. Capture does not start
@@ -242,3 +242,44 @@ gate is substituted. The browser preview exposed an Illegal invocation
 from unbound requestAnimationFrame; the call site now wraps both frame APIs.
 Browser DOM/CSS checks show distinct 32px mock rows and correct gradients.
 This validates browser layout, not native audible synchronization.
+
+
+## 2026-09-05 — Native acoustic integration, validation in progress
+
+`acoustic.rs` now runs ONNX Runtime 1.22 through ort rc10, with the Rust
+uroman 0.7 romanizer and a bounded CTC decoder. All 461 word onsets/endings
+across both recordings match the Python int8 predictions exactly. Native
+alignment took 23.53s Blur / 23.16s Heart To Heart, with about 1s model load
+before checksum validation was added. These are development CPU timings.
+64 deterministic synthetic CTC oracle cases come from torchaudio 2.8;
+no song audio or model weights are committed. Rust checks passed before
+live worker integration; rerun after integration/review changes.
+
+The background `commit_sync` worker selects the model when the installed
+app-data `karaoke-model/enabled` marker exists at startup. Selection stays
+fixed until restart. Model/DLL checksums are verified on load; caches and
+dumps use `mms-int8/1`, not the fixed-prior recipe. Failed inference retains
+diagnostic audio when enabled and stays retryable; it never caches a prior
+under the model recipe. Session/model memory drops after each alignment.
+`scripts/install_karaoke_model.py` installs already-local verified assets,
+with the enable marker last. No model distribution or audio upload occurs.
+MMS weights remain CC-BY-NC 4.0; the script documents the license.
+
+Local assets have been installed to `%APPDATA%/com.thien.pulse/karaoke-model`.
+The task dev app is restarting with these changes. PR #162 remains open;
+new native changes require review and live-worker verification before merge.
+Native example: `karaoke_acoustic <dump-dir> <model.onnx> <onnxruntime.dll> <output.json>`.
+
+
+Native follow-up verification: installed-directory replay (no Python DLL
+search path) still matches all 461 starts/ends/source identities. Including
+asset checksum verification, load was 6.10/6.26s and alignment 23.16/23.27s.
+Three-agent review (+failure/recurring-family scope) confirmed punctuation
+abort and loader panic defects; both fixed, reviewed again, and pinned by
+two assertions that fail under the old behavior. Standalone quoted Korean
+is also covered; internal apostrophes in contractions remain acoustic targets.
+Full Rust suite: 101 pass, 2 pre-existing ignored, plus 5 scorer tests;
+clippy all-targets passes. The native app started at 14:52 PT with
+`karaoke: acoustic model enabled (mms-int8/1)`. Win32 enumeration verified
+a visible Palette window (PID 31472, HWND 593558). A listening-feedback
+question is pending; native audible feel has not been signed off.

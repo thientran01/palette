@@ -1,5 +1,6 @@
 //! Local word-karaoke store, capture, and align.
 
+use crate::acoustic;
 use crate::align::{self, TimeMap, Word};
 use crate::lyrics;
 use crate::media::NowPlaying;
@@ -22,6 +23,14 @@ const MIN_LINE_COVERAGE: u32 = 30;
 /// v5 binds word times to the exact synced LRC as well as the aligner recipe.
 /// Older files lack source identity and must be recorded again.
 const STORE_V: u32 = 5;
+fn recipe() -> &'static str {
+    if acoustic::assets().is_some() {
+        acoustic::RECIPE
+    } else {
+        align::Stages::RECIPE
+    }
+}
+
 /// A delivery deficit cannot distinguish buffered audio from missing audio.
 /// Above normal packet jitter, discard rather than invent silence.
 const GAP_ABORT_MS: u64 = 400;
@@ -225,10 +234,7 @@ fn read_file(path: &Path, synced: Option<&str>) -> Vec<Word> {
     let Ok(file) = serde_json::from_str::<StoreFile>(&raw) else {
         return Vec::new();
     };
-    if file.v != STORE_V
-        || file.recipe != align::Stages::RECIPE
-        || file.synced.as_deref() != Some(synced)
-    {
+    if file.v != STORE_V || file.recipe != recipe() || file.synced.as_deref() != Some(synced) {
         let _ = std::fs::remove_file(path);
         return Vec::new();
     }
@@ -239,7 +245,7 @@ fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::R
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        recipe: align::Stages::RECIPE.to_string(),
+        recipe: recipe().to_string(),
         synced: Some(synced.to_string()),
         words: words.to_vec(),
     })
@@ -575,7 +581,7 @@ fn write_dump(
     let to_io = |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let words_json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        recipe: align::Stages::RECIPE.to_string(),
+        recipe: recipe().to_string(),
         synced: Some(lrc.to_string()),
         words: words.to_vec(),
     })
@@ -661,7 +667,45 @@ fn commit_sync(
             ""
         },
     );
-    let words = align::align(&rec.samples, TARGET_HZ, &lines, &map);
+    let words = if let Some(dir) = acoustic::assets() {
+        // Identical quantization to write_dump: replay and production share
+        // the same PCM representation, including clipping and scale.
+        let pcm: Vec<i16> = rec
+            .samples
+            .iter()
+            .map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+            .collect();
+        let started = Instant::now();
+        let result = acoustic::AcousticAligner::load(
+            &dir.join("mms-fa-int8.onnx"),
+            &dir.join("onnxruntime.dll"),
+        )
+        .and_then(|mut model| model.align(&pcm, &lines, &map));
+        match result {
+            Ok(words) => {
+                log::info!(
+                    "karaoke: acoustic aligned {} words for {} in {:.2}s",
+                    words.len(),
+                    rec.title,
+                    started.elapsed().as_secs_f64()
+                );
+                words
+            }
+            Err(e) => {
+                // Never cache guessed timings under the acoustic recipe.
+                // Retain diagnostic audio and let a later listen retry.
+                log::warn!("karaoke: acoustic alignment failed for {} ({e})", rec.title);
+                if let Some(dir) = dump_dir {
+                    if let Err(e) = write_dump(dir, &rec, &synced, &[], &map) {
+                        log::warn!("karaoke: failure dump failed ({e})");
+                    }
+                }
+                return;
+            }
+        }
+    } else {
+        align::align(&rec.samples, TARGET_HZ, &lines, &map)
+    };
     // Evidence first: a coverage miss below still leaves something to score.
     if let Some(dir) = dump_dir {
         match write_dump(dir, &rec, &synced, &words, &map) {
@@ -700,10 +744,9 @@ fn commit_sync(
 // ── Word lead (docs/specs/2026-09-04-word-lead-nudge.md) ──
 //
 // How far BEFORE a word's aligned onset the frontend fires its wipe, on
-// top of the per-player line lead. The aligner is unbiased against tap
-// truth (±70ms) yet words read "a little late": the wipe lands on the
-// onset and ramps 90ms, and a karaoke highlight is expected to lead the
-// vocal. Thien tunes it with two hotkeys; the value persists.
+// top of the per-player line lead. The wipe ramps over 90ms; the user's
+// preferred visual lead is separate from measured acoustic onset error.
+// Thien tunes it with two hotkeys; the value persists across model changes.
 
 pub const WORD_LEAD_DEFAULT_MS: i64 = 160;
 const WORD_LEAD_STEP_MS: i64 = 20;

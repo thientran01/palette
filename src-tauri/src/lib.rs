@@ -1,3 +1,4 @@
+pub mod acoustic;
 pub mod align;
 mod audio;
 mod dock;
@@ -1374,6 +1375,9 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            if let Ok(dir) = app.path().app_data_dir() {
+                acoustic::configure(dir.join("karaoke-model"));
+            }
             // Panic hook: in a release build stderr is discarded, so an
             // uncaught panic (any thread — the media loop, presence watcher,
             // blocking-pool tasks) otherwise vanishes with no trace. Log the
