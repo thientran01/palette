@@ -270,8 +270,8 @@ pub enum StartDetector {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stages {
     /// Estimate the song's stamp lead from the median start detection
-    /// across all lines (per-line detections are noisy; their median is
-    /// unbiased on both truth songs).
+    /// across all lines. Experimental: corrected labels show the full-mix
+    /// detector's median is biased on the current evidence.
     pub song_lead: bool,
     /// Estimate the song's syllable rate from the median end detection.
     pub song_rate: bool,
@@ -292,20 +292,15 @@ impl Stages {
     /// ANY change that moves word times — the 2026-09-04 fixed-lead →
     /// song-lead switch shipped without a store bump and left Heart To
     /// Heart's words ~216ms late for the rest of the evening.
-    pub const RECIPE: &str = "song-lead/3";
+    pub const RECIPE: &str = "fixed-prior/4";
 
-    /// The set the app runs. Measured on Blur + Heart To Heart via
-    /// `karaoke_score matrix` (2026-09-04): song lead 177 / 160ms median
-    /// vs the fixed prior's 183 / 374 — the stamp lead is per song
-    /// (Blur's stamps run 330ms early, Heart To Heart's 114ms). Adding
-    /// the song rate lost on both (208 / 271: the end detector
-    /// under-measures spans), as did every per-line refinement. Update
-    /// this AND the spec together.
+    /// Corrected audio/song clocks reverse the old calibration verdict:
+    /// fixed prior is 204ms on Blur and 154-157ms on Heart To Heart (the
+    /// latter bounds the recovered map's rounding), versus 215 / 493-495ms
+    /// with song lead. Keep the measured better rung; do not fit constants
+    /// to cross the still-unmet 200ms gate. Audio capture still gates caching.
     pub fn shipped() -> Stages {
-        Stages {
-            song_lead: true,
-            ..Stages::PRIOR_ONLY
-        }
+        Stages::PRIOR_ONLY
     }
 
     /// Every rung the scorer reports, in ladder order.

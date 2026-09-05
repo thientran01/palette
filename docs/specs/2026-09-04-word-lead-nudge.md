@@ -1,5 +1,12 @@
 # Word lead: perceptual offset, nudge hotkeys, and the scorer's `fit`
 
+> **Later 2026-09-05 update:** bounded Heart To Heart recovery now permits
+> comparison (original audio and label identities verified; map rounding
+> <=2.191ms). Fixed prior scores 204ms on Blur and 154-157ms on Heart To
+> Heart, beating song lead on both. Current stage is the existing fixed
+> prior, recipe `fixed-prior/4`. The 200ms gate is still unmet on Blur.
+> See the handoff's superseding recovery section for provenance.
+
 > **2026-09-05 review supersedes historical measurement claims below.**
 > Legacy labels used the recording clock but were scored against the song
 > clock. Corrected Blur median is 215ms (p90 578ms); Heart To Heart's original

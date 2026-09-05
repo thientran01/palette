@@ -2,6 +2,11 @@
 
 Updated 2026-09-05 after review of PR #162 (`feature/word-karaoke`).
 
+**Current result:** fixed prior is selected (`fixed-prior/4`), scoring 204ms
+on Blur and 154-157ms on bounded Heart To Heart recovery. The later recovery
+section supersedes the missing-map status and song-lead selection below.
+Blur still misses the 200ms gate; the goal and PR remain open.
+
 ## User intent and live baseline
 
 Improve word accuracy and smoothness without disturbing the line highlight.
@@ -29,10 +34,10 @@ Corrected Blur matrix (343 labels, preserved Desktop evidence, current code):
 
 | Stages | Median ms | p90 ms | Within 100ms | Bias ms | Worst line mean ms |
 |---|---:|---:|---:|---:|---:|
-| Fixed prior | 204 | 546 | 26% | -54 | 922 |
+| Fixed prior (current) | 204 | 546 | 26% | -54 | 922 |
 | Prior + energy | 246 | 652 | 22% | -135 | 922 |
 | Prior + flux | 239 | 745 | 27% | -79 | 1515 |
-| Song lead (current) | 215 | 578 | 24% | -113 | 992 |
+| Song lead (previous) | 215 | 578 | 24% | -113 | 992 |
 | Song lead + rate | 316 | 872 | 15% | -376 | 1163 |
 | Song + energy | 336 | 938 | 15% | -428 | 1163 |
 | Song + energy + end | 489 | 1336 | 12% | -565 | 1163 |
@@ -73,7 +78,7 @@ score; a candidate missing a labelled word is rejected.
 - Short/dense lines reserve room for remaining words; impossible lines use
   line-only highlighting. Empty LRC stamps bound instrumental breaks.
   Predictions never extend beyond captured audio.
-- Store v5 binds exact LRC and recipe `song-lead/3`. Old stores re-record.
+- Store v5 binds exact LRC and recipe `fixed-prior/4`. Old stores re-record.
 - Diagnostic dumps allow 55% listens, but persistent caches require mapped
   audio to reach duration minus 1500ms. Partial attempts remain retryable.
 - Unresolved seek strikes reject finalization. Delivery deficits over 400ms
@@ -112,3 +117,45 @@ Local review validation: production frontend build passed; 34 frontend tests,
 16 tap-tool tests passed; Rust formatting and clippy with warnings denied
 passed. The real Blur template-to-tap-page flow also generated successfully
 in a temporary copy without modifying the original evidence.
+
+## Superseding evidence recovery and stage selection (2026-09-05)
+
+Thien supplied the original Downloads labels. SHA-256 confirms byte identity
+with the Desktop copies:
+
+- Blur `labels.txt`, 343 rows: `a3c7ae3731e6626411da92c658f6cb4b3a31af71201a6fe5166ebab4a29e17fd`.
+- Heart To Heart `labels(1).txt`, 118 rows: `10141ed5eb9ae1be1c793cb3a0502849192a683468620f371ba94d9609504ea0`.
+
+A reconstructed Heart To Heart dump was found on the Desktop. It is not the
+original dump: words.json is empty and anchors are unavailable. Nevertheless,
+its PCM equals the WAV payload exactly, the WAV equals the original tap
+page's embedded audio exactly, and its lyric text equals that page's 30 lines.
+The original Claude session tool output (b719aa93-c79a-4132-866f-7458a3eafdec,
+JSONL row 1636; format in row 1634) independently records intercept 454ms
+formatted to zero decimals and slope 0.062483ms/sample to six decimals.
+These imply at most 2.191ms map rounding error over the 3,382,560 samples.
+This does not bound anchor bias or tapping error, only reconstruction rounding.
+
+Corrected Heart To Heart matrix using those recovered values:
+
+| Stages | Median ms | p90 ms | Within 100ms | Bias ms | Worst line mean ms |
+|---|---:|---:|---:|---:|---:|
+| Fixed prior | 156 | 445 | 31% | -65 | 757 |
+| Prior + energy | 473 | 844 | 14% | -405 | 1377 |
+| Prior + flux | 211 | 576 | 23% | 159 | 564 |
+| Song lead | 494 | 747 | 6% | -495 | 1187 |
+| Song lead + rate | 662 | 950 | 0% | -727 | 1305 |
+| Song + energy | 779 | 1140 | 8% | -655 | 1495 |
+| Song + energy + end | 823 | 1427 | 2% | -789 | 1605 |
+
+Running the real scorer at all four intercept/slope rounding corners yields
+fixed-prior medians 154-157ms and song-lead medians 493-495ms. The choice is
+robust to this reconstruction uncertainty. `Stages::shipped()` now selects
+the existing fixed prior, recipe `fixed-prior/4`; no constants were fitted.
+It improves both available recordings while retaining the captured-audio,
+silence and coverage gates. There is still no immediate untimed-word fallback.
+
+The merge accuracy gate remains unmet: Blur is 204ms. The previous section's
+missing-map blocker is superseded by this bounded reconstruction for candidate
+comparisons, not by a claim that original anchors/live words were recovered.
+The 160ms user preference, 90ms attack and line scheduling remain unchanged.
