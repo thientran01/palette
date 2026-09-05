@@ -2,10 +2,16 @@
 
 Updated 2026-09-05 after review of PR #162 (`feature/word-karaoke`).
 
-**Current result:** fixed prior is selected (`fixed-prior/4`), scoring 204ms
-on Blur and 154-157ms on bounded Heart To Heart recovery. The later recovery
-section supersedes the missing-map status and song-lead selection below.
-Blur still misses the 200ms gate; the goal and PR remain open.
+**Current result:** the optional native acoustic model (`mms-int8/1`) is
+installed and enabled in the running app on this computer. It scores
+152ms median / 539ms p90 on Blur and 84ms / 243ms on Heart To Heart.
+Worst-line mean errors are 1224ms / 629ms, below the 1500ms ceiling; Blur's
+worst line is still worse than the fixed prior. Both recordings clear the
+200ms median threshold. Exact native/Python parity and real-app caches
+are verified in the later sections. The fixed prior remains the fallback
+for installations without model assets. Listening feedback is pending;
+the goal and PR remain open. Earlier measurement/recovery sections below
+are historical and are superseded by the dated native-integration results.
 
 ## User intent and live baseline
 
@@ -43,7 +49,8 @@ Corrected Blur matrix (343 labels, preserved Desktop evidence, current code):
 | Song + energy + end | 489 | 1336 | 12% | -565 | 1163 |
 
 The documented gate is median <=200ms, no line mean absolute error >1500ms
-on both songs, and no worsening on either song. It is **not satisfied**.
+on both songs, and no worsening on either song. This historical fixed-prior
+result did **not satisfy** it; see the current acoustic results above.
 Do not tune on this one noisy recording just to cross the threshold.
 
 ## Evidence and reproduction
