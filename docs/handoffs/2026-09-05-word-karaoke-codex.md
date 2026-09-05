@@ -159,3 +159,61 @@ The merge accuracy gate remains unmet: Blur is 204ms. The previous section's
 missing-map blocker is superseded by this bounded reconstruction for candidate
 comparisons, not by a claim that original anchors/live words were recovered.
 The 160ms user preference, 90ms attack and line scheduling remain unchanged.
+
+## Offline forced-alignment experiment (not integrated)
+
+`scripts/research/karaoke_mms_probe.py` runs TorchAudio 2.8 MMS_FA, using
+full-mix PCM and known LRC only. Per-row windows extend 500ms on each side,
+cap at 20s, and use star tokens at the two boundaries. uroman 1.3.1.1
+normalizes each source token; original display text and line identity stay
+separate. Predictions are completed before labels are read. No constants,
+thresholds or alignment paths were fitted to labels.
+
+The app's Rust scorer independently verifies external predictions via
+`karaoke_score score-words <dump> <labels> <candidate.json>`. It uses the
+same clock correction, source validation and quantiles as native candidates.
+The probe's Python diagnostics are provisional; Rust output is authoritative.
+
+| Candidate | Blur median / p90 / worst line | Heart To Heart median / p90 / worst line |
+|---|---|---|
+| Current fixed prior | 204 / 546 / 922ms | 156 / 445 / 757ms |
+| MMS_FA full mix | 152 / 539 / 1224ms | 84 / 262 / 629ms |
+
+MMS share within 100ms: 31% / 59%; biases -138 / -60ms. HtH uses the
+bounded reconstruction documented above. All 343 / 118 labelled tokens score.
+The candidate clears the numerical acceptance gate on this evidence, but
+that is not proof of generalization or an in-app audible improvement.
+
+Measured CPU inference+alignment time: 50.79s Blur, 47.50s HtH with two
+Torch threads. One-time model load plus download took 37.84s in this run,
+excluding environment setup. Model has 315,466,396 parameters; downloaded
+weights occupy 1,262,047,414 bytes (~1.18GiB). Peak RAM was not measured.
+This supersedes the earlier speculative several-seconds-per-song estimate.
+
+Artifacts: `%TEMP%/pulse-karaoke-mms-lab/fullmix-results/` contains JSON
+predictions; `models/hub/checkpoints/model.pt` is the isolated model cache.
+The running app still uses `fixed-prior/4`. No audio was uploaded.
+
+Reproduce using an isolated Python environment with CPU torch==2.8.0,
+torchaudio==2.8.0, uroman==1.3.1.1 and numpy, set TORCH_HOME to an isolated
+model cache, then:
+
+```powershell
+python scripts/research/karaoke_mms_probe.py --repo . --out <output-dir> <blur-dump> <hth-dump>
+cargo run --manifest-path src-tauri/Cargo.toml --example karaoke_score -- score-words <dump> <labels> <output-dir/song.json>
+```
+
+Integration requirements still unresolved:
+
+- Model download, packaging and runtime: this was an isolated Python CPU
+  probe, not a production dependency or committed model artifact. MMS model
+  uses [CC-BY-NC 4.0](https://docs.pytorch.org/audio/main/generated/torchaudio.pipelines.MMS_FA.html).
+- Early word timing needs correct rendering without moving text between
+  lines. Current row-only activation blocks the requested 160ms lead on 12
+  Blur tokens (up to 620ms) and 2 HtH tokens (up to 298ms) in a schedule
+  simulation. Eight total cross-row end overlaps also need an explicit
+  rendering policy. Do not blindly clamp and claim the offline scores hold.
+- Vocal separation has not yet been benchmarked; it might improve noisy
+  line starts, at added runtime and model cost.
+- Live smoothness, seeks, pause/resume, cache migration and CPU contention
+  must be verified after integration. Preserve user word lead preferences.

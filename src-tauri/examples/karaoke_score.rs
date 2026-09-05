@@ -19,6 +19,10 @@
 //!       from aligner error), and how far the replay sits from the dump's
 //!       live words.json. A partial label file scores its prefix.
 //!
+//!   cargo run --example karaoke_score -- score-words <dump-dir> <labels.txt> <candidate.json>
+//!       scores an external {words: [...]} candidate with the same identity
+//!       validation and metrics as the built-in aligner. Never writes caches.
+//!
 //!   cargo run --example karaoke_score -- matrix <dump-dir> <labels.txt>
 //!       one row per rung of the ladder (Stages::ladder()), the shipped
 //!       set marked — the table that decides what ships.
@@ -55,12 +59,15 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [cmd, dir] if cmd == "template" => template(Path::new(dir)),
-        [cmd, dir, labels] if cmd == "score" => score(Path::new(dir), Path::new(labels)),
+        [cmd, dir, labels] if cmd == "score" => score(Path::new(dir), Path::new(labels), None),
+        [cmd, dir, labels, words] if cmd == "score-words" => {
+            score(Path::new(dir), Path::new(labels), Some(Path::new(words)))
+        }
         [cmd, dir, labels] if cmd == "matrix" => matrix(Path::new(dir), Path::new(labels)),
         [cmd, dirs @ ..] if cmd == "fit" && !dirs.is_empty() => fit(dirs),
         _ => {
             eprintln!(
-                "usage: karaoke_score template <dump-dir>\n       karaoke_score score  <dump-dir> <labels.txt>\n       karaoke_score matrix <dump-dir> <labels.txt>\n       karaoke_score fit    <dump-dir>... (each with labels.txt)"
+                "usage: karaoke_score template <dump-dir>\n       karaoke_score score  <dump-dir> <labels.txt>\n       karaoke_score score-words <dump-dir> <labels.txt> <candidate.json>\n       karaoke_score matrix <dump-dir> <labels.txt>\n       karaoke_score fit    <dump-dir>... (each with labels.txt)"
             );
             exit(2);
         }
@@ -232,8 +239,8 @@ fn token_lines(d: &Dump) -> Vec<usize> {
     out
 }
 
-/// Pairs token i with label i (a partial file scores its prefix); dies if a
-/// label sits outside its token's LRC line window (rows drifted).
+/// Map predictions to canonical source tokens. External models may omit
+/// display whitespace, but cannot change token identity or order.
 fn prediction_indices(d: &Dump, words: &[Word]) -> Result<Vec<usize>, String> {
     let expected: Vec<_> = d
         .lines
@@ -245,7 +252,9 @@ fn prediction_indices(d: &Dump, words: &[Word]) -> Result<Vec<usize>, String> {
     for word in words {
         let offset = expected[cursor..]
             .iter()
-            .position(|(stamp, text)| word.line_t == Some(*stamp) && word.text == *text)
+            .position(|(stamp, text)| {
+                word.line_t == Some(*stamp) && word.text.trim() == text.trim()
+            })
             .ok_or_else(|| {
                 "candidate word identity/order differs from source lyrics".to_string()
             })?;
@@ -304,9 +313,16 @@ fn stats(d: &Dump, words: &[Word], labels: &[i64]) -> Stats {
     }
 }
 
-fn score(dir: &Path, labels_path: &Path) {
+fn score(dir: &Path, labels_path: &Path, candidate: Option<&Path>) {
     let d = load(dir);
-    let words = realign(&d, &Stages::shipped());
+    let words = match candidate {
+        Some(path) => {
+            serde_json::from_slice::<StoreFile>(&read(path.to_path_buf()))
+                .unwrap_or_else(|e| die(&format!("candidate words: {e}")))
+                .words
+        }
+        None => realign(&d, &Stages::shipped()),
+    };
     let labels = read_labels(labels_path, &d);
     let s = stats(&d, &words, &labels);
 
@@ -340,29 +356,36 @@ fn score(dir: &Path, labels_path: &Path) {
             ""
         },
     );
-    // The dump is i16 (the app aligned f32): a few tokens moving by a
-    // frame is quantization, not infidelity — report the size, not a bool.
-    let moved: Vec<i64> = words
-        .iter()
-        .zip(&d.live)
-        .filter(|(a, b)| a != b)
-        .map(|(a, b)| (a.t - b.t).abs())
-        .collect();
-    if words.len() != d.live.len() {
+    if let Some(path) = candidate {
         println!(
-            "replay        {} tokens vs {} live — aligner changed since the dump",
-            words.len(),
-            d.live.len()
+            "candidate     {} (external predictions, not live replay)",
+            path.display()
         );
-    } else if moved.is_empty() {
-        println!("replay        reproduces live words.json exactly");
     } else {
-        println!(
+        // The dump is i16 (the app aligned f32): a few tokens moving by a
+        // frame is quantization, not infidelity — report the size, not a bool.
+        let moved: Vec<i64> = words
+            .iter()
+            .zip(&d.live)
+            .filter(|(a, b)| a != b)
+            .map(|(a, b)| (a.t - b.t).abs())
+            .collect();
+        if words.len() != d.live.len() {
+            println!(
+                "replay        {} tokens vs {} live — aligner changed since the dump",
+                words.len(),
+                d.live.len()
+            );
+        } else if moved.is_empty() {
+            println!("replay        reproduces live words.json exactly");
+        } else {
+            println!(
             "replay        {} of {} tokens differ from live, max onset change {} ms (end/text/line identity differences also count)",
             moved.len(),
             words.len(),
             moved.iter().max().unwrap_or(&0)
         );
+        }
     }
     println!("worst lines");
     for (mean, li) in s.worst.iter().take(5) {
@@ -536,6 +559,37 @@ mod tests {
             validated_labels("20.0\t20.0\tfirst", &map, &lines).unwrap(),
             vec![20000]
         );
+    }
+
+    #[test]
+    fn external_predictions_allow_display_whitespace_but_not_changed_words() {
+        let d = Dump {
+            pcm: vec![],
+            lines: align::parse_lrc("[00:01.00]one two"),
+            meta: Meta {
+                artist: String::new(),
+                title: String::new(),
+                map: TimeMap::from_origin(0, RATE),
+            },
+            live: vec![],
+        };
+        let mut words = vec![
+            Word {
+                t: 1000,
+                text: "one".into(),
+                line_t: Some(1000),
+                end: Some(1200),
+            },
+            Word {
+                t: 1300,
+                text: "two".into(),
+                line_t: Some(1000),
+                end: Some(1500),
+            },
+        ];
+        assert_eq!(prediction_indices(&d, &words).unwrap(), vec![0, 1]);
+        words[1].text = "wrong".into();
+        assert!(prediction_indices(&d, &words).is_err());
     }
 
     #[test]
