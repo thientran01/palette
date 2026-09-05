@@ -34,6 +34,16 @@ const GAP_PAD_MS: u64 = 400;
 /// Staleness projection cap: a position stamped longer ago than this is
 /// not extrapolated further (the pair is the player's, not the clock's).
 const STALE_CAP_MS: i64 = 5_000;
+/// Pairs inside the last stretch of a track are not evidence: GSMTC clamps
+/// the position at the duration while captured audio keeps flowing, so
+/// every completed dump's final anchor sat +86..+471ms off an otherwise
+/// ±10ms fit, and on "Who Knows" that pair crossed the seek band and
+/// dropped a clean recording (2026-09-04).
+const END_GUARD_MS: i64 = 1_500;
+/// A seek is called only after this many CONSECUTIVE pairs disagree with
+/// the fit — one glitched pair is a glitch; a real scrub keeps reporting
+/// the new offset every ~4.5s.
+const SEEK_CONFIRM: u8 = 2;
 /// settings.json switch for the evidence dump (docs/specs/2026-09-04).
 const DUMP_SETTING: &str = "karaokeDump";
 const DUMP_DIR: &str = "karaoke-dumps";
@@ -78,6 +88,8 @@ struct Rec {
     /// position_at_ms of the last pair consumed (the arming pair counts),
     /// so a beat that merely re-emits the same pair adds nothing.
     last_anchor_at: i64,
+    /// Consecutive pairs that disagreed with the fit (see SEEK_CONFIRM).
+    seek_strikes: u8,
 }
 
 enum Anchor {
@@ -97,12 +109,26 @@ impl Rec {
             return Anchor::Skip;
         }
         self.last_anchor_at = np.position_at_ms;
+        if self.duration_ms > 0 && np.position_ms >= self.duration_ms - END_GUARD_MS {
+            return Anchor::Skip;
+        }
         let stale = (unix_ms() - np.position_at_ms).clamp(0, STALE_CAP_MS);
         let idx_in = (self.received as i64 - stale * self.rate_in as i64 / 1000).max(0) as u64;
         let idx = (idx_in * TARGET_HZ as u64 / self.rate_in as u64) as usize;
         if let Some(residual) = seek_residual(&self.anchors, idx, np.position_ms) {
-            return Anchor::Seek(residual, self.anchors.len(), np.position_ms);
+            self.seek_strikes = self.seek_strikes.saturating_add(1);
+            if self.seek_strikes >= SEEK_CONFIRM {
+                return Anchor::Seek(residual, self.anchors.len(), np.position_ms);
+            }
+            log::info!(
+                "karaoke: pair {}ms sits {:+.0}ms off the fit during {} — waiting for a second",
+                np.position_ms,
+                residual,
+                self.title
+            );
+            return Anchor::Skip;
         }
+        self.seek_strikes = 0;
         self.anchors.push((idx, np.position_ms));
         Anchor::Added
     }
@@ -330,6 +356,7 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         received: 0,
         anchors: Vec::new(),
         last_anchor_at: np.position_at_ms,
+        seek_strikes: 0,
     };
     *lock_rec() = Some(rec);
     RECORDING.store(true, Ordering::Relaxed);
@@ -706,6 +733,71 @@ mod tests {
     fn jitter_inside_the_band_is_not_a_seek() {
         assert!(!seek_detected(&two_anchors(), 160_000, 11_900));
         assert!(!seek_detected(&two_anchors(), 160_000, 9_600));
+    }
+
+    fn rec_with(anchors: Vec<(usize, i64)>, duration_ms: i64) -> Rec {
+        Rec {
+            key: "k".into(),
+            artist: String::new(),
+            title: "t".into(),
+            album: String::new(),
+            duration_ms,
+            origin_ms: 0,
+            rate_in: 48_000,
+            phase: 0,
+            acc: 0.0,
+            n: 0,
+            samples: Vec::new(),
+            peak: 0.0,
+            started: None,
+            // 10s of input frames received; pairs below are stamped "now".
+            received: 480_000,
+            anchors,
+            last_anchor_at: 0,
+            seek_strikes: 0,
+        }
+    }
+
+    fn pair(position_ms: i64, duration_ms: i64) -> NowPlaying {
+        NowPlaying {
+            position_ms,
+            position_at_ms: unix_ms(),
+            duration_ms,
+            status: "playing".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn end_of_track_pair_is_not_evidence() {
+        // 10s of samples but the pair says 179s of 180s: the clamp zone.
+        let mut rec = rec_with(two_anchors(), 180_000);
+        assert!(matches!(rec.anchor(&pair(179_000, 180_000)), Anchor::Skip));
+        assert_eq!(rec.anchors.len(), 2);
+        assert_eq!(rec.seek_strikes, 0);
+    }
+
+    #[test]
+    fn one_glitched_pair_is_a_strike_two_are_a_seek() {
+        let mut rec = rec_with(two_anchors(), 180_000);
+        // Fit predicts ~11s at 10s of samples; the pair says 40s.
+        assert!(matches!(rec.anchor(&pair(40_000, 180_000)), Anchor::Skip));
+        assert_eq!(rec.seek_strikes, 1);
+        rec.last_anchor_at = 0;
+        assert!(matches!(
+            rec.anchor(&pair(40_500, 180_000)),
+            Anchor::Seek(..)
+        ));
+    }
+
+    #[test]
+    fn a_good_pair_clears_the_strike() {
+        let mut rec = rec_with(two_anchors(), 180_000);
+        rec.anchor(&pair(40_000, 180_000));
+        rec.last_anchor_at = 0;
+        assert!(matches!(rec.anchor(&pair(11_000, 180_000)), Anchor::Added));
+        assert_eq!(rec.seek_strikes, 0);
+        assert_eq!(rec.anchors.len(), 3);
     }
 
     #[test]
