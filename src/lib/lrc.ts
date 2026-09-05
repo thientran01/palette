@@ -4,6 +4,10 @@ export interface LyricWord {
   t: number;
   text: string;
   end?: number;
+  /** Stamp of the LRC line this word belongs to (align.rs). Attachment
+   * keys on this when present — a word placed before its own stamp must
+   * not land on the previous row. */
+  line_t?: number;
 }
 
 export interface LyricLine {
@@ -163,10 +167,16 @@ export function msUntilNextLine(
 export function attachWords(lines: LyricLine[], words: LyricWord[]): LyricLine[] {
   if (words.length === 0) return lines;
   const sorted = words.slice().sort((a, b) => a.t - b.t);
+  // Words that name their line attach by stamp; older payloads without
+  // line_t fall back to the time window (and can misfile a word that sits
+  // before its stamp — the reason line_t exists).
+  const byStamp = sorted.every((w) => w.line_t !== undefined);
   return lines.map((line, i) => {
     if (line.end !== undefined) return line;
     const nextT = i + 1 < lines.length ? lines[i + 1].t : Number.POSITIVE_INFINITY;
-    const mine = sorted.filter((w) => w.t >= line.t && w.t < nextT);
+    const mine = byStamp
+      ? sorted.filter((w) => w.line_t === line.t)
+      : sorted.filter((w) => w.t >= line.t && w.t < nextT);
     return mine.length > 0 ? { ...line, words: mine } : line;
   });
 }

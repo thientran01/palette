@@ -709,11 +709,13 @@ mod tests {
                 t: 1000,
                 text: "one ".into(),
                 end: Some(1200),
+                line_t: Some(1000),
             },
             Word {
                 t: 1300,
                 text: "two".into(),
                 end: Some(1500),
+                line_t: Some(1000),
             },
         ];
         write_file(&dir, "abc", &words).unwrap();
@@ -773,6 +775,7 @@ mod tests {
             t: 1000,
             text: "one".into(),
             end: Some(1400),
+            line_t: Some(1000),
         }];
         assert_eq!(line_coverage(&lines, &words), 33);
         assert!(line_coverage(&lines, &[]) == 0);

@@ -13,12 +13,18 @@ pub struct TimedLine {
     pub text: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Word {
     pub t: i64,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<i64>,
+    /// The stamp of the LRC line this word belongs to. The frontend
+    /// attaches words to rows by THIS, never by `t`: a negative song lead
+    /// puts a line's first word before its stamp, and time-window
+    /// attachment glued it onto the previous row ("MoveFly", 2026-09-05).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_t: Option<i64>,
 }
 
 /// Sample-index → track-position map for one recording: a least-squares
@@ -286,7 +292,7 @@ impl Stages {
     /// ANY change that moves word times — the 2026-09-04 fixed-lead →
     /// song-lead switch shipped without a store bump and left Heart To
     /// Heart's words ~216ms late for the rest of the evening.
-    pub const RECIPE: &str = "song-lead/1";
+    pub const RECIPE: &str = "song-lead/2";
 
     /// The set the app runs. Measured on Blur + Heart To Heart via
     /// `karaoke_score matrix` (2026-09-04): song lead 177 / 160ms median
@@ -599,6 +605,7 @@ fn spread(tokens: &[String], weights: &[f32], p: LinePrior, next_t: i64) -> Vec<
             t: starts[i],
             text: tok.clone(),
             end: Some(if i + 1 < n { starts[i + 1] } else { last_end }),
+            line_t: None,
         })
         .collect()
 }
@@ -627,7 +634,11 @@ fn align_line(
             p.span = (end - p.start).max(MIN_SPAN_MS);
         }
     }
-    Some(spread(&tokens, &weights, p, next_t))
+    let mut words = spread(&tokens, &weights, p, next_t);
+    for w in &mut words {
+        w.line_t = Some(line.t);
+    }
+    Some(words)
 }
 
 // ── Stage 1 ──
@@ -943,6 +954,20 @@ mod tests {
         let span = words[29].t - words[0].t;
         assert!((span - (1800 - 330)).abs() <= 30, "span {span}");
         assert!(words[29].end.unwrap() <= 3000, "{:?}", words[29]);
+    }
+
+    #[test]
+    fn every_word_carries_its_line_stamp() {
+        let pcm = vec![0.0f32; SR as usize * 6];
+        let words = run(
+            &pcm,
+            "[00:01.00]one two\n[00:03.00]three",
+            Stages::PRIOR_ONLY,
+        );
+        assert_eq!(words.len(), 3);
+        assert_eq!(words[0].line_t, Some(1000));
+        assert_eq!(words[1].line_t, Some(1000));
+        assert_eq!(words[2].line_t, Some(3000));
     }
 
     #[test]

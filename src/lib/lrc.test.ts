@@ -145,6 +145,20 @@ describe("attachWords", () => {
     expect(got[1].words?.map((w) => w.text)).toEqual(["next"]);
   });
 
+  it("attaches by line stamp when words carry one, even before the stamp", () => {
+    // A negative song lead puts a line's first word 60ms before its stamp;
+    // by time it would glue onto the previous row ("MoveFly").
+    const lines = parseLrc("[00:01.00]hello world\n[00:03.00]next up", 10_000);
+    const got = attachWords(lines, [
+      { t: 1000, text: "hello ", end: 1300, line_t: 1000 },
+      { t: 1300, text: "world", end: 1600, line_t: 1000 },
+      { t: 2940, text: "next ", end: 3200, line_t: 3000 },
+      { t: 3200, text: "up", end: 3400, line_t: 3000 },
+    ]);
+    expect(got[0].words?.map((w) => w.text)).toEqual(["hello ", "world"]);
+    expect(got[1].words?.map((w) => w.text)).toEqual(["next ", "up"]);
+  });
+
   it("never attaches words onto a break row", () => {
     const lines = parseLrc("[00:00.00]verse\n[00:04.00] \n[00:20.00]next", 60_000);
     const got = attachWords(lines, [{ t: 8000, text: "nope", end: 8200 }]);
