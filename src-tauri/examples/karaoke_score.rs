@@ -147,19 +147,38 @@ fn score(dir: &Path, labels_path: &Path) {
     let d = load(dir);
     let words = realign(&d);
     let labels = read_labels(labels_path);
-    if labels.len() != words.len() {
-        let first = words
-            .iter()
-            .zip(labels.iter())
-            .position(|(w, &l)| (w.t - l).abs() > 5_000)
-            .map(|i| line_of(&d.lines, words[i].t))
-            .unwrap_or(0);
+    if labels.is_empty() {
+        die("label file has no rows");
+    }
+    if labels.len() > words.len() {
         die(&format!(
-            "label rows ({}) != aligner tokens ({}); first divergence around line {}: {:?}",
+            "label rows ({}) > aligner tokens ({}): a marker was added, or the dump is a different song",
             labels.len(),
             words.len(),
-            first + 1,
-            d.lines.get(first).map(|l| l.text.as_str()).unwrap_or("")
+        ));
+    }
+    // A partial label file scores the prefix it covers — marking stops
+    // wherever the person marking ran out of patience.
+    if labels.len() < words.len() {
+        let last_line = line_of(&d.lines, words[labels.len() - 1].t);
+        println!(
+            "partial       {} of {} tokens marked (through line {})",
+            labels.len(),
+            words.len(),
+            last_line + 1
+        );
+    }
+    if let Some(i) = words
+        .iter()
+        .zip(labels.iter())
+        .position(|(w, &l)| (w.t - l).abs() > 5_000)
+    {
+        die(&format!(
+            "label row {} is {}s from the aligner's token — rows drifted out of order around line {}: {:?}",
+            i + 1,
+            (words[i].t - labels[i]).abs() / 1000,
+            line_of(&d.lines, words[i].t) + 1,
+            d.lines[line_of(&d.lines, words[i].t)].text
         ));
     }
     let deltas: Vec<i64> = words.iter().zip(&labels).map(|(w, &l)| w.t - l).collect();
