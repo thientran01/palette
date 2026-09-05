@@ -1,5 +1,20 @@
 # Word karaoke aligner: prior + refinement ladder
 
+> **2026-09-05 review supersedes historical measurement claims below.**
+> Legacy labels used the recording clock but were scored against the song
+> clock. Corrected Blur median is 215ms (p90 578ms); Heart To Heart's original
+> TimeMap is missing. The <=200ms-on-both-songs gate is not satisfied.
+> Anchor-fit residual does not prove absolute timing accuracy. See the
+> [current handoff](../handoffs/2026-09-05-word-karaoke-codex.md).
+>
+> Current safety behavior: store v5 + recipe `song-lead/3`, exact LRC identity,
+> empty stamps bound breaks, dense lines cannot cross the next row, and
+> words cannot exceed captured audio. Cache requires duration minus 1500ms;
+> 55% listens can still produce diagnostic dumps. Unresolved seek strikes
+> reject finalization; delivery deficits >400ms discard instead of padding.
+> New tap labels declare `# clock: song`; unmarked labels map from audio
+> time using the original dump. The 160ms word lead remains a user preference.
+
 **Date:** 2026-09-04 · **Approved by:** Thien (brainstorm session) · **Scope:** one PR (commits on `feature/word-karaoke`, PR #162), follows `2026-09-04-karaoke-data-plumbing.md`
 
 ## Problem

@@ -9,16 +9,21 @@ label file the scorer reads.
     python scripts/karaoke_tap.py <dump-dir> [out-dir]
 
 <dump-dir> is app-data/karaoke-dumps/<key>/ (needs pcm.i16, lyrics.lrc,
-meta.json and labels.template.txt — run
+meta.json, words.json and labels.template.json (or legacy labels.template.txt) — run
 `cargo run --example karaoke_score -- template <dump-dir>` first).
 Writes <out-dir>/song.wav and <out-dir>/tap.html (default out-dir: the
 dump dir). Open tap.html in a browser; the audio is embedded so the page
-is self-contained (~8MB for four minutes).
+is self-contained (~8MB for four minutes). A separate output directory also
+receives meta.json, lyrics.lrc, pcm.i16 and words.json for scoring. Downloads
+declare "# clock: song"; resume files must declare that convention too.
 """
 
 import base64
+import html
 import json
+import math
 import re
+import shutil
 import sys
 import wave
 from pathlib import Path
@@ -58,11 +63,15 @@ kbd{background:#2a2622;border:1px solid #444;border-radius:4px;padding:1px 6px}
 <div class="bar"><button id="dl" class="primary">3. Download labels.txt</button><span id="stat" class="hint"></span><label class="hint">Resume from a file: <input type="file" id="load" accept=".txt"></label></div>
 <audio id="a" src="data:audio/wav;base64,__WAV__"></audio>
 </div><script>
-const TOK=__TOK__, LINES=__LINES__, KEY='tap-'+__KEY__;
+const TOK=__TOK__, LINES=__LINES__, KEY='tap-song-v2-'+__KEY__;
+const MAP=__MAP__, RATE=__RATE__;
+function songTime(audioSeconds){return (MAP.intercept_ms+MAP.slope_ms*RATE*audioSeconds)/1000;}
+function seekSong(seconds){a.currentTime=Math.max(0,(seconds*1000-MAP.intercept_ms)/(MAP.slope_ms*RATE));}
+function seekNext(){seekSong(TOK[Math.min(i,TOK.length-1)].t-LEAD);}
 const a=document.getElementById('a'), cur=document.getElementById('cur'), nxt=document.getElementById('nxt'), lineEl=document.getElementById('line'), stat=document.getElementById('stat'), timeEl=document.getElementById('time'), pi=document.getElementById('pi');
-let i=0, stamps=[], reaction=0.12, done=false;
+let i=0, stamps=[], reaction=0.12, done=false, calibrating=false;
 const LEAD=1.2;
-function save(){try{localStorage.setItem(KEY,JSON.stringify(stamps));}catch(e){}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify({stamps,reaction}));}catch(e){}}
 function render(){
   save();
   const t=TOK[i];
@@ -74,55 +83,82 @@ function render(){
   pi.style.width=(100*i/TOK.length)+'%';
 }
 function stamp(){
-  if(done||a.paused)return;
-  stamps.push(Math.max(0,a.currentTime-reaction*a.playbackRate)); i++; render();
+  if(done||a.paused||calibrating)return;
+  stamps.push(songTime(Math.max(0,a.currentTime-reaction*a.playbackRate))); i++; render();
 }
 function undo(){
   if(!stamps.length)return;
   stamps.pop(); i--; done=false; cur.className='big';
-  a.currentTime=Math.max(0,TOK[i].t-LEAD); render();
+  seekNext(); render();
 }
 function rewindToLine(target){
+  if(calibrating)return;
   while(stamps.length&&TOK[i-1]&&TOK[i-1].line>=target){stamps.pop();i--;}
   done=false;cur.className='big';
-  a.currentTime=Math.max(0,TOK[i].t-LEAD); render(); if(a.paused)a.play();
+  seekNext(); render(); if(a.paused)a.play();
 }
 function redoLine(){ if(!TOK[i]&&!stamps.length)return; rewindToLine(TOK[Math.min(i,TOK.length-1)].line); }
 function prevLine(){ if(!stamps.length)return; rewindToLine(Math.max(0,TOK[Math.min(i,TOK.length-1)].line-1)); }
-function restart(){ if(stamps.length&&!confirm('Wipe all '+stamps.length+' taps and start over?'))return; stamps=[];i=0;done=false;cur.className='big';a.pause();a.currentTime=Math.max(0,TOK[0].t-LEAD);render(); }
+function restart(){ if(stamps.length&&!confirm('Wipe all '+stamps.length+' taps and start over?'))return; stamps=[];i=0;done=false;cur.className='big';a.pause();seekSong(TOK[0].t-LEAD);render(); }
 document.getElementById('rate').onchange=e=>{a.playbackRate=+e.target.value};
 a.playbackRate=0.8;
-document.getElementById('start').onclick=()=>{ if(a.paused){ if(i===0&&!stamps.length)a.currentTime=Math.max(0,TOK[0].t-LEAD); a.play(); } else a.pause(); };
+document.getElementById('start').onclick=()=>{ if(calibrating)return; if(a.paused){ if(i===0&&!stamps.length)seekSong(TOK[0].t-LEAD); a.play(); } else a.pause(); };
 document.getElementById('back').onclick=redoLine;
 document.getElementById('prev').onclick=prevLine;
 document.getElementById('restart').onclick=restart;
-document.getElementById('load').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{const rows=String(r.result).split(String.fromCharCode(10)).filter(x=>x.trim());const st=rows.map(x=>parseFloat(x.split(String.fromCharCode(9))[0])).filter(x=>!isNaN(x));if(st.length&&st.length<=TOK.length){stamps=st;i=st.length;done=false;cur.className='big';a.currentTime=Math.max(0,TOK[Math.min(i,TOK.length-1)].t-LEAD);render();}};r.readAsText(f);};
+document.getElementById('load').onchange=e=>{
+  const f=e.target.files[0];if(!f||calibrating)return;
+  const r=new FileReader();r.onload=()=>{
+    const rows=String(r.result).split(/\r?\n/).filter(x=>x.trim());
+    if(!rows.some(x=>x.trim()==='# clock: song')){stat.textContent='Missing # clock: song; legacy audio-clock files must be converted before loading.';return;}
+    const labels=rows.filter(x=>!x.trim().startsWith('#')).map(x=>x.split('\t'));
+    const st=labels.map(x=>Number(x[0]));
+    if(st.length&&st.length<=TOK.length&&st.every(Number.isFinite)&&labels.every((x,k)=>x.length===3&&x[0].trim()&&x[2].trim()===TOK[k].text.trim())){
+      a.pause();stamps=st;i=st.length;done=false;cur.className='big';seekNext();render();
+    }else stat.textContent='Labels do not match this template.';
+  };r.readAsText(f);
+};
 document.addEventListener('keydown',e=>{
+  if(e.repeat){if(['Space','Backspace','ArrowLeft'].includes(e.code))e.preventDefault();return;}
+  if(calibrating)return;
   if(e.code==='Space'){e.preventDefault();stamp();}
   else if(e.code==='Backspace'){e.preventDefault();undo();}
   else if(e.code==='ArrowLeft'){e.preventDefault();prevLine();}
   else if(e.key==='p'||e.key==='P'){document.getElementById('start').click();}
 });
-setInterval(()=>{timeEl.textContent=a.currentTime.toFixed(2)+'s'},100);
+setInterval(()=>{timeEl.textContent=songTime(a.currentTime).toFixed(2)+'s'},100);
 document.getElementById('cal').onclick=async()=>{
+  if(calibrating)return;
+  calibrating=true;a.pause();
+  try{
   const ctx=new (window.AudioContext||window.webkitAudioContext)();
   const clicks=[], taps=[]; const t0=ctx.currentTime+0.5;
   for(let k=0;k<8;k++){const o=ctx.createOscillator();const g=ctx.createGain();o.frequency.value=1000;g.gain.value=0.3;o.connect(g).connect(ctx.destination);o.start(t0+k);o.stop(t0+k+0.04);clicks.push(t0+k);}
   const calv=document.getElementById('calv'); calv.textContent='tap along with each click...';
-  const h=e=>{ if(e.code==='Space'){e.preventDefault(); taps.push(ctx.currentTime);} };
+  const h=e=>{ if(e.code==='Space'){e.preventDefault();e.stopImmediatePropagation();if(!e.repeat)taps.push(ctx.currentTime);} };
   document.addEventListener('keydown',h,true);
   await new Promise(r=>setTimeout(r,9500));
   document.removeEventListener('keydown',h,true);
   const d=[]; for(const c of clicks){ const near=taps.filter(t=>t>c-0.3&&t<c+0.6); if(near.length)d.push(near[0]-c); }
   if(d.length>=4){ reaction=d.reduce((x,y)=>x+y,0)/d.length; calv.textContent='reaction: '+Math.round(reaction*1000)+' ms (subtracted from every tap)'; }
   else calv.textContent='not enough taps caught - try again';
+  save();await ctx.close();
+  }finally{calibrating=false;}
 };
 document.getElementById('dl').onclick=()=>{
-  const rows=stamps.map((s,k)=>s.toFixed(3)+String.fromCharCode(9)+s.toFixed(3)+String.fromCharCode(9)+TOK[k].text).join(String.fromCharCode(10))+String.fromCharCode(10);
+  const rows='# clock: song'+String.fromCharCode(10)+stamps.map((s,k)=>s.toFixed(3)+String.fromCharCode(9)+s.toFixed(3)+String.fromCharCode(9)+TOK[k].text).join(String.fromCharCode(10))+String.fromCharCode(10);
   const b=new Blob([rows],{type:'text/plain'}); const u=URL.createObjectURL(b);
   const l=document.createElement('a'); l.href=u; l.download='labels.txt'; document.body.appendChild(l); l.click(); l.remove();
 };
-try{const sv=JSON.parse(localStorage.getItem(KEY)||'[]');if(Array.isArray(sv)&&sv.length&&sv.length<=TOK.length){stamps=sv;i=sv.length;}}catch(e){}
+try{
+  const sv=JSON.parse(localStorage.getItem(KEY)||'null');
+  if(sv&&Array.isArray(sv.stamps)&&sv.stamps.length<=TOK.length&&sv.stamps.every(Number.isFinite)){
+    stamps=sv.stamps;i=stamps.length;
+    if(Number.isFinite(sv.reaction))reaction=sv.reaction;
+    document.getElementById('calv').textContent='reaction: '+Math.round(reaction*1000)+' ms (saved)';
+    seekNext();
+  }
+}catch(e){}
 render();
 </script></body></html>"""
 
@@ -131,12 +167,80 @@ def parse_lrc(text):
     stamps = []
     for line in text.splitlines():
         m = re.match(r"^((?:\[\d+:\d+(?:\.\d+)?\])+)(.*)$", line.strip())
-        if not m or not m.group(2).strip():
+        if not m:
             continue
         for mm, ss in re.findall(r"\[(\d+):(\d+(?:\.\d+)?)\]", m.group(1)):
             stamps.append((int(mm) * 60 + float(ss), m.group(2).strip()))
-    stamps.sort()
-    return stamps
+    # Rust parse_lrc keeps empty vocal-end markers, sorts stably, and caps
+    # at 600 rows. Sidecar line_index refers to that full sequence.
+    stamps.sort(key=lambda item: item[0])
+    return stamps[:600]
+
+
+def script_json(value):
+    # JSON lives inside a raw-text HTML script element: escaping quotes alone
+    # does not stop an embedded </script> from terminating it.
+    return json.dumps(value, ensure_ascii=True, allow_nan=False).replace('<', r'\u003c').replace('>', r'\u003e').replace('&', r'\u0026')
+
+
+def legacy_tokens(text):
+    """Mirror align::tokenize for legacy templates; validate text, never time."""
+    out, latin = [], ''
+    for c in text:
+        syllable = any(lo <= ord(c) <= hi for lo, hi in (
+            (0xAC00, 0xD7A3), (0x1100, 0x11FF), (0x3130, 0x318F),
+            (0x4E00, 0x9FFF), (0x3400, 0x4DBF), (0x3040, 0x30FF)))
+        if syllable:
+            if latin:
+                out.append(latin)
+                latin = ''
+            out.append(c)
+        elif c.isspace():
+            if latin:
+                out.append(latin + c)
+                latin = ''
+            elif out:
+                out[-1] += c
+        else:
+            latin += c
+    if latin:
+        out.append(latin)
+    return [t.strip() for t in out if t.strip()]
+
+
+def load_tokens(dump, stamps):
+    sidecar = dump / 'labels.template.json'
+    if sidecar.is_file():
+        # Serialized aligner Word fields t and line_t are milliseconds.
+        data = json.loads(sidecar.read_text(encoding='utf-8'))
+        words = data['words'] if isinstance(data, dict) else data
+        tokens = []
+        for word in words:
+            if 'line_index' in word:
+                li = word['line_index']
+                if (type(li) is not int or not 0 <= li < len(stamps)
+                        or round(stamps[li][0] * 1000) != word['line_t']):
+                    raise ValueError('sidecar line_index must identify a lyric row matching line_t')
+            else:
+                # Older sidecars have no index: only unambiguous stamps work.
+                matches = [i for i, (t, _) in enumerate(stamps)
+                           if round(t * 1000) == word['line_t']]
+                if len(matches) != 1:
+                    raise ValueError('sidecar line_t must identify exactly one lyric line')
+                li = matches[0]
+            tokens.append({'t': word['t'] / 1000, 'text': word['text'].strip(), 'line': li})
+    else:
+        rows = [row.split('\t') for row in (dump / 'labels.template.txt').read_text(encoding='utf-8').splitlines()
+                if row.strip() and not row.lstrip().startswith('#')]
+        expected = [(text, i) for i, (_, line) in enumerate(stamps) for text in legacy_tokens(line)]
+        if len(rows) != len(expected) or any(len(row) != 3 or row[2].strip() != text
+                                           for row, (text, _) in zip(rows, expected)):
+            raise ValueError('legacy template tokens do not match lyrics; regenerate template with sidecar')
+        tokens = [{'t': float(row[0]), 'text': text, 'line': li}
+                  for row, (text, li) in zip(rows, expected)]
+    if not tokens or any(not math.isfinite(t['t']) for t in tokens):
+        raise ValueError('template must contain finite word times')
+    return tokens
 
 
 def main():
@@ -147,39 +251,45 @@ def main():
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else dump
     out.mkdir(parents=True, exist_ok=True)
     template = dump / "labels.template.txt"
-    if not template.is_file():
+    if not template.is_file() and not (dump / "labels.template.json").is_file():
         sys.exit(f"missing {template} — run: cargo run --example karaoke_score -- template {dump}")
     meta = json.loads((dump / "meta.json").read_text(encoding="utf-8"))
     title = f"{meta.get('artist', '')} — {meta.get('title', '')}".strip(" —")
+
+    sample_rate = meta.get("sample_rate", 16000)
+    clock = meta["map"]
+    if (not isinstance(sample_rate, int) or sample_rate <= 0
+            or not math.isfinite(clock["intercept_ms"])
+            or not math.isfinite(clock["slope_ms"]) or clock["slope_ms"] <= 0):
+        raise ValueError("invalid sample rate or clock map")
+    stamps = parse_lrc((dump / "lyrics.lrc").read_text(encoding="utf-8"))
+    tokens = load_tokens(dump, stamps)
+    lines = [s[1] for s in stamps]
+    if out.resolve() != dump.resolve():
+        for name in ("meta.json", "lyrics.lrc", "pcm.i16", "words.json"):
+            shutil.copy2(dump / name, out / name)
 
     raw = (dump / "pcm.i16").read_bytes()
     wav_path = out / "song.wav"
     with wave.open(str(wav_path), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
-        w.setframerate(16000)
+        w.setframerate(sample_rate)
         w.writeframes(raw)
 
-    rows = [l.split("\t") for l in template.read_text(encoding="utf-8").splitlines() if l.strip()]
-    tokens = [{"t": float(r[0]), "text": r[2]} for r in rows]
-    stamps = parse_lrc((dump / "lyrics.lrc").read_text(encoding="utf-8"))
-    for tok in tokens:
-        li = 0
-        for i, (t, _) in enumerate(stamps):
-            if t <= tok["t"]:
-                li = i
-        tok["line"] = li
-    lines = [s[1] for s in stamps]
-
-    html = (
-        PAGE.replace("__TITLE__", title)
-        .replace("__WAV__", base64.b64encode(wav_path.read_bytes()).decode())
-        .replace("__TOK__", json.dumps(tokens, ensure_ascii=False))
-        .replace("__LINES__", json.dumps(lines, ensure_ascii=False))
-        .replace("__KEY__", json.dumps(dump.name))
-    )
+    replacements = {
+        "__TITLE__": html.escape(title),
+        "__WAV__": base64.b64encode(wav_path.read_bytes()).decode(),
+        "__TOK__": script_json(tokens),
+        "__LINES__": script_json(lines),
+        "__KEY__": script_json(dump.name),
+        "__MAP__": script_json(clock),
+        "__RATE__": script_json(sample_rate),
+    }
+    # Substitute once so metadata containing a placeholder stays literal.
+    page_html = re.sub(r"__[A-Z]+__", lambda m: replacements[m.group()], PAGE)
     page = out / "tap.html"
-    page.write_text(html, encoding="utf-8")
+    page.write_text(page_html, encoding="utf-8")
     print(f"{title}: {len(tokens)} tokens over {len(lines)} lines")
     print(f"  {wav_path}")
     print(f"  {page}  <- open this in a browser")

@@ -37,3 +37,6 @@ spikes/*/target/
 # Local dev-harness config (launch.json etc.); root CLAUDE.md lives outside
 # this dir and stays tracked.
 .claude/
+
+# Python evidence tools
+__pycache__/
