@@ -1,4 +1,4 @@
-mod align;
+pub mod align;
 mod audio;
 mod dock;
 mod focus;

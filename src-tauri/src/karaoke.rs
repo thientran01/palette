@@ -1,9 +1,9 @@
 //! Local word-karaoke store, capture, and align.
 
-use crate::align::{self, Word};
+use crate::align::{self, TimeMap, Word};
 use crate::lyrics;
 use crate::media::NowPlaying;
-use crate::settings::write_atomic;
+use crate::settings::{self, write_atomic};
 use crate::spotify;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -32,6 +32,11 @@ const GAP_PAD_MS: u64 = 400;
 /// Staleness projection cap: a position stamped longer ago than this is
 /// not extrapolated further (the pair is the player's, not the clock's).
 const STALE_CAP_MS: i64 = 5_000;
+/// settings.json switch for the evidence dump (docs/specs/2026-09-04).
+const DUMP_SETTING: &str = "karaokeDump";
+const DUMP_DIR: &str = "karaoke-dumps";
+/// ~8MB of i16 PCM per four-minute dump; keep the last few only.
+const DUMP_MAX: usize = 5;
 
 #[derive(Serialize, Deserialize)]
 struct StoreFile {
@@ -65,9 +70,38 @@ struct Rec {
     /// since: the pair that detects a delivery gap (see GAP_PAD_MS).
     started: Option<Instant>,
     received: u64,
+    /// (output sample index, position_ms) from every fresh pair the media
+    /// loop saw while recording — the TimeMap's evidence.
+    anchors: Vec<(usize, i64)>,
+    /// position_at_ms of the last pair consumed (the arming pair counts),
+    /// so a beat that merely re-emits the same pair adds nothing.
+    last_anchor_at: i64,
+}
+
+enum Anchor {
+    Skip,
+    Added,
+    Seek,
 }
 
 impl Rec {
+    /// Turn a fresh pair into an anchor, or flag a seek. The pair's
+    /// staleness (now − position_at_ms) says how many input frames ago the
+    /// position was true; that input index maps onto the 16kHz grid.
+    fn anchor(&mut self, np: &NowPlaying) -> Anchor {
+        if np.position_at_ms <= 0 || np.position_at_ms == self.last_anchor_at || self.rate_in == 0 {
+            return Anchor::Skip;
+        }
+        self.last_anchor_at = np.position_at_ms;
+        let stale = (unix_ms() - np.position_at_ms).clamp(0, STALE_CAP_MS);
+        let idx_in = (self.received as i64 - stale * self.rate_in as i64 / 1000).max(0) as u64;
+        let idx = (idx_in * TARGET_HZ as u64 / self.rate_in as u64) as usize;
+        if seek_detected(&self.anchors, idx, np.position_ms) {
+            return Anchor::Seek;
+        }
+        self.anchors.push((idx, np.position_ms));
+        Anchor::Added
+    }
     /// Box-decimate one input frame onto the TARGET_HZ grid.
     #[inline]
     fn push(&mut self, sample: f32) -> bool {
@@ -227,14 +261,25 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     let key = lyrics::key_for_ms(&np.artist, &np.title, &np.album, np.duration_ms);
     let old = {
         let mut slot = lock_rec();
-        match slot.as_ref() {
-            Some(rec) if rec.key == key => return,
-            Some(_) => {
-                RECORDING.store(false, Ordering::Relaxed);
-                slot.take()
+        if matches!(slot.as_ref(), Some(rec) if rec.key == key) {
+            // Same track: this beat's pair is evidence for the time map —
+            // unless it says the user seeked, which no single-origin or
+            // fitted map can absorb: drop the recording (NOT a miss; the
+            // next clean listen records it).
+            if let Some(rec) = slot.as_mut() {
+                if let Anchor::Seek = rec.anchor(np) {
+                    RECORDING.store(false, Ordering::Relaxed);
+                    log::info!(
+                        "karaoke: seek during {} — dropping this recording",
+                        rec.title
+                    );
+                    *slot = None;
+                }
             }
-            None => None,
+            return;
         }
+        RECORDING.store(false, Ordering::Relaxed);
+        slot.take()
     };
     if let Some(rec) = old {
         try_commit(app, rec);
@@ -276,6 +321,8 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         peak: 0.0,
         started: None,
         received: 0,
+        anchors: Vec::new(),
+        last_anchor_at: np.position_at_ms,
     };
     *lock_rec() = Some(rec);
     RECORDING.store(true, Ordering::Relaxed);
@@ -368,16 +415,120 @@ fn try_commit(app: &AppHandle, rec: Rec) {
         ALIGNING.store(false, Ordering::SeqCst);
         return;
     };
+    // Opt-in evidence dump (settings.json "karaokeDump": true) — the
+    // offline scorer's input. Installed builds have no env vars.
+    let dump_dir = if settings::get_bool(app, DUMP_SETTING, false) {
+        app.path()
+            .app_data_dir()
+            .ok()
+            .map(|d| d.join(DUMP_DIR).join(&rec.key))
+    } else {
+        None
+    };
     let handle = app.clone();
     let _ = std::thread::Builder::new()
         .name("karaoke-align".into())
         .spawn(move || {
             let _g = AlignGuard;
-            commit_sync(&handle, rec, &lyrics_dir, &karaoke_dir);
+            commit_sync(&handle, rec, &lyrics_dir, &karaoke_dir, dump_dir.as_deref());
         });
 }
 
-fn commit_sync(app: &AppHandle, rec: Rec, lyrics_dir: &Path, karaoke_dir: &Path) {
+/// True when a fresh pair sits further from the running fit than a seek
+/// residual. Needs two anchors to have a fit at all.
+fn seek_detected(anchors: &[(usize, i64)], idx: usize, position_ms: i64) -> bool {
+    if anchors.len() < 2 {
+        return false;
+    }
+    let map = TimeMap::fit(anchors, TARGET_HZ, 0);
+    map.residual_ms(idx, position_ms).abs() > align::SEEK_RESIDUAL_MS
+}
+
+#[derive(Serialize)]
+struct DumpMeta<'a> {
+    artist: &'a str,
+    title: &'a str,
+    album: &'a str,
+    duration_ms: i64,
+    rate_in: u32,
+    origin_ms: i64,
+    anchors: &'a [(usize, i64)],
+    map: &'a TimeMap,
+}
+
+/// pcm.i16 + lyrics.lrc + words.json + meta.json under `dir`; the parent
+/// keeps at most DUMP_MAX dump directories (oldest evicted).
+fn write_dump(
+    dir: &Path,
+    rec: &Rec,
+    lrc: &str,
+    words: &[Word],
+    map: &TimeMap,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let mut pcm = Vec::with_capacity(rec.samples.len() * 2);
+    for &s in &rec.samples {
+        let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+        pcm.extend_from_slice(&v.to_le_bytes());
+    }
+    write_atomic(&dir.join("pcm.i16"), &pcm)?;
+    write_atomic(&dir.join("lyrics.lrc"), lrc.as_bytes())?;
+    let to_io = |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    let words_json = serde_json::to_vec(&StoreFile {
+        v: STORE_V,
+        words: words.to_vec(),
+    })
+    .map_err(to_io)?;
+    write_atomic(&dir.join("words.json"), &words_json)?;
+    let meta = serde_json::to_vec_pretty(&DumpMeta {
+        artist: &rec.artist,
+        title: &rec.title,
+        album: &rec.album,
+        duration_ms: rec.duration_ms,
+        rate_in: rec.rate_in,
+        origin_ms: rec.origin_ms,
+        anchors: &rec.anchors,
+        map,
+    })
+    .map_err(to_io)?;
+    write_atomic(&dir.join("meta.json"), &meta)?;
+    if let Some(parent) = dir.parent() {
+        evict_dump_dirs(parent);
+    }
+    Ok(())
+}
+
+fn evict_dump_dirs(parent: &Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let mut dirs: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let meta = e.metadata().ok()?;
+            if !meta.is_dir() {
+                return None;
+            }
+            Some((meta.modified().ok()?, e.path()))
+        })
+        .collect();
+    if dirs.len() <= DUMP_MAX {
+        return;
+    }
+    dirs.sort_by_key(|(t, _)| *t);
+    let excess = dirs.len() - DUMP_MAX;
+    for (_, path) in dirs.into_iter().take(excess) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+fn commit_sync(
+    app: &AppHandle,
+    rec: Rec,
+    lyrics_dir: &Path,
+    karaoke_dir: &Path,
+    dump_dir: Option<&Path>,
+) {
     if has_file(karaoke_dir, &rec.key) {
         return;
     }
@@ -394,7 +545,29 @@ fn commit_sync(app: &AppHandle, rec: Rec, lyrics_dir: &Path, karaoke_dir: &Path)
     if lines.is_empty() {
         return;
     }
-    let words = align::align(&rec.samples, TARGET_HZ, &lines, rec.origin_ms);
+    let map = TimeMap::fit(&rec.anchors, TARGET_HZ, rec.origin_ms);
+    log::info!(
+        "karaoke: time map for {} — {} anchors, origin {}ms, intercept {:.0}ms, rms {:.0}ms{}{}",
+        rec.title,
+        map.n_anchors,
+        rec.origin_ms,
+        map.intercept_ms,
+        map.residual_rms_ms,
+        if map.clamped { ", slope clamped" } else { "" },
+        if map.from_origin {
+            ", origin fallback"
+        } else {
+            ""
+        },
+    );
+    let words = align::align(&rec.samples, TARGET_HZ, &lines, &map);
+    // Evidence first: a coverage miss below still leaves something to score.
+    if let Some(dir) = dump_dir {
+        match write_dump(dir, &rec, &synced, &words, &map) {
+            Ok(()) => log::info!("karaoke: dumped {} to {}", rec.title, dir.display()),
+            Err(e) => log::warn!("karaoke: dump failed ({e})"),
+        }
+    }
     if line_coverage(&lines, &words) < MIN_LINE_COVERAGE {
         lock_misses().insert(rec.key);
         log::info!("karaoke: align missed {} — leaving line karaoke", rec.title);
@@ -500,5 +673,29 @@ mod tests {
         }];
         assert_eq!(line_coverage(&lines, &words), 33);
         assert!(line_coverage(&lines, &[]) == 0);
+    }
+
+    /// Two anchors 5s apart on a 16kHz grid, true origin 1000ms.
+    fn two_anchors() -> Vec<(usize, i64)> {
+        vec![(0, 1000), (80_000, 6000)]
+    }
+
+    #[test]
+    fn a_jump_past_the_band_is_a_seek() {
+        // 10s in, the player reports 14s: the user scrubbed forward 3s.
+        assert!(seek_detected(&two_anchors(), 160_000, 14_000));
+        assert!(seek_detected(&two_anchors(), 160_000, 8_000));
+    }
+
+    #[test]
+    fn jitter_inside_the_band_is_not_a_seek() {
+        assert!(!seek_detected(&two_anchors(), 160_000, 11_900));
+        assert!(!seek_detected(&two_anchors(), 160_000, 9_600));
+    }
+
+    #[test]
+    fn no_fit_means_no_seek_verdict() {
+        assert!(!seek_detected(&[(0, 1000)], 160_000, 40_000));
+        assert!(!seek_detected(&[], 160_000, 40_000));
     }
 }
