@@ -8,18 +8,22 @@
  * (the fullscreen takeover) — same grammar, bigger clothes.
  */
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { commands } from "./lib/backend";
 import {
   BREAK_DOTS,
+  attachWords,
   breakDotsFilled,
   currentLineIndex,
   msUntilNextDot,
   msUntilNextLine,
   parseLrc,
   type LyricLine,
+  type LyricWord,
 } from "./lib/lrc";
+import { commands, onKaraokeReady } from "./lib/backend";
 import * as posClock from "./lib/posClock";
+import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
+import { driveWordRows, type WordRow } from "./lib/wordWipeDriver";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
  * next line boundary, recomputed on every kernel anchor event (seek, pause,
@@ -95,6 +99,34 @@ function useBreakDots(line: LyricLine, leadMs: number, active: boolean): number 
   return active ? filled : 0;
 }
 
+/** Keep word spans mounted across line changes. A single frame driver can
+ * paint an upcoming onset or an overlapping tail without changing line
+ * ownership, the scroll schedule, or React state at each word boundary. */
+function useWordWipe(
+  list: React.RefObject<HTMLDivElement | null>,
+  lines: LyricLine[], currentLine: number, leadMs: number,
+): void {
+  useLayoutEffect(() => {
+    const root = list.current;
+    if (!root) return;
+    const rows: WordRow[] = [];
+    for (const el of root.querySelectorAll<HTMLElement>("[data-word-row]")) {
+      const index = Number(el.dataset.wordRow);
+      const words = lines[index]?.words;
+      if (!words?.length) continue;
+      rows.push({ index, words, style: el.style,
+        spans: Array.from(el.querySelectorAll<HTMLElement>("[data-word]"), span => span.style) });
+    }
+    return driveWordRows(rows, currentLine, leadMs, posClock, {
+      request: cb => requestAnimationFrame(cb), cancel: id => cancelAnimationFrame(id),
+    });
+  }, [list, lines, currentLine, leadMs]);
+}
+
+/** Soft edge on the wipe, in px — a hard stop strobes at 60fps. */
+const WIPE_FEATHER = "5px";
+const WORD_GRADIENT = `linear-gradient(to right, var(--word-bright, currentColor) calc(var(--wipe, 0%) - ${WIPE_FEATHER}), currentColor calc(var(--wipe, 0%) + ${WIPE_FEATHER}))`;
+
 export type LyricsState =
   // "none" = a definitive served miss (LRCLIB has no lyrics for this track);
   // "offline" = the fetch bailed on a transport failure (offline/DNS/timeout),
@@ -135,11 +167,8 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
     let alive = true;
     void commands.lyrics(np.artist, np.title, np.album, np.duration_ms).then((l) => {
       if (!alive || lastKey.current !== key) return;
-      // Cap far beyond any real song (~100 lines) — a pathological LRC file
-      // shouldn't turn into thousands of DOM nodes.
-      const lines = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
-      // A transport failure (l.offline) is NOT a miss — surface it as its own
-      // state so the caption stays honest and a later track can retry.
+      const parsed = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
+      const lines = l.words && l.words.length > 0 ? attachWords(parsed, l.words) : parsed;
       setState(
         lines.length > 0
           ? { status: "synced", lines, key }
@@ -153,6 +182,16 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+  useEffect(() => {
+    return onKaraokeReady((p) => {
+      const incoming = `${p.artist}|${p.title}|${p.album}|${p.duration_ms}`;
+      if (incoming !== lastKey.current) return;
+      setState((prev) => {
+        if (prev.status !== "synced" || prev.key !== incoming) return prev;
+        return { ...prev, lines: attachWords(prev.lines, p.words) };
+      });
+    });
+  }, []);
   return state;
 }
 
@@ -307,6 +346,7 @@ const LyricLineRow = memo(function LyricLineRow({
   scale,
   tier,
   browsing,
+  words,
 }: {
   text: string;
   index: number;
@@ -324,10 +364,14 @@ const LyricLineRow = memo(function LyricLineRow({
   /** Clamped distance from the current line (focus recession); null at base. */
   tier: number | null;
   browsing: boolean;
+  words?: LyricWord[];
 }) {
   const Tag = seekable ? "button" : "div";
+  const timed = words && words.length > 0;
   const tone = current
-    ? "font-medium text-fg"
+    ? timed
+      ? "font-medium text-muted/80"
+      : "font-medium text-fg"
     : tier === null
       ? "text-muted/80"
       : focusTone(tier, browsing);
@@ -344,14 +388,14 @@ const LyricLineRow = memo(function LyricLineRow({
             tabIndex: -1,
           }
         : {})}
+      data-word-row={timed ? index : undefined}
       data-cascade
       {...(anchor ? { "data-anchor": true } : {})}
       style={{ "--cascade-delay": `${cascadeDelayMs}ms` } as React.CSSProperties}
-      className={`relative rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${tone} ${
+      className={`relative whitespace-pre-wrap rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${timed ? "font-medium" : ""} ${tone} ${
         seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
-      {/* Accent lives on the marker, never the text (contrast floor is 3:1). */}
       <span
         aria-hidden
         data-marker
@@ -362,7 +406,21 @@ const LyricLineRow = memo(function LyricLineRow({
           current ? "opacity-100" : "opacity-0"
         }`}
       />
-      {text}
+      {timed
+        ? words.map((w, wi) => (
+            // Every span wears the same gradient; useWordWipe moves only
+            // its --wipe stop, so a word boundary is a style write, not
+            // a re-render or a class swap.
+            <span
+              key={`${w.t}-${wi}`}
+              data-word
+              className="inline-block bg-clip-text [-webkit-text-fill-color:transparent]"
+              style={{ backgroundImage: WORD_GRADIENT }}
+            >
+              {w.text}
+            </span>
+          ))
+        : text}
     </Tag>
   );
 });
@@ -470,8 +528,20 @@ export function LyricsPanel({
   scale?: LyricsScale;
 }) {
   const idx = useLyricIndex(lines, leadMs);
+  // Words fire ahead of their aligned onset by the nudgeable word lead
+  // (on top of the per-player line lead). A nudge shows a short caption;
+  // the seed never does.
+  const wordLead = useWordLead();
+  const [leadCaption, setLeadCaption] = useState<string | null>(null);
+  useEffect(() => {
+    if (wordLead.nudges === 0) return;
+    setLeadCaption(describeWordLead(wordLead.leadMs));
+    const t = window.setTimeout(() => setLeadCaption(null), 1600);
+    return () => window.clearTimeout(t);
+  }, [wordLead.nudges, wordLead.leadMs]);
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs);
   const [autoOffset, setAutoOffset] = useState(0);
   // Wheel-scrolling pauses auto-follow; it resumes via the "Now" chip,
   // scrolling back into the re-latch band, or a short idle (see RELATCH_BAND
@@ -582,6 +652,7 @@ export function LyricsPanel({
   const band = (viewportRef.current?.clientHeight ?? 0) * RELATCH_BAND;
   // Where "now" sits relative to the browse — drives the chip's edge/arrow.
   const nowBelow = browsing && autoOffset > (manualOffset as number);
+  const showReturn = browsing && Math.abs((manualOffset as number) - autoOffset) > band;
 
   const relatch = () => {
     setManualOffset(null);
@@ -656,16 +727,31 @@ export function LyricsPanel({
               browsing={browsing}
               anchor={anchor}
               cascadeDelayMs={cascadeDelayMs}
+              words={line.words}
             />
           );
         })}
+      </div>
+      {/* Word-lead caption: the one piece of feedback the nudge hotkeys
+       * give. Same chip grammar AND the same per-scale top seat as the
+       * return-to-now button (the focus room's ladder starts far lower).
+       * Move to the opposite scale seat while the upper return is visible. */}
+      <div
+        aria-live="polite"
+        className={`pointer-events-none absolute inset-x-0 z-10 flex justify-center ${showReturn && !nowBelow ? SCALE[scale].chipBottom : SCALE[scale].chipTop}`}
+      >
+        {leadCaption && (
+          <span className="rounded-full border border-border/10 bg-surface-2/90 px-2.5 py-1 text-[11px] leading-none text-muted [animation:caption-in_140ms_var(--ease-out-tk)_both]">
+            {leadCaption}
+          </span>
+        )}
       </div>
       {/* Return-to-now chip — neutral chrome (accent stays on the line
        * marker), on the edge the live line sits past, outside the re-latch
        * band only (inside it the line is on screen and a wheel-back
        * re-latches anyway). 32px offsets clear the 28px mask fade. Exits
        * plain with the browse, per the house transition rule. */}
-      {browsing && Math.abs((manualOffset as number) - autoOffset) > band && (
+      {showReturn && (
         <button
           type="button"
           aria-label="Now — back to the current line"

@@ -9,7 +9,7 @@
  * break, and short gaps stay as they were (previous line current).
  */
 import { describe, expect, it } from "vitest";
-import { currentLineIndex, parseLrc, type LyricLine } from "./lrc";
+import { attachWords, currentLineIndex, parseLrc, wordWipe, type LyricLine } from "./lrc";
 
 /** Lines that render as the five-dot rest row. */
 function breaks(lines: LyricLine[]): LyricLine[] {
@@ -124,5 +124,66 @@ describe("intro and unmarked outro", () => {
     const last = lines.findIndex((l) => l.text === "last");
     expect(currentLineIndex(lines, 20_000, 0)).toBe(last);
     expect(lines[last].end).toBeUndefined();
+  });
+});
+
+describe("attachWords", () => {
+  it("does not invent a fill when the store is empty", () => {
+    const lines = parseLrc("[00:01.00]hello world\n[00:05.00]next", 30_000);
+    expect(attachWords(lines, [])).toBe(lines);
+    expect(attachWords(lines, []).every((l) => l.words === undefined)).toBe(true);
+  });
+
+  it("pins words onto the line whose window contains them", () => {
+    const lines = parseLrc("[00:01.00]hello world\n[00:05.00]next", 30_000);
+    const got = attachWords(lines, [
+      { t: 1000, text: "hello ", end: 1200 },
+      { t: 1300, text: "world", end: 1600 },
+      { t: 5000, text: "next", end: 5400 },
+    ]);
+    expect(got[0].words?.map((w) => w.text)).toEqual(["hello ", "world"]);
+    expect(got[1].words?.map((w) => w.text)).toEqual(["next"]);
+  });
+
+  it("attaches by line stamp when words carry one, even before the stamp", () => {
+    // A negative song lead puts a line's first word 60ms before its stamp;
+    // by time it would glue onto the previous row ("MoveFly").
+    const lines = parseLrc("[00:01.00]hello world\n[00:03.00]next up", 10_000);
+    const got = attachWords(lines, [
+      { t: 1000, text: "hello ", end: 1300, line_t: 1000 },
+      { t: 1300, text: "world", end: 1600, line_t: 1000 },
+      { t: 2940, text: "next ", end: 3200, line_t: 3000 },
+      { t: 3200, text: "up", end: 3400, line_t: 3000 },
+    ]);
+    expect(got[0].words?.map((w) => w.text)).toEqual(["hello ", "world"]);
+    expect(got[1].words?.map((w) => w.text)).toEqual(["next ", "up"]);
+  });
+
+  it("never attaches words onto a break row", () => {
+    const lines = parseLrc("[00:00.00]verse\n[00:04.00] \n[00:20.00]next", 60_000);
+    const got = attachWords(lines, [{ t: 8000, text: "nope", end: 8200 }]);
+    expect(breaks(got)[0].words).toBeUndefined();
+  });
+});
+
+describe("wordWipe", () => {
+  const words = [
+    { t: 1000, text: "one ", end: 1300 },
+    { t: 1300, text: "two", end: 1600 },
+  ];
+
+  it("is null before the first word", () => {
+    expect(wordWipe(words, 900, 0)).toBeNull();
+  });
+
+  it("hits on the onset then holds, instead of crawling the whole word", () => {
+    expect(wordWipe(words, 1000, 0)).toEqual({ index: 0, frac: 0 });
+    expect(wordWipe(words, 1090, 0)).toEqual({ index: 0, frac: 1 });
+    expect(wordWipe(words, 1200, 0)).toEqual({ index: 0, frac: 1 });
+    expect(wordWipe(words, 1450, 0)?.index).toBe(1);
+  });
+
+  it("does not invent an end for a last word without one", () => {
+    expect(wordWipe([{ t: 1000, text: "one" }], 1100, 0)).toEqual({ index: 0, frac: 1 });
   });
 });

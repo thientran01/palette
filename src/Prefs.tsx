@@ -100,13 +100,17 @@ function eventMods(e: KeyboardEvent): string[] {
 
 /** The non-modifier key as a Tauri accelerator token, or null if it isn't one
  * we support (keyed off e.code so it's layout- and modifier-independent). */
-function mainKeyToken(e: KeyboardEvent): string | null {
+export function mainKeyToken(e: Pick<KeyboardEvent, "code">): string | null {
   const c = e.code;
   let m: RegExpExecArray | null;
   if ((m = /^Key([A-Z])$/.exec(c))) return m[1].toLowerCase();
   if ((m = /^Digit(\d)$/.exec(c))) return m[1];
   if ((m = /^F(\d{1,2})$/.exec(c))) return `f${m[1]}`;
   switch (c) {
+    case "BracketLeft":
+      return "[";
+    case "BracketRight":
+      return "]";
     case "ArrowLeft":
       return "left";
     case "ArrowRight":

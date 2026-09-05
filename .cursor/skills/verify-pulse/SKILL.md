@@ -35,6 +35,7 @@ Mock routes (same origin, same process):
 | `/?spotify=off` | Queue/palette gate: connect-from-tray copy |
 | `/?queue=empty` | Spotify connected, no playback |
 | `/?lyrics=none` | Lyrics miss |
+| `/?lyrics=words` | In-line word karaoke (local times fixture) |
 | `/?lyrics=<ms>` | Delayed lyric fetch |
 | `/?jump=partial` | Play-now returns `partial` |
 | `/?similar=<status>` | More-like-this toast (`no_data`, `no_key`, `offline`, …) |
