@@ -148,13 +148,13 @@ fn hotkey_defs() -> [HotkeyDef; 9] {
         },
         HotkeyDef {
             id: "wordsearlier",
-            label: "Lyrics: words earlier",
+            label: "Nudge lyric words earlier",
             default_chord: HK_WORDS_EARLIER,
             action: |app| karaoke::nudge_word_lead(app, true),
         },
         HotkeyDef {
             id: "wordslater",
-            label: "Lyrics: words later",
+            label: "Nudge lyric words later",
             default_chord: HK_WORDS_LATER,
             action: |app| karaoke::nudge_word_lead(app, false),
         },

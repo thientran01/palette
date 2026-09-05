@@ -134,7 +134,9 @@ row per stage set (`prior`, `prior+energy`, `prior+flux`, `prior+energy+end`,
 
 ### Store
 
-`STORE_V` → 3: the 21 existing v2 files were produced by the 498ms aligner
+`STORE_V` → 3 (later 4, when the store gained the aligner `recipe` field —
+see `Stages::RECIPE`; any recipe mismatch re-records): the 21 existing v2
+files were produced by the 498ms aligner
 and re-record on the next full listen. (v3 was used briefly on 2026-09-04
 and reverted; those files are already gone from disk via the v≠STORE_V
 delete-on-read, so reusing the number is safe.)

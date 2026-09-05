@@ -56,7 +56,12 @@ method to word timing.
   was rejected: it would bake Apple Music's 1s sawtooth into the map.
 - **Seek detection at observe time.** Once ≥ 2 anchors exist, a new pair
   whose position differs from the running map's prediction by more than
-  `SEEK_RESIDUAL_MS` aborts the recording (`RECORDING` off, slot cleared)
+  `SEEK_RESIDUAL_MS` is a strike; the SECOND consecutive strike aborts the
+  recording (`RECORDING` off, slot cleared) — one glitched pair is a glitch,
+  a real scrub keeps reporting the new offset. Pairs within `END_GUARD_MS`
+  (1.5s) of the track's duration are never anchors nor strikes: GSMTC clamps
+  the position at the duration while audio keeps flowing, and that final
+  pair dropped a clean recording on 2026-09-04
   WITHOUT inserting the key into the miss set, so the track re-records on
   the next clean listen. Logged at info.
 
@@ -119,7 +124,8 @@ store → `karaoke-ready`.
   with ±20ms noise; anchors floored to whole seconds average to within
   50ms of truth; slope outside the clamp falls back to nominal; a single
   anchor yields `from_origin`.
-- `karaoke`: a pair 3s off the running map aborts the recording and leaves
+- `karaoke`: two consecutive pairs 3s off the running map abort the recording
+  (one is a strike, a good pair clears it; an end-of-track pair is skipped) and leave
   the miss set untouched; a 1.5s outlier is dropped and the fit survives.
 - Existing aligner tests updated to pass a `TimeMap::from_origin(0, …)`.
 

@@ -23,11 +23,19 @@ function set(v: number, nudged: boolean): void {
   subs.forEach((cb) => cb(v, nudged));
 }
 
-function seed(): void {
+export function initWordLead(): void {
   if (seeded) return;
   seeded = true;
-  void commands.wordLead().then((v) => set(v, false));
-  onWordLead((v) => set(v, true));
+  // A nudge can land before the seed round-trip resolves; the fresher
+  // value wins, and the seed must not un-caption it.
+  let nudged = false;
+  onWordLead((v) => {
+    nudged = true;
+    set(v, true);
+  });
+  void commands.wordLead().then((v) => {
+    if (!nudged) set(v, false);
+  });
 }
 
 /** Current lead in ms (positive = earlier). */
@@ -40,7 +48,7 @@ export function wordLeadMs(): number {
 export function useWordLead(): { leadMs: number; nudges: number } {
   const [state, setState] = useState({ leadMs: value, nudges: 0 });
   useEffect(() => {
-    seed();
+    initWordLead();
     setState((s) => (s.leadMs === value ? s : { ...s, leadMs: value }));
     const cb = (v: number, nudged: boolean) =>
       setState((s) => ({ leadMs: v, nudges: nudged ? s.nudges + 1 : s.nudges }));

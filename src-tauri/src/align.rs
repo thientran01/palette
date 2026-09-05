@@ -155,9 +155,9 @@ pub fn parse_lrc(lrc: &str) -> Vec<TimedLine> {
         let raw = raw.trim_end_matches('\r');
         let (stamps, rest) = split_stamps(raw);
         let text = rest.trim();
-        if text.is_empty() {
-            continue;
-        }
+        // Empty stamps are uploader-marked vocal endings. Keep them as
+        // boundaries; align_line skips their text instead of stretching the
+        // preceding lyric into the instrumental break.
         for t in stamps {
             lines.push(TimedLine {
                 t,
@@ -292,7 +292,7 @@ impl Stages {
     /// ANY change that moves word times — the 2026-09-04 fixed-lead →
     /// song-lead switch shipped without a store bump and left Heart To
     /// Heart's words ~216ms late for the rest of the evening.
-    pub const RECIPE: &str = "song-lead/2";
+    pub const RECIPE: &str = "song-lead/3";
 
     /// The set the app runs. Measured on Blur + Heart To Heart via
     /// `karaoke_score matrix` (2026-09-04): song lead 177 / 160ms median
@@ -551,7 +551,11 @@ struct LinePrior {
 }
 
 fn prior(line_t: i64, next_t: i64, weights: &[f32], song: Song) -> LinePrior {
-    let start = line_t + song.lead_ms;
+    // A line's words never start past FILL of its own window: two stamps
+    // 200ms apart (rap cadence) plus a 330ms lead put the first word after
+    // the NEXT stamp, where its row is no longer current (review, 2026-09-05).
+    let window = (next_t - line_t).max(0) as f32;
+    let start = (line_t + song.lead_ms).min(line_t + (song.fill * window) as i64);
     LinePrior {
         start,
         span: span_for(start, line_t, next_t, weights, song.rate_syl_s, song.fill),
@@ -592,6 +596,9 @@ fn spread(tokens: &[String], weights: &[f32], p: LinePrior, next_t: i64) -> Vec<
         if let Some(&prev) = starts.last() {
             t = t.max(prev + HOP_MS);
         }
+        // Reserve one hop for each remaining word and the last word's end.
+        // A minimum inter-word gap must never push a token into the next row.
+        t = t.min(next_t - (n - i) as i64 * HOP_MS);
         starts.push(t);
         acc += *w;
     }
@@ -617,6 +624,7 @@ fn align_line(
     stages: &Stages,
     song: Song,
 ) -> Option<Vec<Word>> {
+    let next_t = next_t.min(ctx.pcm_end_ms);
     let tokens = tokenize(&line.text);
     if tokens.is_empty() || next_t <= line.t {
         return None;
@@ -634,6 +642,15 @@ fn align_line(
             p.span = (end - p.start).max(MIN_SPAN_MS);
         }
     }
+    // The row stops being active at next_t. A positive song lead may be
+    // longer than a fast line's entire window; bound it before spreading.
+    let earliest = p.start.min(line.t).max(0);
+    let reserved = tokens.len() as i64 * HOP_MS;
+    if next_t - earliest < reserved {
+        return None; // Too dense for distinct word times: retain line highlighting.
+    }
+    p.start = p.start.max(earliest).min(next_t - reserved);
+    p.span = p.span.min(next_t - HOP_MS - p.start).max(0);
     let mut words = spread(&tokens, &weights, p, next_t);
     for w in &mut words {
         w.line_t = Some(line.t);
@@ -912,11 +929,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_lrc_skips_empty_markers() {
+    fn parse_lrc_preserves_empty_boundaries() {
         let lines = parse_lrc("[00:01.00]verse\n[00:04.00] \n[00:08.00]next");
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].text, "verse");
-        assert_eq!(lines[1].t, 8000);
+        assert_eq!(lines[1].t, 4000);
+        assert!(lines[1].text.is_empty());
+        assert_eq!(lines[2].t, 8000);
     }
 
     #[test]
@@ -968,6 +987,20 @@ mod tests {
         assert_eq!(words[0].line_t, Some(1000));
         assert_eq!(words[1].line_t, Some(1000));
         assert_eq!(words[2].line_t, Some(3000));
+    }
+
+    #[test]
+    fn a_tight_window_keeps_the_start_inside_the_line() {
+        // Stamps 200ms apart with the default 330ms lead.
+        let pcm = vec![0.0f32; SR as usize * 3];
+        let words = run(
+            &pcm,
+            "[00:01.00]one\n[00:01.20]two\n[00:05.00]next",
+            Stages::PRIOR_ONLY,
+        );
+        assert!(words[0].t < 1200, "{words:?}");
+        assert!(words[0].t >= 1000, "{words:?}");
+        assert_eq!(words[1].t, 1200 + LEAD_MS, "{words:?}");
     }
 
     #[test]
@@ -1166,6 +1199,60 @@ mod tests {
         assert!(map.from_origin);
         assert_eq!(map.pos_ms(0), 5555);
         assert_eq!(map.sample_at(6555), 16_000);
+    }
+
+    #[test]
+    fn words_finish_before_a_marked_instrumental_break() {
+        let pcm = vec![0.0f32; SR as usize * 20];
+        let lyric = "가".repeat(20);
+        let words = run(&pcm, &format!("[00:01.00]{lyric}\n[00:03.00] \n[00:15.00]next"), Stages::PRIOR_ONLY);
+        let first: Vec<_> = words.iter().filter(|w| w.line_t == Some(1000)).collect();
+        assert_eq!(first.len(), 20);
+        assert!(first.iter().all(|w| w.end.unwrap() <= 3000));
+        assert!(words.iter().all(|w| w.line_t != Some(3000)));
+    }
+
+    #[test]
+    fn partial_audio_never_invents_future_word_times() {
+        let pcm = vec![0.0f32; SR as usize * 3];
+        let words = run(&pcm, "[00:01.00]one two\n[00:04.00]unheard\n[00:08.00]last", Stages::PRIOR_ONLY);
+        assert_eq!(words.len(), 2);
+        assert!(words.iter().all(|w| w.end.unwrap() <= 3000));
+    }
+
+    #[test]
+    fn short_line_words_finish_before_the_next_row() {
+        let pcm = vec![0.0f32; SR as usize * 6];
+        let words = run(
+            &pcm,
+            "[00:01.00]one\n[00:01.20]two\n[00:05.00]next",
+            Stages::PRIOR_ONLY,
+        );
+        assert_eq!(words[0].line_t, Some(1000));
+        assert!(words[0].t >= 1000 && words[0].t < 1200);
+        assert!(words[0].end.unwrap() <= 1200);
+        assert!(words[0].end.unwrap() > words[0].t);
+    }
+
+    #[test]
+    fn dense_line_preserves_order_without_crossing_the_boundary() {
+        let pcm = vec![0.0f32; SR as usize * 3];
+        let words = run(
+            &pcm,
+            "[00:01.00]a b c d e f g h i j\n[00:01.10]next",
+            Stages::PRIOR_ONLY,
+        );
+        let first: Vec<_> = words.iter().filter(|w| w.line_t == Some(1000)).collect();
+        assert_eq!(first.len(), 10);
+        assert!(first.windows(2).all(|w| w[0].t < w[1].t));
+        assert!(first.iter().all(|w| w.t >= 1000 && w.end.unwrap() <= 1100));
+    }
+
+    #[test]
+    fn impossibly_dense_line_keeps_line_only_highlighting() {
+        let pcm = vec![0.0f32; SR as usize * 3];
+        let words = run(&pcm, "[00:01.00]a b c\n[00:01.01]next", Stages::PRIOR_ONLY);
+        assert!(words.iter().all(|w| w.line_t != Some(1000)));
     }
 
     #[test]

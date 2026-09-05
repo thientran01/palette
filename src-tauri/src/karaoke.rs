@@ -31,6 +31,9 @@ const STORE_V: u32 = 4;
 /// the gap is padded with silence so later word times don't drift early.
 /// Well above normal packet jitter (~10–50ms).
 const GAP_PAD_MS: u64 = 400;
+/// A gap this long is a stall, not silence: the recording is dropped rather
+/// than padded (the pad loop runs on the realtime thread under the lock).
+const GAP_PAD_MAX_MS: u64 = 5_000;
 /// Staleness projection cap: a position stamped longer ago than this is
 /// not extrapolated further (the pair is the player's, not the clock's).
 const STALE_CAP_MS: i64 = 5_000;
@@ -289,6 +292,13 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         return;
     }
     if spotify::is_remote(app) {
+        // Audio moved to a phone/speaker: local capture hears nothing from
+        // here on. Finalize whatever was recording instead of leaving it to
+        // collect silence until playback comes back local (review).
+        RECORDING.store(false, Ordering::Relaxed);
+        if let Some(rec) = lock_rec().take() {
+            try_commit(app, rec);
+        }
         return;
     }
     let key = lyrics::key_for_ms(&np.artist, &np.title, &np.album, np.duration_ms);
@@ -390,6 +400,12 @@ pub fn push_frames(frames: &[f32], sample_rate: u32) {
         rec.rate_in = sample_rate;
         rec.started = Some(Instant::now());
     } else if rec.rate_in != sample_rate {
+        log::info!(
+            "karaoke: capture rate changed {}→{} during {} — dropping this recording",
+            rec.rate_in,
+            sample_rate,
+            rec.title
+        );
         RECORDING.store(false, Ordering::Relaxed);
         *slot = None;
         return;
@@ -401,9 +417,23 @@ pub fn push_frames(frames: &[f32], sample_rate: u32) {
     if let Some(t0) = rec.started {
         let expected = (t0.elapsed().as_secs_f64() * sample_rate as f64) as u64;
         let deficit = expected.saturating_sub(rec.received);
+        if deficit > sample_rate as u64 * GAP_PAD_MAX_MS / 1000 {
+            // Seconds of missing audio is a stall (sleep, debugger), not a
+            // quiet target — and padding it here would spin the realtime
+            // thread under the lock. Drop the recording instead.
+            log::info!(
+                "karaoke: {}ms capture gap during {} — dropping this recording",
+                deficit * 1000 / sample_rate as u64,
+                rec.title
+            );
+            RECORDING.store(false, Ordering::Relaxed);
+            *slot = None;
+            return;
+        }
         if deficit > sample_rate as u64 * GAP_PAD_MS / 1000 {
             for _ in 0..deficit {
                 if !rec.push(0.0) {
+                    log::info!("karaoke: {} ran past MAX_SAMPLES — dropping", rec.title);
                     RECORDING.store(false, Ordering::Relaxed);
                     *slot = None;
                     return;
@@ -414,6 +444,7 @@ pub fn push_frames(frames: &[f32], sample_rate: u32) {
     }
     for &s in frames {
         if !rec.push(s) {
+            log::info!("karaoke: {} ran past MAX_SAMPLES — dropping", rec.title);
             RECORDING.store(false, Ordering::Relaxed);
             *slot = None;
             return;
@@ -445,6 +476,8 @@ fn try_commit(app: &AppHandle, rec: Rec) {
         return;
     }
     if ALIGNING.swap(true, Ordering::SeqCst) {
+        // Neither cached nor a miss: the track re-records on its next listen.
+        log::info!("karaoke: align busy — skipping {} this listen", rec.title);
         return;
     }
     let lyrics_dir = lyrics_dir(app);

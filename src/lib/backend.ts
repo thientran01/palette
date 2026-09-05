@@ -718,8 +718,8 @@ const MOCK_HOTKEYS: HotkeyInfo[] = [
   { id: "prev", label: "Previous track", chord: "ctrl+alt+p", registered: true },
   { id: "showhide", label: "Show / hide Palette", chord: "ctrl+alt+m", registered: true },
   { id: "search", label: "Summon search", chord: "ctrl+alt+s", registered: true },
-  { id: "wordsearlier", label: "Lyrics: words earlier", chord: "ctrl+alt+[", registered: true },
-  { id: "wordslater", label: "Lyrics: words later", chord: "ctrl+alt+]", registered: true },
+  { id: "wordsearlier", label: "Nudge lyric words earlier", chord: "ctrl+alt+[", registered: true },
+  { id: "wordslater", label: "Nudge lyric words later", chord: "ctrl+alt+]", registered: true },
 ];
 
 /** Mutable browser-mock settings state so the prefs UI's toggles/segments and
@@ -1031,6 +1031,7 @@ export const commands = {
               t: Math.round(t),
               text: i < parts.length - 1 ? `${p} ` : p,
               end: Math.round(t + dt),
+              line_t: s * 1000,
             });
           });
         }

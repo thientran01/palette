@@ -268,7 +268,7 @@ fn score(dir: &Path, labels_path: &Path) {
     let moved: Vec<i64> = words
         .iter()
         .zip(&d.live)
-        .filter(|(a, b)| a.t != b.t)
+        .filter(|(a, b)| a != b)
         .map(|(a, b)| (a.t - b.t).abs())
         .collect();
     if words.len() != d.live.len() {

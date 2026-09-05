@@ -764,8 +764,12 @@ export function LyricsPanel({
         })}
       </div>
       {/* Word-lead caption: the one piece of feedback the nudge hotkeys
-       * give. Same chip grammar as the return-to-now button, top edge. */}
-      <div aria-live="polite" className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center">
+       * give. Same chip grammar AND the same per-scale top seat as the
+       * return-to-now button (the focus room's ladder starts far lower). */}
+      <div
+        aria-live="polite"
+        className={`pointer-events-none absolute inset-x-0 z-10 flex justify-center ${SCALE[scale].chipTop}`}
+      >
         {leadCaption && (
           <span className="rounded-full border border-border/10 bg-surface-2/90 px-2.5 py-1 text-[11px] leading-none text-muted [animation:caption-in_140ms_var(--ease-out-tk)_both]">
             {leadCaption}

@@ -78,5 +78,5 @@ a learned model (revisit at ≥10 tapped songs); any change to line timing.
 - Ctrl+Alt+[ during a word-timed track: caption "Words 140 ms early", wipe
   visibly earlier; Ctrl+Alt+] back. Value survives relaunch (settings.json).
 - Preferences → Hotkeys lists both, rebindable.
-- Default 120ms: Thien's "a little late" verdict re-checked on the same
+- Default 160ms (was 120): Thien's "a little late" verdict re-checked on the same
   songs.
