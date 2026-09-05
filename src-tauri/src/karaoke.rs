@@ -83,7 +83,9 @@ struct Rec {
 enum Anchor {
     Skip,
     Added,
-    Seek,
+    /// (residual ms, anchors so far, reported position) — logged so a
+    /// false positive is diagnosable from the log alone.
+    Seek(f64, usize, i64),
 }
 
 impl Rec {
@@ -98,8 +100,8 @@ impl Rec {
         let stale = (unix_ms() - np.position_at_ms).clamp(0, STALE_CAP_MS);
         let idx_in = (self.received as i64 - stale * self.rate_in as i64 / 1000).max(0) as u64;
         let idx = (idx_in * TARGET_HZ as u64 / self.rate_in as u64) as usize;
-        if seek_detected(&self.anchors, idx, np.position_ms) {
-            return Anchor::Seek;
+        if let Some(residual) = seek_residual(&self.anchors, idx, np.position_ms) {
+            return Anchor::Seek(residual, self.anchors.len(), np.position_ms);
         }
         self.anchors.push((idx, np.position_ms));
         Anchor::Added
@@ -269,11 +271,14 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
             // fitted map can absorb: drop the recording (NOT a miss; the
             // next clean listen records it).
             if let Some(rec) = slot.as_mut() {
-                if let Anchor::Seek = rec.anchor(np) {
+                if let Anchor::Seek(residual, n, pos) = rec.anchor(np) {
                     RECORDING.store(false, Ordering::Relaxed);
                     log::info!(
-                        "karaoke: seek during {} — dropping this recording",
-                        rec.title
+                        "karaoke: seek during {} — dropping this recording (pair says {}ms, fit predicted {:+.0}ms off it, {} anchors)",
+                        rec.title,
+                        pos,
+                        residual,
+                        n
                     );
                     *slot = None;
                 }
@@ -439,11 +444,18 @@ fn try_commit(app: &AppHandle, rec: Rec) {
 /// True when a fresh pair sits further from the running fit than a seek
 /// residual. Needs two anchors to have a fit at all.
 fn seek_detected(anchors: &[(usize, i64)], idx: usize, position_ms: i64) -> bool {
+    seek_residual(anchors, idx, position_ms).is_some()
+}
+
+/// The signed residual (fit − reported) when it exceeds the seek band;
+/// None below it or with fewer than two anchors to fit.
+fn seek_residual(anchors: &[(usize, i64)], idx: usize, position_ms: i64) -> Option<f64> {
     if anchors.len() < 2 {
-        return false;
+        return None;
     }
     let map = TimeMap::fit(anchors, TARGET_HZ, 0);
-    map.residual_ms(idx, position_ms).abs() > align::SEEK_RESIDUAL_MS
+    let r = map.residual_ms(idx, position_ms);
+    (r.abs() > align::SEEK_RESIDUAL_MS).then_some(r)
 }
 
 #[derive(Serialize)]
