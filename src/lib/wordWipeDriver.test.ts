@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { attachWords, parseLrc } from "./lrc";
 import { driveWordRows, type WordRow } from "./wordWipeDriver";
 
 function style() {
@@ -81,4 +82,39 @@ describe("word rows follow onsets independently of the line marker", () => {
     driveWordRows([], -1, 0, h.clock, h.frames)();
     expect(h.pending.size).toBe(0); expect(h.subs.size).toBe(0);
   });
+});
+
+// Backing vocals are printed last but sung concurrently. A single cursor
+// used to fill future lead words or skip the entire parenthesized tail.
+it("advances lead and backing spans independently without filling future lead words", () => {
+  const lines = attachWords(parseLrc("[02:28.19]lead future (oh, oh-oh, oh-oh)\n[02:33.67]next", 197533), [
+    {t:148200,end:149000,text:"lead ",line_t:148190},
+    {t:152000,end:153000,text:"future ",line_t:148190},
+    {t:153628,end:153729,text:"(oh, ",line_t:148190},
+    {t:153749,end:153829,text:"oh-oh, ",line_t:148190},
+    {t:153849,end:154150,text:"oh-oh)",line_t:148190},
+  ]);
+  const words=lines.find(l => l.t === 148190)!.words!;
+  const spans=words.map(() => style());
+  const h=harness(149000);
+  const stop=driveWordRows([{index:0,words,spans,style:style()}],0,0,h.clock,h.frames);
+  expect(spans[0].values.get("--wipe")).toBe("100.0%");
+  expect(spans[1].values.get("--wipe")).toBe("0.0%");
+  expect(parseFloat(spans[2].values.get("--wipe")!)).toBeGreaterThan(0);
+  h.anchor(148190,false);
+  expect(spans.every(s=>s.values.get("--wipe")==="0.0%")).toBe(true);
+  expect(h.pending.size).toBe(0);
+  stop();
+});
+
+it("keeps row bounds across both voices regardless of printed order", () => {
+  const h=harness(1000);const css=style();const spans=[style(),style()];
+  const words=[{t:2000,end:5000,text:"lead"},{t:1000,end:3000,text:"(oh)"}];
+  const stop=driveWordRows([{index:1,style:css,spans,words}],0,0,h.clock,h.frames);
+  expect(css.values.has("--word-bright")).toBe(true);
+  h.frame(4000);
+  expect(css.values.has("--word-bright")).toBe(true);
+  h.frame(5000);
+  expect(css.values.has("--word-bright")).toBe(false);
+  stop();
 });

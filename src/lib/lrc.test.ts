@@ -215,3 +215,19 @@ describe("repeated vocalization phrase fallback", () => {
     expect(parseLrc("[00:01.00]Oh-oh\n[00:03.00]", 180000)[0].words?.[0].end).toBe(3000);
   });
 });
+
+describe("concurrent backing phrase attachment", () => {
+  it("preserves source text order when timestamps overlap", () => {
+    const words=[{t:1000,end:2000,text:"lead ",line_t:1000},{t:3000,end:4000,text:"later ",line_t:1000},{t:1000,end:4000,text:"(backing)",line_t:1000}];
+    expect(attachWords([{t:1000,text:"lead later (backing)"}],words)[0].words).toEqual(words);
+  });
+  it("uses an explicit blank end marker and preserves normal timings on reattachment", () => {
+    const source="[00:01.00]lead (oh, oh-oh)\n[00:04.00]\n[00:06.00]next";
+    const words=[{t:1100,end:2500,text:"lead ",line_t:1000},{t:3900,end:4200,text:"(oh, oh-oh)",line_t:1000}];
+    const once=attachWords(parseLrc(source,9000),words);
+    expect(once[0].words?.map(w=>w.text).join("")).toBe("lead (oh, oh-oh)");
+    expect(once[0].words?.[0]).toEqual(words[0]);
+    expect(once[0].words?.[1]).toMatchObject({t:1000,end:4000,timing:"phrase"});
+    expect(attachWords(once,words)).toEqual(once);
+  });
+});

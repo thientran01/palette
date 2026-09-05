@@ -21,6 +21,8 @@ export interface LyricLine {
    * renders as the five-dot countdown instead of text. */
   end?: number;
   words?: LyricWord[];
+  /** Repeated-oh backing phrase spans the source line, not its printed tail. */
+  backingPhrase?: { textStart: number; t: number; end: number };
 }
 
 /** A marked gap must run at least this long to earn a break row — short
@@ -89,10 +91,17 @@ function withBreaks(lines: LyricLine[], markers: number[], durationMs: number): 
     const phrase = /^\(?oh(?:-oh)+[.!?,]?\)?$/i.test(lines[i].text)
       && (i + 1 < lines.length || marker !== undefined)
       && Number.isFinite(phraseEnd) && phraseEnd > lines[i].t;
-    out.push(phrase ? { ...lines[i], words: [{
+    const backing = /\(oh(?:[\s,-]+oh)+[.!?]?\)$/i.exec(lines[i].text);
+    const hasEndpoint = (i + 1 < lines.length || marker !== undefined)
+      && Number.isFinite(phraseEnd) && phraseEnd > lines[i].t;
+    const line = backing && backing.index > 0 && lines[i].text.slice(0, backing.index).trim()
+      && hasEndpoint ? { ...lines[i], backingPhrase: {
+        textStart: backing.index, t: lines[i].t, end: phraseEnd,
+      } } : lines[i];
+    out.push(phrase ? { ...line, words: [{
       t: lines[i].t, text: lines[i].text, end: phraseEnd,
       line_t: lines[i].t, timing: "phrase",
-    }] } : lines[i]);
+    }] } : line);
     if (marker !== undefined && nextT - marker >= BREAK_MIN_MS) {
       out.push({ t: marker, text: "", end: nextT });
     }
@@ -177,19 +186,41 @@ export function msUntilNextLine(
   return Math.max(next.t - leadMs - positionMs, 0);
 }
 
+/** Keep existing word-sized spans (and wrapping) while mapping the backing
+ * phrase's text sweep onto the source interval. These are display fractions,
+ * not estimates of each sung syllable. Fail closed if source text differs. */
+function backingWords(line: LyricLine, words: LyricWord[]): LyricWord[] {
+  const phrase = line.backingPhrase;
+  if (!phrase || words.map(w => w.text).join("") !== line.text) return words;
+  const size = line.text.length - phrase.textStart;
+  const time = (offset: number) => phrase.t + (phrase.end - phrase.t) * (offset - phrase.textStart) / size;
+  let offset = 0;
+  return words.flatMap(word => {
+    const start = offset;
+    offset += word.text.length;
+    if (offset <= phrase.textStart) return [word];
+    const cut = Math.max(phrase.textStart - start, 0);
+    const backing: LyricWord = { ...word, text: word.text.slice(cut),
+      t: time(start + cut), end: time(offset), timing: "phrase" };
+    return cut ? [{ ...word, text: word.text.slice(0, cut) }, backing] : [backing];
+  });
+}
+
 export function attachWords(lines: LyricLine[], words: LyricWord[]): LyricLine[] {
   if (words.length === 0) return lines;
-  const sorted = words.slice().sort((a, b) => a.t - b.t);
+  // Explicit line ownership preserves source order even with overlapping voices.
+  const source = words.every(w => w.line_t !== undefined)
+    ? words : words.slice().sort((a, b) => a.t - b.t);
   // Words that name their line attach by stamp; older payloads without
   // line_t fall back to the time window (and can misfile a word that sits
   // before its stamp — the reason line_t exists).
   return lines.map((line, i) => {
     if (line.end !== undefined || line.words?.[0]?.timing === "phrase") return line;
     const nextT = i + 1 < lines.length ? lines[i + 1].t : Number.POSITIVE_INFINITY;
-    const mine = sorted.filter((w) =>
+    const mine = source.filter((w) =>
       w.line_t !== undefined ? w.line_t === line.t : w.t >= line.t && w.t < nextT,
     );
-    return mine.length > 0 ? { ...line, words: mine } : line;
+    return mine.length > 0 ? { ...line, words: backingWords(line, mine) } : line;
   });
 }
 
@@ -223,12 +254,17 @@ export function wordWipe(
   if (words.length === 0) return null;
   const i = currentWordIndex(words, positionMs, leadMs);
   if (i < 0) return null;
-  const w = words[i];
-  const end = w.end ?? words[i + 1]?.t;
-  if (end === undefined) return { index: i, frac: 1 };
+  return { index: i, frac: wordWipeFraction(words[i], positionMs, leadMs, words[i + 1]?.t) };
+}
+
+/** Each span owns its progress: simultaneous voices cannot share a cursor. */
+export function wordWipeFraction(w: LyricWord, positionMs: number, leadMs: number, nextT?: number): number {
+  if (positionMs + leadMs < w.t) return 0;
+  const end = w.end ?? nextT;
+  if (end === undefined) return 1;
   const span = Math.max(end - w.t, 1);
   const attack = w.timing === "phrase" ? span : Math.min(WORD_ATTACK_MS, span);
   const p = positionMs + leadMs;
   const u = Math.min(Math.max((p - w.t) / attack, 0), 1);
-  return { index: i, frac: w.timing === "phrase" ? u : 1 - (1 - u) ** 3 };
+  return w.timing === "phrase" ? u : 1 - (1 - u) ** 3;
 }
