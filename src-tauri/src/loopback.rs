@@ -490,6 +490,9 @@ fn capture_loop(
         if started {
             let capture = capture.unwrap();
             let channels = CHANNELS as usize;
+            // Downmixed packet, reused across packets: the ring takes it
+            // under one lock and the karaoke recorder as one push.
+            let mut mono: Vec<f32> = Vec::with_capacity(4096);
             'outer: while !stop.load(Ordering::Relaxed) {
                 let _ = WaitForSingleObject(event, 200);
                 loop {
@@ -518,10 +521,7 @@ fn capture_loop(
                         // when there's real signal; otherwise push n_frames of
                         // silence so the bars still fall.
                         let read_signal = !silent && !data.is_null();
-                        let mut ring = match ring.lock() {
-                            Ok(r) => r,
-                            Err(p) => p.into_inner(),
-                        };
+                        mono.clear();
                         let mut peak = 0.0f32;
                         if read_signal {
                             let samples = std::slice::from_raw_parts(
@@ -532,16 +532,21 @@ fn capture_loop(
                                 let mean =
                                     frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32;
                                 peak = peak.max(mean.abs());
-                                ring.push_frame(mean);
-                                crate::karaoke::push_frame(mean, SAMPLE_RATE);
+                                mono.push(mean);
                             }
                         } else {
-                            for _ in 0..n_frames {
-                                ring.push_frame(0.0);
-                                crate::karaoke::push_frame(0.0, SAMPLE_RATE);
+                            mono.resize(n_frames as usize, 0.0);
+                        }
+                        {
+                            let mut ring = match ring.lock() {
+                                Ok(r) => r,
+                                Err(p) => p.into_inner(),
+                            };
+                            for &m in &mono {
+                                ring.push_frame(m);
                             }
                         }
-                        drop(ring);
+                        crate::karaoke::push_frames(&mono, SAMPLE_RATE);
                         frames.fetch_add(1, Ordering::Relaxed);
                         // "Data" means REAL audio, not a mere delivered packet:
                         // an app rendering spatial audio (Apple Music Atmos)

@@ -268,20 +268,28 @@ fn open_loopback(
     // The Mutex hold inside the callback is a few µs (push into a fixed ring);
     // snapshot() on the reader side is equally short — contention risk is
     // negligible at 30Hz reads.
+    // Downmixed block, reused across callbacks (no allocation on the audio
+    // thread) — the karaoke recorder takes it as one push per callback.
+    let mut mono: Vec<f32> = Vec::with_capacity(4096);
     let stream = device
         .build_input_stream(
             &config.into(),
             move |data: &[f32], _| {
                 frames.fetch_add(1, Ordering::Relaxed);
-                let mut ring = match ring.lock() {
-                    Ok(r) => r,
-                    Err(p) => p.into_inner(),
-                };
+                mono.clear();
                 for frame in data.chunks(channels.max(1)) {
-                    let mean = frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32;
-                    ring.push_frame(mean);
-                    crate::karaoke::push_frame(mean, sample_rate as u32);
+                    mono.push(frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32);
                 }
+                {
+                    let mut ring = match ring.lock() {
+                        Ok(r) => r,
+                        Err(p) => p.into_inner(),
+                    };
+                    for &m in &mono {
+                        ring.push_frame(m);
+                    }
+                }
+                crate::karaoke::push_frames(&mono, sample_rate as u32);
             },
             |e| log::warn!("audio loopback stream error: {e}"),
             None,

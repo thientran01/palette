@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
 const CACHE_MAX_FILES: usize = 500;
@@ -18,7 +19,17 @@ const MAX_SAMPLES: usize = 16_000 * 60 * 8;
 const ARM_NEAR_START_MS: i64 = 8_000;
 const PEAK_ABORT: f32 = 1e-3;
 const MIN_LINE_COVERAGE: u32 = 30;
-const STORE_V: u32 = 2;
+/// v3: the spectral-flux aligner (v2 files were energy-rise placements —
+/// re-record rather than keep their word times).
+const STORE_V: u32 = 3;
+/// Wall-clock deficit past which the capture is judged to have delivered
+/// nothing for a stretch (process loopback goes quiet with its target) —
+/// the gap is padded with silence so later word times don't drift early.
+/// Well above normal packet jitter (~10–50ms).
+const GAP_PAD_MS: u64 = 400;
+/// Staleness projection cap: a position stamped longer ago than this is
+/// not extrapolated further (the pair is the player's, not the clock's).
+const STALE_CAP_MS: i64 = 5_000;
 
 #[derive(Serialize, Deserialize)]
 struct StoreFile {
@@ -48,6 +59,39 @@ struct Rec {
     n: u32,
     samples: Vec<f32>,
     peak: f32,
+    /// Wall clock at the first delivered block + input frames received
+    /// since: the pair that detects a delivery gap (see GAP_PAD_MS).
+    started: Option<Instant>,
+    received: u64,
+}
+
+impl Rec {
+    /// Box-decimate one input frame onto the TARGET_HZ grid.
+    #[inline]
+    fn push(&mut self, sample: f32) -> bool {
+        let s = if sample.is_finite() { sample } else { 0.0 };
+        self.peak = self.peak.max(s.abs());
+        self.phase = self.phase.saturating_add(TARGET_HZ);
+        self.acc += s;
+        self.n += 1;
+        if self.phase >= self.rate_in {
+            self.phase -= self.rate_in;
+            if self.samples.len() >= MAX_SAMPLES {
+                return false;
+            }
+            self.samples.push(self.acc / self.n.max(1) as f32);
+            self.acc = 0.0;
+            self.n = 0;
+        }
+        true
+    }
+}
+
+fn unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
@@ -202,7 +246,17 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     if lock_misses().contains(&key) {
         return;
     }
-    if np.position_ms >= ARM_NEAR_START_MS {
+    // The raw pair is the player's last push (Spotify ~every 5s, Apple
+    // Music floored to whole seconds): project it to now so the origin is
+    // the position the first captured sample actually belongs to. The
+    // aligner's stamp-anchored offset absorbs what's left.
+    let stale = if np.position_at_ms > 0 {
+        (unix_ms() - np.position_at_ms).clamp(0, STALE_CAP_MS)
+    } else {
+        0
+    };
+    let origin_ms = (np.position_ms + stale).max(0);
+    if origin_ms >= ARM_NEAR_START_MS {
         return;
     }
     let rec = Rec {
@@ -211,13 +265,15 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         title: np.title.clone(),
         album: np.album.clone(),
         duration_ms: np.duration_ms,
-        origin_ms: np.position_ms.max(0),
+        origin_ms,
         rate_in: 0,
         phase: 0,
         acc: 0.0,
         n: 0,
         samples: Vec::with_capacity(TARGET_HZ as usize * 240),
         peak: 0.0,
+        started: None,
+        received: 0,
     };
     *lock_rec() = Some(rec);
     RECORDING.store(true, Ordering::Relaxed);
@@ -230,12 +286,12 @@ pub fn on_capture_stop(app: &AppHandle) {
     }
 }
 
-#[inline]
-pub fn push_frame(sample: f32, sample_rate: u32) {
-    if !RECORDING.load(Ordering::Relaxed) {
-        return;
-    }
-    if sample_rate == 0 {
+/// Feed one capture block of mono frames. Called from the audio thread;
+/// one lock per block (a packet is ~10–20ms of audio), never per sample —
+/// the per-sample version took the mutex 48k times a second on the
+/// realtime thread.
+pub fn push_frames(frames: &[f32], sample_rate: u32) {
+    if frames.is_empty() || sample_rate == 0 || !RECORDING.load(Ordering::Relaxed) {
         return;
     }
     let mut slot = rec_slot()
@@ -246,27 +302,38 @@ pub fn push_frame(sample: f32, sample_rate: u32) {
     };
     if rec.rate_in == 0 {
         rec.rate_in = sample_rate;
+        rec.started = Some(Instant::now());
     } else if rec.rate_in != sample_rate {
         RECORDING.store(false, Ordering::Relaxed);
         *slot = None;
         return;
     }
-    let s = if sample.is_finite() { sample } else { 0.0 };
-    rec.peak = rec.peak.max(s.abs());
-    rec.phase = rec.phase.saturating_add(TARGET_HZ);
-    rec.acc += s;
-    rec.n += 1;
-    if rec.phase >= rec.rate_in {
-        rec.phase -= rec.rate_in;
-        if rec.samples.len() >= MAX_SAMPLES {
+    // Delivery gap: the wall clock says far more audio has elapsed than
+    // arrived. Process loopback delivers nothing while its target renders
+    // nothing, and a recording that silently skips that stretch puts
+    // every later word early by its length — pad it as silence instead.
+    if let Some(t0) = rec.started {
+        let expected = (t0.elapsed().as_secs_f64() * sample_rate as f64) as u64;
+        let deficit = expected.saturating_sub(rec.received);
+        if deficit > sample_rate as u64 * GAP_PAD_MS / 1000 {
+            for _ in 0..deficit {
+                if !rec.push(0.0) {
+                    RECORDING.store(false, Ordering::Relaxed);
+                    *slot = None;
+                    return;
+                }
+            }
+            rec.received += deficit;
+        }
+    }
+    for &s in frames {
+        if !rec.push(s) {
             RECORDING.store(false, Ordering::Relaxed);
             *slot = None;
             return;
         }
-        rec.samples.push(rec.acc / rec.n.max(1) as f32);
-        rec.acc = 0.0;
-        rec.n = 0;
     }
+    rec.received += frames.len() as u64;
 }
 
 struct AlignGuard;

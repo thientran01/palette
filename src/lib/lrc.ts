@@ -209,14 +209,3 @@ export function wordWipe(
   const u = Math.min(Math.max((p - w.t) / attack, 0), 1);
   return { index: i, frac: 1 - (1 - u) ** 3 };
 }
-
-export function msUntilNextWord(
-  words: LyricWord[],
-  idx: number,
-  positionMs: number,
-  leadMs: number,
-): number | null {
-  const next = words[idx + 1];
-  if (!next) return null;
-  return Math.max(next.t - leadMs - positionMs, 0);
-}

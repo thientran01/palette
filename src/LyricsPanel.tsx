@@ -13,10 +13,8 @@ import {
   attachWords,
   breakDotsFilled,
   currentLineIndex,
-  currentWordIndex,
   msUntilNextDot,
   msUntilNextLine,
-  msUntilNextWord,
   parseLrc,
   wordWipe,
   type LyricLine,
@@ -100,66 +98,59 @@ function useBreakDots(line: LyricLine, leadMs: number, active: boolean): number 
   return active ? filled : 0;
 }
 
-const NO_WORDS: LyricWord[] = [];
-
-function useWordIndex(words: LyricWord[], leadMs: number, active: boolean): number {
-  const [idx, setIdx] = useState(() =>
-    active ? currentWordIndex(words, posClock.now(), leadMs) : -1,
-  );
-  useEffect(() => {
-    if (!active || words.length === 0) {
-      setIdx(-1);
-      return;
-    }
-    let timer: number | undefined;
-    const sync = () => {
-      window.clearTimeout(timer);
-      timer = undefined;
-      const pos = posClock.now();
-      const i = currentWordIndex(words, pos, leadMs);
-      setIdx(i);
-      if (!posClock.isPlaying()) return;
-      const delay = msUntilNextWord(words, i, pos, leadMs);
-      if (delay === null) return;
-      timer = window.setTimeout(sync, Math.min(delay, 30_000));
-    };
-    sync();
-    const unsubscribe = posClock.subscribe(sync);
-    return () => {
-      unsubscribe();
-      window.clearTimeout(timer);
-    };
-  }, [words, leadMs, active]);
-  return active ? idx : -1;
-}
-
+/**
+ * Drives the current line's word wipe imperatively: every `[data-word]`
+ * span in the row carries the same fg→muted gradient and only its `--wipe`
+ * stop moves — sung words sit at 100%, unsung at 0%, the live one eases
+ * through its attack. One rAF loop while playing, a single write on each
+ * clock anchor while paused, and NO React state per word: the earlier
+ * state-driven index re-rendered the row on every word boundary and, for
+ * the frame between the timer firing and React committing, wrote the new
+ * word's near-zero wipe onto the OLD span — a visible un-fill flicker at
+ * every boundary.
+ */
 function useWordWipe(
-  overlay: React.RefObject<HTMLSpanElement | null>,
+  row: React.RefObject<HTMLElement | null>,
   words: LyricWord[] | undefined,
   leadMs: number,
-  active: boolean,
 ): void {
   useLayoutEffect(() => {
-    if (!active || !words || words.length === 0) return;
+    const el = row.current;
+    if (!el || !words || words.length === 0) return;
+    const spans = Array.from(el.querySelectorAll<HTMLElement>("[data-word]"));
+    if (spans.length === 0) return;
+    const last = new Array<number>(spans.length).fill(-1);
     let raf = 0;
     const write = () => {
       const wipe = wordWipe(words, posClock.now(), leadMs);
-      const el = overlay.current;
-      if (!el) return;
-      el.style.setProperty("--wipe", `${wipe ? wipe.frac * 100 : 0}%`);
+      const cur = wipe ? wipe.index : -1;
+      for (let i = 0; i < spans.length; i++) {
+        const frac = i < cur ? 1 : i === cur ? (wipe as { frac: number }).frac : 0;
+        if (frac === last[i]) continue;
+        last[i] = frac;
+        spans[i].style.setProperty("--wipe", `${(frac * 100).toFixed(1)}%`);
+      }
     };
-    write();
-    if (!posClock.isPlaying()) {
-      return posClock.subscribe(write);
-    }
     const loop = () => {
-      raf = requestAnimationFrame(loop);
       write();
+      raf = posClock.isPlaying() ? requestAnimationFrame(loop) : 0;
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [overlay, words, leadMs, active]);
+    const kick = () => {
+      write();
+      if (posClock.isPlaying() && raf === 0) raf = requestAnimationFrame(loop);
+    };
+    kick();
+    const unsubscribe = posClock.subscribe(kick);
+    return () => {
+      unsubscribe();
+      cancelAnimationFrame(raf);
+    };
+  }, [row, words, leadMs]);
 }
+
+/** Soft edge on the wipe, in px — a hard stop strobes at 60fps. */
+const WIPE_FEATHER = "5px";
+const WORD_GRADIENT = `linear-gradient(to right, rgb(var(--fg)) calc(var(--wipe, 0%) - ${WIPE_FEATHER}), rgb(var(--muted) / 0.8) calc(var(--wipe, 0%) + ${WIPE_FEATHER}))`;
 
 export type LyricsState =
   // "none" = a definitive served miss (LRCLIB has no lyrics for this track);
@@ -381,8 +372,7 @@ const LyricLineRow = memo(function LyricLineRow({
   tier,
   browsing,
   words,
-  wordIdx,
-  wipeRef,
+  rowRef,
 }: {
   text: string;
   index: number;
@@ -401,8 +391,8 @@ const LyricLineRow = memo(function LyricLineRow({
   tier: number | null;
   browsing: boolean;
   words?: LyricWord[];
-  wordIdx: number;
-  wipeRef?: React.RefObject<HTMLSpanElement | null>;
+  /** The current row's element, for the imperative word wipe. */
+  rowRef?: React.RefObject<HTMLElement | null>;
 }) {
   const Tag = seekable ? "button" : "div";
   const timed = current && words && words.length > 0;
@@ -426,6 +416,7 @@ const LyricLineRow = memo(function LyricLineRow({
             tabIndex: -1,
           }
         : {})}
+      ref={timed ? (rowRef as React.RefObject<HTMLDivElement & HTMLButtonElement>) : undefined}
       data-cascade
       {...(anchor ? { "data-anchor": true } : {})}
       style={{ "--cascade-delay": `${cascadeDelayMs}ms` } as React.CSSProperties}
@@ -444,33 +435,19 @@ const LyricLineRow = memo(function LyricLineRow({
         }`}
       />
       {timed
-        ? words.map((w, wi) => {
-            const past = wordIdx >= 0 && wi < wordIdx;
-            const on = wi === wordIdx;
-            return (
-              <span
-                key={`${w.t}-${wi}`}
-                ref={on ? wipeRef : undefined}
-                className={`inline-block ${
-                  past
-                    ? "text-fg"
-                    : on
-                      ? "bg-clip-text text-transparent"
-                      : "text-muted/80"
-                }`}
-                style={
-                  on
-                    ? {
-                        backgroundImage:
-                          "linear-gradient(to right, rgb(var(--fg)) var(--wipe, 0%), rgb(var(--muted) / 0.8) var(--wipe, 0%))",
-                      }
-                    : undefined
-                }
-              >
-                {w.text}
-              </span>
-            );
-          })
+        ? words.map((w, wi) => (
+            // Every span wears the same gradient; useWordWipe moves only
+            // its --wipe stop, so a word boundary is a style write, not
+            // a re-render or a class swap.
+            <span
+              key={`${w.t}-${wi}`}
+              data-word
+              className="inline-block bg-clip-text text-transparent"
+              style={{ backgroundImage: WORD_GRADIENT }}
+            >
+              {w.text}
+            </span>
+          ))
         : text}
     </Tag>
   );
@@ -580,10 +557,8 @@ export function LyricsPanel({
 }) {
   const idx = useLyricIndex(lines, leadMs);
   const currentWords = idx >= 0 ? lines[idx]?.words : undefined;
-  const timed = !!currentWords && currentWords.length > 0;
-  const wordIdx = useWordIndex(currentWords ?? NO_WORDS, leadMs, timed);
-  const wipeRef = useRef<HTMLSpanElement>(null);
-  useWordWipe(wipeRef, currentWords, leadMs, timed);
+  const currentRow = useRef<HTMLElement>(null);
+  useWordWipe(currentRow, currentWords, leadMs);
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [autoOffset, setAutoOffset] = useState(0);
@@ -771,8 +746,7 @@ export function LyricsPanel({
               anchor={anchor}
               cascadeDelayMs={cascadeDelayMs}
               words={line.words}
-              wordIdx={i === idx ? wordIdx : -1}
-              wipeRef={i === idx ? wipeRef : undefined}
+              rowRef={i === idx ? currentRow : undefined}
             />
           );
         })}
