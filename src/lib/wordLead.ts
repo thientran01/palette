@@ -12,7 +12,7 @@
 import { useEffect, useState } from "react";
 import { commands, onWordLead } from "./backend";
 
-export const WORD_LEAD_DEFAULT_MS = 120;
+export const WORD_LEAD_DEFAULT_MS = 160;
 
 let value = WORD_LEAD_DEFAULT_MS;
 let seeded = false;

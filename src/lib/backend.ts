@@ -1358,9 +1358,9 @@ function mockWordLead(): number {
   try {
     const raw = window.localStorage.getItem(WORD_LEAD_KEY);
     const v = raw === null ? NaN : Number(raw);
-    return Number.isFinite(v) ? v : 120;
+    return Number.isFinite(v) ? v : 160;
   } catch {
-    return 120;
+    return 160;
   }
 }
 

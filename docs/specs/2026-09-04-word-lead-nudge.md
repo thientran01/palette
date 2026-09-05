@@ -21,7 +21,7 @@ Blur / Heart To Heart, biases +27 / −71ms) Thien's live verdict was still
 
 ### Layer one: a word lead Thien can nudge
 
-- `WORD_LEAD_DEFAULT_MS = 120`: the wipe for a word fires this far before
+- `WORD_LEAD_DEFAULT_MS = 160` (shipped at 120; Thien nudged live to 160 the same night, 2026-09-04): the wipe for a word fires this far before
   its aligned onset, on top of the per-player `VOCAL_LEAD_MS`. Persisted in
   settings.json as `"wordLeadMs"`, clamped to [−200, 400].
 - Two new rebindable global hotkeys on the existing `hotkey_defs` table

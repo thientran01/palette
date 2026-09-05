@@ -643,7 +643,7 @@ fn commit_sync(
 // onset and ramps 90ms, and a karaoke highlight is expected to lead the
 // vocal. Thien tunes it with two hotkeys; the value persists.
 
-pub const WORD_LEAD_DEFAULT_MS: i64 = 120;
+pub const WORD_LEAD_DEFAULT_MS: i64 = 160;
 const WORD_LEAD_STEP_MS: i64 = 20;
 const WORD_LEAD_RANGE_MS: (i64, i64) = (-200, 400);
 const WORD_LEAD_SETTING: &str = "wordLeadMs";
