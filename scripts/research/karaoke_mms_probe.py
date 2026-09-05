@@ -13,6 +13,7 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--repo',type=Path,required=True)
 parser.add_argument('--out',type=Path,required=True)
 parser.add_argument('--threads',type=int,default=2)
+parser.add_argument('--onnx',type=Path,help='Use exported ONNX acoustics; tokenization/CTC remain identical')
 parser.add_argument('dumps',nargs='+',type=Path)
 a=parser.parse_args()
 sys.path.insert(0,str(a.repo/'scripts'))
@@ -24,8 +25,13 @@ a.out.mkdir(parents=True,exist_ok=True)
 bundle=torchaudio.pipelines.MMS_FA
 print('Loading MMS_FA (CPU)',flush=True)
 t0=time.perf_counter()
-model=bundle.get_model(dl_kwargs={"progress": False}).eval()
-print('Model ready',round(time.perf_counter()-t0,2),'s; parameters',sum(p.numel() for p in model.parameters()),flush=True)
+if a.onnx:
+ import onnxruntime as ort
+ options=ort.SessionOptions();options.intra_op_num_threads=a.threads;options.inter_op_num_threads=1
+ model=ort.InferenceSession(str(a.onnx),sess_options=options,providers=['CPUExecutionProvider'])
+else:
+ model=bundle.get_model(dl_kwargs={"progress": False}).eval()
+print('Model ready',round(time.perf_counter()-t0,2),'s',flush=True)
 tokenizer=bundle.get_tokenizer(); aligner=bundle.get_aligner(); roman=uroman.Uroman()
 for dump in a.dumps:
  meta=json.loads((dump/'meta.json').read_text(encoding='utf-8'))
@@ -44,7 +50,10 @@ for dump in a.dumps:
   end=sample(min(next_ms+500,sec*1000+20000))
   if end-begin<400:raise ValueError(('empty audio window',li))
   with torch.inference_mode():
-   emissions,_=model(torch.from_numpy(pcm[begin:end]).unsqueeze(0))
+   if a.onnx:
+    emissions=torch.from_numpy(model.run(None,{'waveform':pcm[None,begin:end]})[0])
+   else:
+    emissions,_=model(torch.from_numpy(pcm[begin:end]).unsqueeze(0))
    spans=aligner(emissions[0],tokenizer(['*']+norm+['*']))[1:-1]
   ratio=(end-begin)/emissions.shape[1]
   for text,normalized,chars in zip(words,norm,spans):
@@ -68,7 +77,7 @@ for dump in a.dumps:
   delta=w['t']-truth; deltas.append(delta); grouped.setdefault(w['line_index'],[]).append(abs(delta))
  absd=sorted(abs(x) for x in deltas); n=len(deltas)
  pct=lambda q:absd[int((n-1)*q+0.5)]
- result={'model':'torchaudio-2.8-MMS_FA','preprocessing':'full mix, LRC row +/-500ms, max20s, uroman per source token, star boundaries',
+ result={'model':a.onnx.name if a.onnx else 'torchaudio-2.8-MMS_FA','preprocessing':'full mix, LRC row +/-500ms, max20s, uroman per source token, star boundaries',
   'threads':a.threads,'seconds':time.perf_counter()-started,'audio_seconds':len(pcm)/16000,
   'pcm_sha256':hashlib.sha256(raw).hexdigest(),'labels_sha256':hashlib.sha256(label_bytes).hexdigest(),
   'metrics':{'tokens':n,'median_ms':pct(0.5),'p90_ms':pct(0.9),'bias_ms':sum(deltas)/n,

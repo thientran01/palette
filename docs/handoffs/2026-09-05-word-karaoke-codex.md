@@ -16,7 +16,7 @@ attack; do not retune them from a synthetic test. Codex now owns the branch;
 Claude is stopped. Review fixes are in this PR; merging still needs the
 accuracy gate below resolved.
 
-## Measurement correction — read before tuning
+## Measurement correction â€” read before tuning
 
 The original tap page exported audio-relative seconds. The original scorer
 compared those directly to song-relative predictions. Capture does not start
@@ -217,3 +217,28 @@ Integration requirements still unresolved:
   line starts, at added runtime and model cost.
 - Live smoothness, seeks, pause/resume, cache migration and CPU contention
   must be verified after integration. Preserve user word lead preferences.
+
+
+## 2026-09-05 — Quantized ONNX and renderer follow-up
+
+The int8 MMS_FA export is 356,235,747 bytes (~340 MiB), versus
+1,262,351,625 bytes for float ONNX. On this machine, using two CPU threads,
+full-mix alignment took 22.40s for Blur and 24.15s for Heart To Heart
+(model load separately 0.95s). Rust `score-words` reports median/p90
+152/539ms for Blur and 84/243ms for Heart To Heart. Float results were
+152/539 and 84/262ms. This is only two recordings; no generalization claim.
+The original Heart To Heart map reconstruction caveat still applies.
+`scripts/research/karaoke_mms_export.py` reproduces the export, float
+bundle parity checks at three audio lengths, and quantization. The probe
+accepts `--onnx`. Models remain outside Git and are NOT integrated into
+the app. Runtime packaging, romanization and CTC parity remain open work.
+
+The renderer now keeps timed spans mounted in their original rows with
+stable font weight. One frame driver permits early onsets and overlapping
+sung tails without changing line stamps, marker ownership or scroll time.
+It cancels animation immediately on pause and avoids unchanged span writes.
+Frontend tests: 40 pass (previously 34); three fail when the old current-row
+gate is substituted. The browser preview exposed an Illegal invocation
+from unbound requestAnimationFrame; the call site now wraps both frame APIs.
+Browser DOM/CSS checks show distinct 32px mock rows and correct gradients.
+This validates browser layout, not native audible synchronization.
