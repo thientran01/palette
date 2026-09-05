@@ -443,6 +443,7 @@ fn try_commit(app: &AppHandle, rec: Rec) {
 
 /// True when a fresh pair sits further from the running fit than a seek
 /// residual. Needs two anchors to have a fit at all.
+#[cfg(test)]
 fn seek_detected(anchors: &[(usize, i64)], idx: usize, position_ms: i64) -> bool {
     seek_residual(anchors, idx, position_ms).is_some()
 }
