@@ -351,6 +351,26 @@ impl Stages {
 struct Song {
     lead_ms: i64,
     rate_syl_s: f32,
+    fill: f32,
+}
+
+/// The prior's constants, exposed so the scorer's `fit` can grid-search
+/// them across every truth song. `Default` = the shipped values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PriorParams {
+    pub lead_ms: i64,
+    pub rate_syl_s: f32,
+    pub fill: f32,
+}
+
+impl Default for PriorParams {
+    fn default() -> Self {
+        Self {
+            lead_ms: LEAD_MS,
+            rate_syl_s: RATE_SYL_S,
+            fill: FILL,
+        }
+    }
 }
 
 const SONG_MIN_SAMPLES: usize = 6;
@@ -392,6 +412,24 @@ pub fn align_with(
     map: &TimeMap,
     stages: &Stages,
 ) -> Vec<Word> {
+    align_with_params(
+        pcm,
+        sample_rate,
+        lines,
+        map,
+        stages,
+        &PriorParams::default(),
+    )
+}
+
+pub fn align_with_params(
+    pcm: &[f32],
+    sample_rate: u32,
+    lines: &[TimedLine],
+    map: &TimeMap,
+    stages: &Stages,
+    params: &PriorParams,
+) -> Vec<Word> {
     if sample_rate == 0 || pcm.is_empty() || lines.is_empty() {
         return Vec::new();
     }
@@ -408,7 +446,7 @@ pub fn align_with(
         pcm_end_ms,
         flux: flux.as_ref(),
     };
-    let song = calibrate(&ctx, lines, stages);
+    let song = calibrate(&ctx, lines, stages, params);
     let mut words = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let next_t = next_stamp(lines, i, pcm_end_ms);
@@ -433,10 +471,11 @@ fn median(v: &mut [f32]) -> f32 {
 
 /// Song-level lead and rate from the medians of the per-line detectors.
 /// Fewer than SONG_MIN_SAMPLES usable lines keeps the default.
-fn calibrate(ctx: &Ctx, lines: &[TimedLine], stages: &Stages) -> Song {
+fn calibrate(ctx: &Ctx, lines: &[TimedLine], stages: &Stages, params: &PriorParams) -> Song {
     let mut song = Song {
-        lead_ms: LEAD_MS,
-        rate_syl_s: RATE_SYL_S,
+        lead_ms: params.lead_ms,
+        rate_syl_s: params.rate_syl_s,
+        fill: params.fill,
     };
     if stages.song_lead {
         let mut leads: Vec<f32> = Vec::new();
@@ -502,17 +541,24 @@ fn prior(line_t: i64, next_t: i64, weights: &[f32], song: Song) -> LinePrior {
     let start = line_t + song.lead_ms;
     LinePrior {
         start,
-        span: span_for(start, line_t, next_t, weights, song.rate_syl_s),
+        span: span_for(start, line_t, next_t, weights, song.rate_syl_s, song.fill),
     }
 }
 
 /// Syllable-rate span, capped so the line ends by FILL of its window
 /// whatever the start moved to.
-fn span_for(start: i64, line_t: i64, next_t: i64, weights: &[f32], rate_syl_s: f32) -> i64 {
+fn span_for(
+    start: i64,
+    line_t: i64,
+    next_t: i64,
+    weights: &[f32],
+    rate_syl_s: f32,
+    fill: f32,
+) -> i64 {
     let s = placed_weight(weights);
     let window = (next_t - line_t).max(0) as f32;
     let by_rate = (s / rate_syl_s * 1000.0) as i64;
-    let by_window = (FILL * window) as i64 - (start - line_t);
+    let by_window = (fill * window) as i64 - (start - line_t);
     by_rate.min(by_window).max(MIN_SPAN_MS)
 }
 
@@ -566,7 +612,7 @@ fn align_line(
     if let Some(det) = stages.start {
         if let Some(start) = detect_start(ctx, det, line.t, next_t) {
             p.start = start;
-            p.span = span_for(start, line.t, next_t, &weights, song.rate_syl_s);
+            p.span = span_for(start, line.t, next_t, &weights, song.rate_syl_s, song.fill);
         }
     }
     if stages.end {

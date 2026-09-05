@@ -718,6 +718,8 @@ const MOCK_HOTKEYS: HotkeyInfo[] = [
   { id: "prev", label: "Previous track", chord: "ctrl+alt+p", registered: true },
   { id: "showhide", label: "Show / hide Palette", chord: "ctrl+alt+m", registered: true },
   { id: "search", label: "Summon search", chord: "ctrl+alt+s", registered: true },
+  { id: "wordsearlier", label: "Lyrics: words earlier", chord: "ctrl+alt+[", registered: true },
+  { id: "wordslater", label: "Lyrics: words later", chord: "ctrl+alt+]", registered: true },
 ];
 
 /** Mutable browser-mock settings state so the prefs UI's toggles/segments and
@@ -1045,6 +1047,11 @@ export const commands = {
     }
     return lyricsLatestWins(() => invoke("media_lyrics", { artist, title, album, durationMs }));
   },
+  /** Seed for src/lib/wordLead.ts: the persisted word-wipe lead in ms. */
+  async wordLead(): Promise<number> {
+    if (!IN_TAURI) return mockWordLead();
+    return invoke<number>("word_lead");
+  },
   /** Free-text track search (spotify.rs search_tracks) — the search window's
    * result list. Debounce + latest-wins live with the caller. */
   async spotifySearch(query: string, limit = 8): Promise<SearchResult> {
@@ -1336,6 +1343,49 @@ export type KaraokeReady = {
 export function onKaraokeReady(cb: (p: KaraokeReady) => void): () => void {
   if (!IN_TAURI) return () => {};
   const un = listen<KaraokeReady>("karaoke-ready", (e) => cb(e.payload));
+  return () => {
+    un.then((f) => f());
+  };
+}
+
+/** Word-wipe lead (karaoke.rs "wordLeadMs"; src/lib/wordLead.ts mirrors).
+ * Mock: localStorage, and `window.__nudgeWordLead(±20)` from the console
+ * drives the panel caption in preview. */
+const WORD_LEAD_KEY = "pulse.wordLeadMs";
+const mockWordLeadListeners = new Set<(v: number) => void>();
+
+function mockWordLead(): number {
+  try {
+    const raw = window.localStorage.getItem(WORD_LEAD_KEY);
+    const v = raw === null ? NaN : Number(raw);
+    return Number.isFinite(v) ? v : 120;
+  } catch {
+    return 120;
+  }
+}
+
+if (!IN_TAURI) {
+  (window as unknown as { __nudgeWordLead?: (delta: number) => void }).__nudgeWordLead = (
+    delta: number,
+  ) => {
+    const v = Math.max(-200, Math.min(400, mockWordLead() + delta));
+    try {
+      window.localStorage.setItem(WORD_LEAD_KEY, String(v));
+    } catch {
+      /* private mode */
+    }
+    mockWordLeadListeners.forEach((cb) => cb(v));
+  };
+}
+
+export function onWordLead(cb: (v: number) => void): () => void {
+  if (!IN_TAURI) {
+    mockWordLeadListeners.add(cb);
+    return () => {
+      mockWordLeadListeners.delete(cb);
+    };
+  }
+  const un = listen<number>("word-lead", (e) => cb(e.payload));
   return () => {
     un.then((f) => f());
   };

@@ -47,6 +47,10 @@ const HK_PREV: &str = "ctrl+alt+p";
 const HK_TOGGLE: &str = "ctrl+alt+m";
 /// S for search/summon — the search window (Thien's pick, 2026-07-11).
 const HK_SEARCH: &str = "ctrl+alt+s";
+/// Word-wipe lead nudges (docs/specs/2026-09-04-word-lead-nudge.md): the
+/// one feedback signal that measures Thien's perception, not the audio.
+const HK_WORDS_EARLIER: &str = "ctrl+alt+[";
+const HK_WORDS_LATER: &str = "ctrl+alt+]";
 
 // ---- Global hotkeys: rebindable, HK_* are the DEFAULTS ----
 //
@@ -67,8 +71,8 @@ struct HotkeyDef {
     action: fn(&AppHandle),
 }
 
-/// The seven actions, in the order the prefs Hotkeys list renders them.
-fn hotkey_defs() -> [HotkeyDef; 7] {
+/// The nine actions, in the order the prefs Hotkeys list renders them.
+fn hotkey_defs() -> [HotkeyDef; 9] {
     [
         HotkeyDef {
             id: "playpause",
@@ -142,6 +146,18 @@ fn hotkey_defs() -> [HotkeyDef; 7] {
             default_chord: HK_SEARCH,
             action: |app| search::toggle(app),
         },
+        HotkeyDef {
+            id: "wordsearlier",
+            label: "Lyrics: words earlier",
+            default_chord: HK_WORDS_EARLIER,
+            action: |app| karaoke::nudge_word_lead(app, true),
+        },
+        HotkeyDef {
+            id: "wordslater",
+            label: "Lyrics: words later",
+            default_chord: HK_WORDS_LATER,
+            action: |app| karaoke::nudge_word_lead(app, false),
+        },
     ]
 }
 
@@ -211,7 +227,7 @@ pub(crate) fn register_all(app: &AppHandle) {
     for prev in hotkey_snapshot(app) {
         let _ = gs.unregister(prev.chord.as_str());
     }
-    let mut infos = Vec::with_capacity(7);
+    let mut infos = Vec::with_capacity(9);
     for def in hotkey_defs() {
         let chord = resolve_chord(app, def.id, def.default_chord);
         let action = def.action;
@@ -1245,6 +1261,7 @@ pub fn run() {
             media_seek_abs,
             media_art,
             media_lyrics,
+            karaoke::word_lead,
             now_playing,
             set_reactive_enabled,
             history::history_page,

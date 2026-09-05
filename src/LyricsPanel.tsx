@@ -22,6 +22,7 @@ import {
 } from "./lib/lrc";
 import { commands, onKaraokeReady } from "./lib/backend";
 import * as posClock from "./lib/posClock";
+import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
@@ -558,7 +559,18 @@ export function LyricsPanel({
   const idx = useLyricIndex(lines, leadMs);
   const currentWords = idx >= 0 ? lines[idx]?.words : undefined;
   const currentRow = useRef<HTMLElement>(null);
-  useWordWipe(currentRow, currentWords, leadMs);
+  // Words fire ahead of their aligned onset by the nudgeable word lead
+  // (on top of the per-player line lead). A nudge shows a short caption;
+  // the seed never does.
+  const wordLead = useWordLead();
+  useWordWipe(currentRow, currentWords, leadMs + wordLead.leadMs);
+  const [leadCaption, setLeadCaption] = useState<string | null>(null);
+  useEffect(() => {
+    if (wordLead.nudges === 0) return;
+    setLeadCaption(describeWordLead(wordLead.leadMs));
+    const t = window.setTimeout(() => setLeadCaption(null), 1600);
+    return () => window.clearTimeout(t);
+  }, [wordLead.nudges, wordLead.leadMs]);
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [autoOffset, setAutoOffset] = useState(0);
@@ -750,6 +762,15 @@ export function LyricsPanel({
             />
           );
         })}
+      </div>
+      {/* Word-lead caption: the one piece of feedback the nudge hotkeys
+       * give. Same chip grammar as the return-to-now button, top edge. */}
+      <div aria-live="polite" className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center">
+        {leadCaption && (
+          <span className="rounded-full border border-border/10 bg-surface-2/90 px-2.5 py-1 text-[11px] leading-none text-muted [animation:caption-in_140ms_var(--ease-out-tk)_both]">
+            {leadCaption}
+          </span>
+        )}
       </div>
       {/* Return-to-now chip — neutral chrome (accent stays on the line
        * marker), on the edge the live line sits past, outside the re-latch

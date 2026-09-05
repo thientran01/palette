@@ -21,7 +21,7 @@
 //!       one row per rung of the ladder (Stages::ladder()), the shipped
 //!       set marked — the table that decides what ships.
 
-use pulse_lib::align::{self, Stages, TimeMap, TimedLine, Word};
+use pulse_lib::align::{self, PriorParams, Stages, TimeMap, TimedLine, Word};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -55,9 +55,10 @@ fn main() {
         [cmd, dir] if cmd == "template" => template(Path::new(dir)),
         [cmd, dir, labels] if cmd == "score" => score(Path::new(dir), Path::new(labels)),
         [cmd, dir, labels] if cmd == "matrix" => matrix(Path::new(dir), Path::new(labels)),
+        [cmd, dirs @ ..] if cmd == "fit" && !dirs.is_empty() => fit(dirs),
         _ => {
             eprintln!(
-                "usage: karaoke_score template <dump-dir>\n       karaoke_score score  <dump-dir> <labels.txt>\n       karaoke_score matrix <dump-dir> <labels.txt>"
+                "usage: karaoke_score template <dump-dir>\n       karaoke_score score  <dump-dir> <labels.txt>\n       karaoke_score matrix <dump-dir> <labels.txt>\n       karaoke_score fit    <dump-dir>... (each with labels.txt)"
             );
             exit(2);
         }
@@ -141,19 +142,6 @@ fn read_labels(path: &Path) -> Vec<i64> {
     labels
 }
 
-/// Index of the lyric line whose window holds `t`.
-fn line_of(lines: &[TimedLine], t: i64) -> usize {
-    let mut idx = 0;
-    for (i, l) in lines.iter().enumerate() {
-        if l.t <= t {
-            idx = i;
-        } else {
-            break;
-        }
-    }
-    idx
-}
-
 struct Stats {
     median: i64,
     p90: i64,
@@ -161,6 +149,20 @@ struct Stats {
     bias: f64,
     /// (mean |Δ| ms, line index), worst first.
     worst: Vec<(i64, usize)>,
+}
+
+/// Each aligner token's line index, from the lyrics themselves (the
+/// aligner emits tokens line by line, in `tokenize` order) — never from
+/// the token's TIME, which a candidate aligner may push past the next
+/// stamp.
+fn token_lines(d: &Dump) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (li, line) in d.lines.iter().enumerate() {
+        for _ in align::tokenize(&line.text) {
+            out.push(li);
+        }
+    }
+    out
 }
 
 /// Pairs token i with label i (a partial file scores its prefix); dies if a
@@ -173,8 +175,16 @@ fn stats(d: &Dump, words: &[Word], labels: &[i64]) -> Stats {
             words.len(),
         ));
     }
+    let tl = token_lines(d);
+    if tl.len() != words.len() {
+        die(&format!(
+            "aligner emitted {} tokens but the lyrics tokenize to {}",
+            words.len(),
+            tl.len()
+        ));
+    }
     for (i, (w, &l)) in words.iter().zip(labels.iter()).enumerate() {
-        let li = line_of(&d.lines, w.t);
+        let li = tl[i];
         let lo = d.lines[li].t - 2_000;
         let hi = d.lines.get(li + 1).map(|n| n.t + 2_000).unwrap_or(i64::MAX);
         if l < lo || l > hi {
@@ -195,10 +205,10 @@ fn stats(d: &Dump, words: &[Word], labels: &[i64]) -> Stats {
     let pct = |p: f64| abs[((abs.len() - 1) as f64 * p).round() as usize];
     let within = abs.iter().filter(|&&a| a <= 100).count();
     let mut per_line: Vec<(usize, Vec<i64>)> = Vec::new();
-    for (w, &delta) in words.iter().zip(&deltas) {
-        let li = line_of(&d.lines, w.t);
+    for (i, &delta) in deltas.iter().enumerate() {
+        let li = tl[i];
         match per_line.last_mut() {
-            Some((i, v)) if *i == li => v.push(delta),
+            Some((cur, v)) if *cur == li => v.push(delta),
             _ => per_line.push((li, vec![delta])),
         }
     }
@@ -229,7 +239,7 @@ fn score(dir: &Path, labels_path: &Path) {
             "partial       {} of {} tokens marked (through line {})",
             labels.len(),
             words.len(),
-            line_of(&d.lines, words[labels.len() - 1].t) + 1
+            token_lines(&d)[labels.len() - 1] + 1
         );
     }
     println!("median |Δ|    {} ms", s.median);
@@ -321,6 +331,90 @@ fn matrix(dir: &Path, labels_path: &Path) {
             }
         );
     }
+}
+
+/// Grid-search the prior's constants across every truth song. Reports;
+/// never writes — updating LEAD_MS / RATE_SYL_S / FILL stays a human
+/// commit with this table in its message.
+fn fit(dirs: &[String]) {
+    let songs: Vec<(Dump, Vec<i64>)> = dirs
+        .iter()
+        .map(|d| {
+            let dir = Path::new(d);
+            (load(dir), read_labels(&dir.join("labels.txt")))
+        })
+        .collect();
+    let names: Vec<String> = songs.iter().map(|(d, _)| d.meta.title.clone()).collect();
+    let medians = |stages: &Stages, params: &PriorParams| -> Vec<i64> {
+        songs
+            .iter()
+            .map(|(d, labels)| {
+                let words =
+                    align::align_with_params(&d.pcm, RATE, &d.lines, &d.meta.map, stages, params);
+                stats(d, &words, labels).median
+            })
+            .collect()
+    };
+    let mean = |v: &[i64]| v.iter().sum::<i64>() as f64 / v.len() as f64;
+    let defaults = PriorParams::default();
+    println!("songs: {}", names.join(", "));
+
+    // Shipped stages (song lead calibrated per song): rate × fill.
+    let shipped = Stages::shipped();
+    let base = medians(&shipped, &defaults);
+    let mut best = (mean(&base), defaults, base.clone());
+    for rate10 in 15..=60 {
+        for fill20 in 10..=20 {
+            let params = PriorParams {
+                rate_syl_s: rate10 as f32 / 10.0,
+                fill: fill20 as f32 / 20.0,
+                ..defaults
+            };
+            let m = medians(&shipped, &params);
+            let score = mean(&m);
+            if score < best.0 {
+                best = (score, params, m);
+            }
+        }
+    }
+    println!(
+        "shipped stages, defaults  rate {:.1} fill {:.2}: {:?} ms (mean {:.0})",
+        defaults.rate_syl_s,
+        defaults.fill,
+        base,
+        mean(&base)
+    );
+    println!(
+        "shipped stages, best      rate {:.1} fill {:.2}: {:?} ms (mean {:.0})",
+        best.1.rate_syl_s, best.1.fill, best.2, best.0
+    );
+
+    // Fallback lead (PRIOR_ONLY, no calibration): the default when a song
+    // has too few lines to vote.
+    let prior = Stages::PRIOR_ONLY;
+    let base = medians(&prior, &defaults);
+    let mut best_lead = (mean(&base), defaults.lead_ms, base.clone());
+    for lead in (-100..=600).step_by(10) {
+        let params = PriorParams {
+            lead_ms: lead,
+            ..defaults
+        };
+        let m = medians(&prior, &params);
+        let score = mean(&m);
+        if score < best_lead.0 {
+            best_lead = (score, lead, m);
+        }
+    }
+    println!(
+        "prior only, default lead {}ms: {:?} ms (mean {:.0})",
+        defaults.lead_ms,
+        base,
+        mean(&base)
+    );
+    println!(
+        "prior only, best lead    {}ms: {:?} ms (mean {:.0})",
+        best_lead.1, best_lead.2, best_lead.0
+    );
 }
 
 fn fmt_ms(ms: i64) -> String {

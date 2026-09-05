@@ -631,6 +631,53 @@ fn commit_sync(
     );
 }
 
+// ── Word lead (docs/specs/2026-09-04-word-lead-nudge.md) ──
+//
+// How far BEFORE a word's aligned onset the frontend fires its wipe, on
+// top of the per-player line lead. The aligner is unbiased against tap
+// truth (±70ms) yet words read "a little late": the wipe lands on the
+// onset and ramps 90ms, and a karaoke highlight is expected to lead the
+// vocal. Thien tunes it with two hotkeys; the value persists.
+
+pub const WORD_LEAD_DEFAULT_MS: i64 = 120;
+const WORD_LEAD_STEP_MS: i64 = 20;
+const WORD_LEAD_RANGE_MS: (i64, i64) = (-200, 400);
+const WORD_LEAD_SETTING: &str = "wordLeadMs";
+
+fn clamp_word_lead(ms: i64) -> i64 {
+    ms.clamp(WORD_LEAD_RANGE_MS.0, WORD_LEAD_RANGE_MS.1)
+}
+
+/// One nudge: `earlier` raises the lead by a step, otherwise lowers it.
+fn nudged_word_lead(current: i64, earlier: bool) -> i64 {
+    clamp_word_lead(if earlier {
+        current + WORD_LEAD_STEP_MS
+    } else {
+        current - WORD_LEAD_STEP_MS
+    })
+}
+
+pub fn word_lead_ms(app: &AppHandle) -> i64 {
+    settings::get_value(app, WORD_LEAD_SETTING)
+        .and_then(|v| v.as_i64())
+        .map(clamp_word_lead)
+        .unwrap_or(WORD_LEAD_DEFAULT_MS)
+}
+
+/// Hotkey action: step, persist, tell the webviews ("word-lead").
+pub fn nudge_word_lead(app: &AppHandle, earlier: bool) {
+    let next = nudged_word_lead(word_lead_ms(app), earlier);
+    settings::set_value(app, WORD_LEAD_SETTING, serde_json::json!(next));
+    log::info!("karaoke: word lead {next}ms");
+    let _ = app.emit("word-lead", next);
+}
+
+/// Seed for the frontend mirror (src/lib/wordLead.ts).
+#[tauri::command]
+pub async fn word_lead(app: AppHandle) -> i64 {
+    word_lead_ms(&app)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -798,6 +845,15 @@ mod tests {
         assert!(matches!(rec.anchor(&pair(11_000, 180_000)), Anchor::Added));
         assert_eq!(rec.seek_strikes, 0);
         assert_eq!(rec.anchors.len(), 3);
+    }
+
+    #[test]
+    fn word_lead_steps_and_clamps() {
+        assert_eq!(nudged_word_lead(120, true), 140);
+        assert_eq!(nudged_word_lead(120, false), 100);
+        assert_eq!(nudged_word_lead(390, true), 400);
+        assert_eq!(nudged_word_lead(-190, false), -200);
+        assert_eq!(clamp_word_lead(9_999), 400);
     }
 
     #[test]
