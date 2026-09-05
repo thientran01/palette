@@ -263,57 +263,101 @@ pub enum StartDetector {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stages {
+    /// Estimate the song's stamp lead from the median start detection
+    /// across all lines (per-line detections are noisy; their median is
+    /// unbiased on both truth songs).
+    pub song_lead: bool,
+    /// Estimate the song's syllable rate from the median end detection.
+    pub song_rate: bool,
     pub start: Option<StartDetector>,
     pub end: bool,
 }
 
 impl Stages {
     pub const PRIOR_ONLY: Stages = Stages {
+        song_lead: false,
+        song_rate: false,
         start: None,
         end: false,
     };
 
-    /// The set the app runs. Measured on Blur + a second song via
-    /// `karaoke_score matrix`; update this AND the spec together.
+    /// The set the app runs. Measured on Blur + Heart To Heart via
+    /// `karaoke_score matrix` (2026-09-04): song lead 177 / 160ms median
+    /// vs the fixed prior's 183 / 374 — the stamp lead is per song
+    /// (Blur's stamps run 330ms early, Heart To Heart's 114ms). Adding
+    /// the song rate lost on both (208 / 271: the end detector
+    /// under-measures spans), as did every per-line refinement. Update
+    /// this AND the spec together.
     pub fn shipped() -> Stages {
-        Stages::PRIOR_ONLY
+        Stages {
+            song_lead: true,
+            ..Stages::PRIOR_ONLY
+        }
     }
 
     /// Every rung the scorer reports, in ladder order.
-    pub fn ladder() -> [(&'static str, Stages); 5] {
+    pub fn ladder() -> [(&'static str, Stages); 7] {
+        let song = Stages {
+            song_lead: true,
+            song_rate: true,
+            ..Stages::PRIOR_ONLY
+        };
         [
             ("prior", Stages::PRIOR_ONLY),
             (
                 "prior+energy",
                 Stages {
                     start: Some(StartDetector::EnergyRise),
-                    end: false,
+                    ..Stages::PRIOR_ONLY
                 },
             ),
             (
                 "prior+flux",
                 Stages {
                     start: Some(StartDetector::Flux),
-                    end: false,
+                    ..Stages::PRIOR_ONLY
                 },
             ),
             (
-                "prior+energy+end",
+                "song lead",
+                Stages {
+                    song_lead: true,
+                    ..Stages::PRIOR_ONLY
+                },
+            ),
+            ("song lead+rate", song),
+            (
+                "song+energy",
+                Stages {
+                    start: Some(StartDetector::EnergyRise),
+                    ..song
+                },
+            ),
+            (
+                "song+energy+end",
                 Stages {
                     start: Some(StartDetector::EnergyRise),
                     end: true,
-                },
-            ),
-            (
-                "prior+flux+end",
-                Stages {
-                    start: Some(StartDetector::Flux),
-                    end: true,
+                    ..song
                 },
             ),
         ]
     }
 }
+
+/// Per-song calibration the prior runs on: the stamp lead and the
+/// syllable rate. Defaults are the Blur-fitted constants.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Song {
+    lead_ms: i64,
+    rate_syl_s: f32,
+}
+
+const SONG_MIN_SAMPLES: usize = 6;
+const SONG_LEAD_RANGE_MS: (i64, i64) = (-100, 800);
+const SONG_RATE_RANGE: (f32, f32) = (1.5, 6.0);
+/// An end detection this close to the start says nothing about rate.
+const SONG_RATE_MIN_SPAN_MS: i64 = 300;
 
 // ── Stage 0: the prior. Fitted on the Blur truth set (2026-09-04): the
 // first sung word sits a median 330ms after its stamp, the sung span
@@ -364,17 +408,78 @@ pub fn align_with(
         pcm_end_ms,
         flux: flux.as_ref(),
     };
+    let song = calibrate(&ctx, lines, stages);
     let mut words = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let next_t = lines
-            .get(i + 1)
-            .map(|n| n.t)
-            .unwrap_or((line.t + LAST_LINE_WINDOW_MS).min(pcm_end_ms));
-        if let Some(ws) = align_line(&ctx, line, next_t, stages) {
+        let next_t = next_stamp(lines, i, pcm_end_ms);
+        if let Some(ws) = align_line(&ctx, line, next_t, stages, song) {
             words.extend(ws);
         }
     }
     words
+}
+
+fn next_stamp(lines: &[TimedLine], i: usize, pcm_end_ms: i64) -> i64 {
+    lines
+        .get(i + 1)
+        .map(|n| n.t)
+        .unwrap_or((lines[i].t + LAST_LINE_WINDOW_MS).min(pcm_end_ms))
+}
+
+fn median(v: &mut [f32]) -> f32 {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v[v.len() / 2]
+}
+
+/// Song-level lead and rate from the medians of the per-line detectors.
+/// Fewer than SONG_MIN_SAMPLES usable lines keeps the default.
+fn calibrate(ctx: &Ctx, lines: &[TimedLine], stages: &Stages) -> Song {
+    let mut song = Song {
+        lead_ms: LEAD_MS,
+        rate_syl_s: RATE_SYL_S,
+    };
+    if stages.song_lead {
+        let mut leads: Vec<f32> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if tokenize(&line.text).is_empty() {
+                continue;
+            }
+            let next_t = next_stamp(lines, i, ctx.pcm_end_ms);
+            if let Some(s) = detect_start(ctx, StartDetector::EnergyRise, line.t, next_t) {
+                leads.push((s - line.t) as f32);
+            }
+        }
+        if leads.len() >= SONG_MIN_SAMPLES {
+            song.lead_ms =
+                (median(&mut leads) as i64).clamp(SONG_LEAD_RANGE_MS.0, SONG_LEAD_RANGE_MS.1);
+        }
+    }
+    if stages.song_rate {
+        let mut rates: Vec<f32> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let tokens = tokenize(&line.text);
+            if tokens.is_empty() {
+                continue;
+            }
+            let weights: Vec<f32> = tokens.iter().map(|t| token_weight(t)).collect();
+            let s = placed_weight(&weights);
+            if s < 1.5 {
+                continue;
+            }
+            let next_t = next_stamp(lines, i, ctx.pcm_end_ms);
+            let p = prior(line.t, next_t, &weights, song);
+            if let Some(end) = detect_end(ctx, p, next_t) {
+                let span = end - p.start;
+                if span >= SONG_RATE_MIN_SPAN_MS {
+                    rates.push(s / span as f32 * 1000.0);
+                }
+            }
+        }
+        if rates.len() >= SONG_MIN_SAMPLES {
+            song.rate_syl_s = median(&mut rates).clamp(SONG_RATE_RANGE.0, SONG_RATE_RANGE.1);
+        }
+    }
+    song
 }
 
 struct Ctx<'a> {
@@ -393,20 +498,20 @@ struct LinePrior {
     span: i64,
 }
 
-fn prior(line_t: i64, next_t: i64, weights: &[f32]) -> LinePrior {
-    let start = line_t + LEAD_MS;
+fn prior(line_t: i64, next_t: i64, weights: &[f32], song: Song) -> LinePrior {
+    let start = line_t + song.lead_ms;
     LinePrior {
         start,
-        span: span_for(start, line_t, next_t, weights),
+        span: span_for(start, line_t, next_t, weights, song.rate_syl_s),
     }
 }
 
 /// Syllable-rate span, capped so the line ends by FILL of its window
 /// whatever the start moved to.
-fn span_for(start: i64, line_t: i64, next_t: i64, weights: &[f32]) -> i64 {
+fn span_for(start: i64, line_t: i64, next_t: i64, weights: &[f32], rate_syl_s: f32) -> i64 {
     let s = placed_weight(weights);
     let window = (next_t - line_t).max(0) as f32;
-    let by_rate = (s / RATE_SYL_S * 1000.0) as i64;
+    let by_rate = (s / rate_syl_s * 1000.0) as i64;
     let by_window = (FILL * window) as i64 - (start - line_t);
     by_rate.min(by_window).max(MIN_SPAN_MS)
 }
@@ -445,17 +550,23 @@ fn spread(tokens: &[String], weights: &[f32], p: LinePrior, next_t: i64) -> Vec<
         .collect()
 }
 
-fn align_line(ctx: &Ctx, line: &TimedLine, next_t: i64, stages: &Stages) -> Option<Vec<Word>> {
+fn align_line(
+    ctx: &Ctx,
+    line: &TimedLine,
+    next_t: i64,
+    stages: &Stages,
+    song: Song,
+) -> Option<Vec<Word>> {
     let tokens = tokenize(&line.text);
     if tokens.is_empty() || next_t <= line.t {
         return None;
     }
     let weights: Vec<f32> = tokens.iter().map(|t| token_weight(t)).collect();
-    let mut p = prior(line.t, next_t, &weights);
+    let mut p = prior(line.t, next_t, &weights, song);
     if let Some(det) = stages.start {
         if let Some(start) = detect_start(ctx, det, line.t, next_t) {
             p.start = start;
-            p.span = span_for(start, line.t, next_t, &weights);
+            p.span = span_for(start, line.t, next_t, &weights, song.rate_syl_s);
         }
     }
     if stages.end {
@@ -814,7 +925,7 @@ mod tests {
         tone(SR, burst_at, burst_at + 400, 1000.0, &mut pcm);
         let stages = Stages {
             start: Some(det),
-            end: false,
+            ..Stages::PRIOR_ONLY
         };
         run(&pcm, "[00:01.00]one two\n[00:04.00]next", stages)[0].t
     }
@@ -841,7 +952,7 @@ mod tests {
             let pcm = vec![0.0f32; SR as usize * 5];
             let stages = Stages {
                 start: Some(det),
-                end: false,
+                ..Stages::PRIOR_ONLY
             };
             let words = run(&pcm, "[00:01.00]one two\n[00:04.00]next", stages);
             assert_eq!(words[0].t, 1000 + LEAD_MS, "{det:?}");
@@ -863,8 +974,8 @@ mod tests {
             &pcm,
             &lrc,
             Stages {
-                start: None,
                 end: true,
+                ..Stages::PRIOR_ONLY
             },
         );
         let without = run(&pcm, &lrc, Stages::PRIOR_ONLY);
@@ -872,6 +983,63 @@ mod tests {
         let span_without = without[9].t - without[0].t;
         assert!(span_with < span_without, "{span_with} vs {span_without}");
         assert!((with[9].t - stop).abs() <= 60, "{:?} stop {stop}", with[9]);
+    }
+
+    #[test]
+    fn song_lead_is_the_median_start_detection() {
+        // Eight lines, each sung 150ms after its stamp: the song lead
+        // becomes ~150 and every line's first word moves there — including
+        // a line whose own burst is missing (line 4), which the per-line
+        // detector could never place.
+        let mut pcm = vec![0.0f32; SR as usize * 40];
+        let mut lrc = String::new();
+        for k in 0..8 {
+            let stamp = 2000 + k * 4000;
+            if k != 3 {
+                tone(
+                    SR,
+                    stamp + 150,
+                    stamp + 900,
+                    800.0 + k as f32 * 50.0,
+                    &mut pcm,
+                );
+            }
+            lrc.push_str(&format!(
+                "[00:{:02}.{:02}]one two three\n",
+                stamp / 1000,
+                (stamp % 1000) / 10
+            ));
+        }
+        let stages = Stages {
+            song_lead: true,
+            ..Stages::PRIOR_ONLY
+        };
+        let words = run(&pcm, &lrc, stages);
+        assert_eq!(words.len(), 24, "{words:?}");
+        for k in 0..8 {
+            let stamp = 2000 + k * 4000;
+            let t = words[(k * 3) as usize].t;
+            assert!(
+                (t - (stamp + 150)).abs() <= 40,
+                "line {k}: {t} vs {}",
+                stamp + 150
+            );
+        }
+    }
+
+    #[test]
+    fn song_calibration_needs_enough_lines() {
+        // Two lines can't vote: the default lead stands.
+        let mut pcm = vec![0.0f32; SR as usize * 10];
+        tone(SR, 1150, 1900, 800.0, &mut pcm);
+        tone(SR, 5150, 5900, 900.0, &mut pcm);
+        let stages = Stages {
+            song_lead: true,
+            song_rate: true,
+            ..Stages::PRIOR_ONLY
+        };
+        let words = run(&pcm, "[00:01.00]one two\n[00:05.00]one two", stages);
+        assert_eq!(words[0].t, 1000 + LEAD_MS, "{words:?}");
     }
 
     /// Anchors every 5s of a 16kHz recording whose true origin is 700ms,

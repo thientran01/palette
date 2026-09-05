@@ -58,6 +58,38 @@ end_i = t_{i+1}; end_last = start + span + LAST_HOLD_MS (250), capped at next_t
 alone kills the gap-spreading class (span is capped by the window, never
 stretched to the next stamp).
 
+### Stage 0b — song calibration (added after the second song)
+
+Heart To Heart (Mac DeMarco, 118 tokens) showed the fixed prior failing
+acceptance: **374ms median, +359ms late bias** — its stamps sit a median
+114ms before the vocal where Blur's sit 330ms. The lead is per song. The
+per-line start detector is noisy (it lost to the prior on both songs) but
+its MEDIAN across lines is unbiased on both (+5 / −24ms), so:
+
+- `song_lead`: run `EnergyRise` on every line; `lead = median(start −
+  stamp)` over lines where it fired, clamped to [−100, 800]ms; fewer than
+  `SONG_MIN_SAMPLES` (6) firings keeps `LEAD_MS`. The flat prior then runs
+  per line with that lead.
+- `song_rate`: same idea with the end detector (`rate = median(S / span)`,
+  clamped [1.5, 6.0]/s, spans < 300ms ignored). Measured and REJECTED for
+  shipping: the end detector under-measures spans, so rates come out high
+  and words land early (bias −236 / −338).
+
+Matrix on both songs (2026-09-04):
+
+| stages             | Blur median | HtH median | HtH bias | ships |
+|--------------------|------------:|-----------:|---------:|:-----:|
+| prior (fixed lead) | 183         | 374        | +359     |       |
+| prior + energy     | 204         | 314        | −24      |       |
+| prior + flux       | 254         | 615        | +584     |       |
+| **song lead**      | **177**     | **160**    | −71      | **✓** |
+| song lead + rate   | 208         | 271        | −338     |       |
+| song + energy      | 224         | 402        | −310     |       |
+| song + energy + end| 354         | 415        | −419     |       |
+
+Worst lines under song lead: 851ms (Blur) / 722ms (HtH). Both songs meet
+median ≤ 200ms and no line > 1.5s. `Stages::shipped()` = `song_lead` only.
+
 ### Stage 1 — start refinement (audio)
 
 Search `[line.t − START_PRE_MS (300), line.t + START_POST_MS (900)]` for the
