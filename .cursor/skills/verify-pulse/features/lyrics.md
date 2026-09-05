@@ -6,6 +6,7 @@ Expanded is the karaoke home. Synced lines follow the clock; a click seeks so th
 
 - `lyrics-show` renders the `Lyrics` region after expand on a synced track.
 - `lyrics-current` marks the line for the current position (mock starts near 63s).
+- `lyrics-words` on `/?lyrics=words` wipes sung words to foreground on the current line; untimed lines stay whole-line highlight.
 - `lyrics-seek-line` seeks to a line on a seekable session.
 - `lyrics-toggle-art` swaps to the big cover without leaving expanded.
 - `lyrics-miss` shows **No synced lyrics** when the fetch misses.
@@ -17,6 +18,7 @@ Expanded is the karaoke home. Synced lines follow the clock; a click seeks so th
 - Choose `Show album cover` / `Show lyrics` (top-right, hover or Tab).
 - From the queue layer, the same control exits to lyrics (or art if none are synced).
 - Open `/?lyrics=none` then expand to see the miss.
+- Open `/?lyrics=words` then expand to see in-line word karaoke.
 - Open `/?window=focus` for the focus-scale lyrics room.
 
 ## Driving it with the browser mock
@@ -33,6 +35,7 @@ Preconditions:
 - **Album toggle.** Tab until `Show album cover` is focused and activate it. The `Lyrics` region is gone; **Savior** / **THE BOYZ** sit under a large cover. The control's name becomes `Show lyrics`.
 - **Back to lyrics.** Activate `Show lyrics`. The `Lyrics` region returns.
 - **Miss.** Open `/?lyrics=none`, reset to card, expand. Copy **No synced lyrics** appears. The view toggle is named `No synced lyrics` and is disabled. The cover remains the identity.
+- **Word wipe.** Open `/?lyrics=words`, reset to card, expand. Seek to `Seek to Mock lyric line 1 — la la la (Savior)`. The current line keeps the accent marker; sung words are foreground and not-yet-sung words stay muted. Accent is not on the glyphs. Untimed `/?` (no words param) still highlights the whole current line.
 - **Focus room.** Open `/?window=focus` on the default mock. A `Lyrics` region is present at the larger type scale, with **Savior** still identified.
 - **Proof.** Capture `.cursor/skills/verify-pulse/artifacts/lyrics/synced.aria.txt` and `synced.png` on default expanded `/` showing the `Lyrics` region and **Savior**. Capture `miss.png` on `/?lyrics=none` expanded showing **No synced lyrics**.
 

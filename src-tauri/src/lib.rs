@@ -1,7 +1,9 @@
+mod align;
 mod audio;
 mod dock;
 mod focus;
 mod history;
+mod karaoke;
 mod lastfm;
 mod loopback;
 mod lyrics;
@@ -439,8 +441,14 @@ async fn media_lyrics(
         .app_data_dir()
         .map(|d| d.join("lyrics"))
         .unwrap_or_else(|_| std::env::temp_dir().join("pulse-lyrics"));
+    let karaoke_dir = app.path().app_data_dir().ok().map(|d| d.join("karaoke"));
     tauri::async_runtime::spawn_blocking(move || {
-        lyrics::LyricsOut::from(lyrics::fetch(&dir, &artist, &title, &album, duration_ms))
+        let mut out =
+            lyrics::LyricsOut::from(lyrics::fetch(&dir, &artist, &title, &album, duration_ms));
+        if let Some(karaoke_dir) = karaoke_dir {
+            out.words = karaoke::load(&karaoke_dir, &artist, &title, &album, duration_ms);
+        }
+        out
     })
     .await
     // Join error = the fetch panicked; degrade to a miss, not a dead IPC
@@ -1756,6 +1764,7 @@ pub fn run() {
                                     // fresh pair.
                                     if !spotify::jump_active(&handle) {
                                         history::ingest(&handle, &np);
+                                        karaoke::observe(&handle, &np);
                                     }
                                     upnext::tick(&handle, &np);
                                     np.status == "playing"

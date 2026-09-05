@@ -280,6 +280,7 @@ fn open_loopback(
                 for frame in data.chunks(channels.max(1)) {
                     let mean = frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32;
                     ring.push_frame(mean);
+                    crate::karaoke::push_frame(mean, sample_rate as u32);
                 }
             },
             |e| log::warn!("audio loopback stream error: {e}"),
@@ -469,6 +470,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
             let want = switch.load(Ordering::Relaxed);
             if !want {
                 if active.is_some() {
+                    crate::karaoke::on_capture_stop(&app);
                     active = None; // drops the capture, releases the device
                     smoothed = [0.0; 3];
                     smoothed_spec = [0.0; SPECTRUM_BINS];

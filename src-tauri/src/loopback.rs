@@ -533,10 +533,12 @@ fn capture_loop(
                                     frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32;
                                 peak = peak.max(mean.abs());
                                 ring.push_frame(mean);
+                                crate::karaoke::push_frame(mean, SAMPLE_RATE);
                             }
                         } else {
                             for _ in 0..n_frames {
                                 ring.push_frame(0.0);
+                                crate::karaoke::push_frame(0.0, SAMPLE_RATE);
                             }
                         }
                         drop(ring);

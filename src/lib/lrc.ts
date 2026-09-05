@@ -1,5 +1,11 @@
 import type { NowPlaying } from "../types";
 
+export interface LyricWord {
+  t: number;
+  text: string;
+  end?: number;
+}
+
 export interface LyricLine {
   /** Line start in ms. */
   t: number;
@@ -8,6 +14,7 @@ export interface LyricLine {
    * ends (the next line's start, or track end for the outro). The row
    * renders as the five-dot countdown instead of text. */
   end?: number;
+  words?: LyricWord[];
 }
 
 /** A marked gap must run at least this long to earn a break row — short
@@ -149,6 +156,67 @@ export function msUntilNextLine(
   leadMs: number,
 ): number | null {
   const next = lines[idx + 1];
+  if (!next) return null;
+  return Math.max(next.t - leadMs - positionMs, 0);
+}
+
+export function attachWords(lines: LyricLine[], words: LyricWord[]): LyricLine[] {
+  if (words.length === 0) return lines;
+  const sorted = words.slice().sort((a, b) => a.t - b.t);
+  return lines.map((line, i) => {
+    if (line.end !== undefined) return line;
+    const nextT = i + 1 < lines.length ? lines[i + 1].t : Number.POSITIVE_INFINITY;
+    const mine = sorted.filter((w) => w.t >= line.t && w.t < nextT);
+    return mine.length > 0 ? { ...line, words: mine } : line;
+  });
+}
+
+export function currentWordIndex(words: LyricWord[], positionMs: number, leadMs: number): number {
+  const p = positionMs + leadMs;
+  let lo = 0;
+  let hi = words.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (words[mid].t <= p) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return ans;
+}
+
+/** How long a word takes to fill after its onset. The rest of the word
+ * stays fully bright — crawling through a hold reads as a progress bar,
+ * not a beat. Matches DUR[1]. */
+export const WORD_ATTACK_MS = 90;
+
+export function wordWipe(
+  words: LyricWord[],
+  positionMs: number,
+  leadMs: number,
+): { index: number; frac: number } | null {
+  if (words.length === 0) return null;
+  const i = currentWordIndex(words, positionMs, leadMs);
+  if (i < 0) return null;
+  const w = words[i];
+  const end = w.end ?? words[i + 1]?.t;
+  if (end === undefined) return { index: i, frac: 1 };
+  const attack = Math.min(WORD_ATTACK_MS, Math.max(end - w.t, 1));
+  const p = positionMs + leadMs;
+  const u = Math.min(Math.max((p - w.t) / attack, 0), 1);
+  return { index: i, frac: 1 - (1 - u) ** 3 };
+}
+
+export function msUntilNextWord(
+  words: LyricWord[],
+  idx: number,
+  positionMs: number,
+  leadMs: number,
+): number | null {
+  const next = words[idx + 1];
   if (!next) return null;
   return Math.max(next.t - leadMs - positionMs, 0);
 }
