@@ -4,6 +4,8 @@ export interface LyricWord {
   t: number;
   text: string;
   end?: number;
+  /** Source-timed vocal phrase, not an acoustically measured word. */
+  timing?: "phrase";
   /** Stamp of the LRC line this word belongs to (align.rs). Attachment
    * keys on this when present — a word placed before its own stamp must
    * not land on the previous row. */
@@ -70,7 +72,6 @@ function withBreaks(lines: LyricLine[], markers: number[], durationMs: number): 
   // with nothing highlighted until the first vocal (idx -1).
   if (lines[0].t >= BREAK_MIN_MS) out.push({ t: 0, text: "", end: lines[0].t });
   for (let i = 0; i < lines.length; i++) {
-    out.push(lines[i]);
     // Mid-track and outro need an uploader empty-timestamp pin. LRC only
     // has line STARTS; guessing a ≤5s sung hold invented a rest row
     // mid-phrase whenever the next stamp was ≥12s away (a 13s vocal
@@ -80,6 +81,17 @@ function withBreaks(lines: LyricLine[], markers: number[], durationMs: number): 
     // just skips the break (negative span below).
     const nextT = i + 1 < lines.length ? lines[i + 1].t : durationMs;
     const marker = markers.find((m) => m > lines[i].t && m < nextT);
+    const phraseEnd = marker ?? nextT;
+    // MMS cannot reliably time the sustained repeated vowel in standalone
+    // "Oh-oh" phrases (Let Me In opening). Use the source phrase interval;
+    // never reinterpret mixed lyrics/ad-libs or fabricate syllable onsets.
+    // One hyphenated token preserves the existing span/wrapping structure.
+    const phrase = /^\(?oh(?:-oh)+[.!?,]?\)?$/i.test(lines[i].text)
+      && Number.isFinite(phraseEnd) && phraseEnd > lines[i].t;
+    out.push(phrase ? { ...lines[i], words: [{
+      t: lines[i].t, text: lines[i].text, end: phraseEnd,
+      line_t: lines[i].t, timing: "phrase",
+    }] } : lines[i]);
     if (marker !== undefined && nextT - marker >= BREAK_MIN_MS) {
       out.push({ t: marker, text: "", end: nextT });
     }
@@ -171,7 +183,7 @@ export function attachWords(lines: LyricLine[], words: LyricWord[]): LyricLine[]
   // line_t fall back to the time window (and can misfile a word that sits
   // before its stamp — the reason line_t exists).
   return lines.map((line, i) => {
-    if (line.end !== undefined) return line;
+    if (line.end !== undefined || line.words?.[0]?.timing === "phrase") return line;
     const nextT = i + 1 < lines.length ? lines[i + 1].t : Number.POSITIVE_INFINITY;
     const mine = sorted.filter((w) =>
       w.line_t !== undefined ? w.line_t === line.t : w.t >= line.t && w.t < nextT,
@@ -213,8 +225,9 @@ export function wordWipe(
   const w = words[i];
   const end = w.end ?? words[i + 1]?.t;
   if (end === undefined) return { index: i, frac: 1 };
-  const attack = Math.min(WORD_ATTACK_MS, Math.max(end - w.t, 1));
+  const span = Math.max(end - w.t, 1);
+  const attack = w.timing === "phrase" ? span : Math.min(WORD_ATTACK_MS, span);
   const p = positionMs + leadMs;
   const u = Math.min(Math.max((p - w.t) / attack, 0), 1);
-  return { index: i, frac: 1 - (1 - u) ** 3 };
+  return { index: i, frac: w.timing === "phrase" ? u : 1 - (1 - u) ** 3 };
 }

@@ -187,3 +187,29 @@ describe("wordWipe", () => {
     expect(wordWipe([{ t: 1000, text: "one" }], 1100, 0)).toEqual({ index: 0, frac: 1 });
   });
 });
+
+// Let Me In: MMS placed the second opening vocalization at 8.829s,
+// after its explicit 8.610s end marker. These are source-timed phrases,
+// not measured word onsets; ordinary/mixed lyrics must retain their data.
+describe("repeated vocalization phrase fallback", () => {
+  const source = "[00:02.76] Oh-oh\n[00:05.62] Oh-oh-oh-oh\n[00:08.61] \n[00:12.92] normal words";
+  it("keeps source phrase boundaries even when a short break is not rendered", () => {
+    const lines = attachWords(parseLrc(source, 20000), [
+      { t: 2984, end: 3225, text: "Oh-oh", line_t: 2760 },
+      { t: 8829, end: 9090, text: "Oh-oh-oh-oh", line_t: 5620 },
+      { t: 13000, end: 14000, text: "normal words", line_t: 12920 },
+    ]);
+    expect(lines.map(l => l.text)).toEqual(["Oh-oh", "Oh-oh-oh-oh", "normal words"]);
+    expect(lines[0].words?.[0]).toMatchObject({ t: 2760, end: 5620 });
+    expect(lines[1].words?.[0]).toMatchObject({ t: 5620, end: 8610 });
+    expect(lines[2].words?.[0]).toEqual({ t: 13000, end: 14000, text: "normal words", line_t: 12920 });
+    expect(wordWipe(lines[1].words!, (5620 + 8610) / 2, 0)?.frac).toBeCloseTo(0.5);
+    expect(attachWords(lines, [{t: 9000, end: 9100, text: "Oh-oh-oh-oh", line_t: 5620}])[1].words).toEqual(lines[1].words);
+  });
+  it("leaves mixed lyrics, single ohs, and missing end boundaries acoustic", () => {
+    for (const text of ["oh", "oh, my love", "love (oh-oh)", "oh-oh baby", "uh-oh", "Oh-oh-ohh"]) {
+      expect(parseLrc(`[00:01.00]${text}\n[00:04.00]next`, 9000)[0].words).toBeUndefined();
+    }
+    expect(parseLrc("[00:01.00]Oh-oh", 0)[0].words).toBeUndefined();
+  });
+});
