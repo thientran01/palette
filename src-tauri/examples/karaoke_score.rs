@@ -168,18 +168,25 @@ fn score(dir: &Path, labels_path: &Path) {
             last_line + 1
         );
     }
-    if let Some(i) = words
-        .iter()
-        .zip(labels.iter())
-        .position(|(w, &l)| (w.t - l).abs() > 5_000)
-    {
-        die(&format!(
-            "label row {} is {}s from the aligner's token — rows drifted out of order around line {}: {:?}",
-            i + 1,
-            (words[i].t - labels[i]).abs() / 1000,
-            line_of(&d.lines, words[i].t) + 1,
-            d.lines[line_of(&d.lines, words[i].t)].text
-        ));
+    // Rows are matched by order, so the only failure that matters is a
+    // label sitting outside its token's LRC line window (with slack for
+    // stamps that lead or trail the vocal). Distance from the aligner's
+    // guess is the measurement, never a rejection.
+    for (i, (w, &l)) in words.iter().zip(labels.iter()).enumerate() {
+        let li = line_of(&d.lines, w.t);
+        let lo = d.lines[li].t - 2_000;
+        let hi = d.lines.get(li + 1).map(|n| n.t + 2_000).unwrap_or(i64::MAX);
+        if l < lo || l > hi {
+            die(&format!(
+                "label row {} ({:.3}s, {:?}) lies outside line {} [{}]: {:?} — rows drifted out of order",
+                i + 1,
+                l as f64 / 1000.0,
+                w.text.trim(),
+                li + 1,
+                fmt_ms(d.lines[li].t),
+                d.lines[li].text
+            ));
+        }
     }
     let deltas: Vec<i64> = words.iter().zip(&labels).map(|(w, &l)| w.t - l).collect();
     let mut abs: Vec<i64> = deltas.iter().map(|d| d.abs()).collect();
@@ -212,14 +219,30 @@ fn score(dir: &Path, labels_path: &Path) {
             ""
         },
     );
-    println!(
-        "replay        {}",
-        if words == d.live {
-            "reproduces live words.json"
-        } else {
-            "DIFFERS from live words.json (aligner changed since the dump, or dump infidelity)"
-        }
-    );
+    // The dump is i16 (the app aligned f32): a few tokens moving by a
+    // frame is quantization, not infidelity — report the size, not a bool.
+    let moved: Vec<i64> = words
+        .iter()
+        .zip(&d.live)
+        .filter(|(a, b)| a.t != b.t)
+        .map(|(a, b)| (a.t - b.t).abs())
+        .collect();
+    if words.len() != d.live.len() {
+        println!(
+            "replay        {} tokens vs {} live — aligner changed since the dump",
+            words.len(),
+            d.live.len()
+        );
+    } else if moved.is_empty() {
+        println!("replay        reproduces live words.json exactly");
+    } else {
+        println!(
+            "replay        {} of {} tokens differ from live, max {} ms (i16 quantization if small; an aligner change if large)",
+            moved.len(),
+            words.len(),
+            moved.iter().max().unwrap_or(&0)
+        );
+    }
 
     // Worst lines by mean |Δ|.
     let mut per_line: Vec<(usize, Vec<i64>)> = Vec::new();
