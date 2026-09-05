@@ -16,3 +16,5 @@ Native visual feedback: 600 weight felt too thick and less modern. Revised row w
 User asked to push the direction further while keeping it light. Typography is now450 weight. The active row has a faint neutral radial light field; sung words have a260ms onset bloom that releases using the existing playback clock/RAF. It freezes on pause, resets on seek and clears through active-row color gating. No extra animation loop or timing changes. Reduced motion disables both additions.
 
 47 frontend tests pass, including bloom release, paused state, seek and disposal; production build passes. Browser preview confirms450 weight and the expected active-row radial field. Native appearance feedback remains pending.
+
+Native correction: removed the radial row background entirely and its driver state. Restored the active-line marker to the shared album accent (matching waveform/progress). Lyric text stays neutral; lighter typography and glyph-level effects remain.

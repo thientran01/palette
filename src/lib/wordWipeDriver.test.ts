@@ -140,9 +140,7 @@ it("releases the singing bloom and clears its color on seek and disposal", () =>
   h.anchor(1010,true);
   h.anchor(500,false);
   expect(current.style.values.has("--word-halo")).toBe(false);
-  expect(current.style.values.has("--lyric-presence")).toBe(false);
   h.anchor(1010,true);
   stop();
   expect(current.style.values.has("--word-halo")).toBe(false);
-  expect(current.style.values.has("--lyric-presence")).toBe(false);
 });

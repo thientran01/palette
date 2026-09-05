@@ -402,8 +402,8 @@ const LyricLineRow = memo(function LyricLineRow({
       <span
         aria-hidden
         data-marker
-        // A neutral hairline locates the active row without coloring its text.
-        className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-full bg-fg/35 [transition:opacity_200ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].marker} ${
+        // The marker shares the album accent with waveform/progress; text stays neutral.
+        className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-full bg-accent [transition:opacity_200ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].marker} ${
           current ? "opacity-100" : "opacity-0"
         }`}
       />
