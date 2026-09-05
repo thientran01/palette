@@ -231,6 +231,26 @@ fn word_frames(
         .collect()
 }
 
+fn recorded_window(
+    pcm_len: usize,
+    map: &TimeMap,
+    line_t: i64,
+    next_t: i64,
+) -> Option<std::ops::Range<usize>> {
+    let audio_end = map.intercept_ms + pcm_len as f64 * map.slope_ms;
+    if line_t as f64 >= audio_end {
+        return None;
+    }
+    let sample = |ms: f64| {
+        ((ms - map.intercept_ms) / map.slope_ms)
+            .round()
+            .clamp(0.0, pcm_len as f64) as usize
+    };
+    let begin = sample(line_t as f64 - 500.0);
+    let end = sample((next_t as f64 + 500.0).min(line_t as f64 + 20_000.0));
+    (end.saturating_sub(begin) >= 400).then_some(begin..end)
+}
+
 pub struct AcousticAligner {
     session: Session,
     romanizer: uroman::Uroman,
@@ -270,11 +290,6 @@ impl AcousticAligner {
         if !map.slope_ms.is_finite() || map.slope_ms <= 0.0 || !map.intercept_ms.is_finite() {
             return Err("invalid capture time map".into());
         }
-        let to_sample = |ms: f64| {
-            ((ms - map.intercept_ms) / map.slope_ms)
-                .round()
-                .clamp(0.0, pcm.len() as f64) as usize
-        };
         let to_time = |sample: f64| (map.intercept_ms + sample * map.slope_ms).round() as i64;
         let mut words = Vec::new();
         for (li, line) in lines.iter().enumerate() {
@@ -282,12 +297,14 @@ impl AcousticAligner {
             if tokens.is_empty() {
                 continue;
             }
-            let begin = to_sample(line.t as f64 - 500.0);
             let next = lines.get(li + 1).map_or(to_time(pcm.len() as f64), |l| l.t);
-            let end = to_sample((next as f64 + 500.0).min(line.t as f64 + 20_000.0));
-            if end.saturating_sub(begin) < 400 {
-                return Err(format!("empty audio window at line {li}"));
-            }
+            let Some(window) = recorded_window(pcm.len(), map, line.t, next) else {
+                // A partial listen can end before later lyric rows. Keep the
+                // captured prefix for diagnostics; cache_complete in the
+                // worker still rejects an incomplete song for persistence.
+                continue;
+            };
+            let (begin, end) = (window.start, window.end);
             if end - begin > 16_000 * 21 {
                 return Err("acoustic input exceeds 21 second memory bound".into());
             }
@@ -404,6 +421,18 @@ mod tests {
     fn dll_loader_panics_take_the_retryable_error_path() {
         let result: Result<()> = guard_runtime(|| panic!("missing runtime dependency"));
         assert!(result.unwrap_err().contains("initialization failed"));
+    }
+    #[test]
+    fn partial_listen_keeps_recorded_rows_and_skips_unheard_tail() {
+        // Live Revenge capture ended after ~123s of a 187.5s song. The
+        // old loop errored on row 33, losing the already-aligned prefix.
+        let map = TimeMap::from_origin(111, 16_000);
+        let count = 123 * 16_000;
+        assert!(recorded_window(count, &map, 115_000, 120_000).is_some());
+        assert!(recorded_window(count, &map, 124_000, 130_000).is_none());
+        assert!(recorded_window(count, &map, 160_000, 165_000).is_none());
+        let last = recorded_window(count, &map, 122_000, 125_000).unwrap();
+        assert_eq!(last.end, count);
     }
     #[test]
     fn malformed_emissions_fail_closed() {

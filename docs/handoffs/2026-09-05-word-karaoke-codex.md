@@ -283,3 +283,29 @@ clippy all-targets passes. The native app started at 14:52 PT with
 `karaoke: acoustic model enabled (mms-int8/1)`. Win32 enumeration verified
 a visible Palette window (PID 31472, HWND 593558). A listening-feedback
 question is pending; native audible feel has not been signed off.
+
+
+## 2026-09-05 — Live worker verified; partial-capture follow-up
+
+The actual app aligned and saved Let Me In (512 words, 30.19s), RULE
+(feat. Heize) (417 words, 26.79s), and Apple Pie (520 words, 32.02s).
+Their mms-int8/1 caches preserve exact source text, per-row word order,
+and positive durations: 42/40/50 timed source rows, zero validation failures.
+Live Revenge was only ~123s of187.5s; an empty later audio window discarded
+its diagnostic prefix. recorded_window now skips unheard rows, while the
+existing full-recording cache gate remains unchanged.
+
+The ignored local integration test
+`karaoke::tests::acoustic_recording_reaches_cache_and_ready_payload` ran
+successfully with the complete Blur evidence and installed model. It
+exercises the production commit_recording path, real model, actual temporary
+source/word caches, and serialized publish payload:343 words,30.02s. It
+also verifies exact-source cache rejection. It does not simulate native
+WebView delivery; the live caches above are separate actual-app evidence.
+Environment: PALETTE_KARAOKE_EVIDENCE points to the complete dump and
+PALETTE_KARAOKE_MODEL to the installed model directory. Run alone with
+`cargo test --lib acoustic_recording_reaches_cache_and_ready_payload -- --ignored --nocapture`.
+A Tauri mock-runtime attempt failed before test execution with a local
+Windows entrypoint error; that dependency was removed. No success is claimed
+from that attempt. CI on f1b795c passed tests and failed a newer Rust1.98
+Clippy lint; byte parsing now uses as_chunks. The follow-up review is clean.

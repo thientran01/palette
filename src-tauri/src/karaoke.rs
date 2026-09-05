@@ -636,6 +636,18 @@ fn commit_sync(
     karaoke_dir: &Path,
     dump_dir: Option<&Path>,
 ) {
+    commit_recording(rec, lyrics_dir, karaoke_dir, dump_dir, |ready| {
+        let _ = app.emit("karaoke-ready", ready);
+    });
+}
+
+fn commit_recording(
+    rec: Rec,
+    lyrics_dir: &Path,
+    karaoke_dir: &Path,
+    dump_dir: Option<&Path>,
+    publish: impl FnOnce(KaraokeReady),
+) {
     let Some(synced) = lyrics::cached_synced(
         lyrics_dir,
         &rec.artist,
@@ -729,16 +741,13 @@ fn commit_sync(
         log::warn!("karaoke: persist failed ({e})");
         return;
     }
-    let _ = app.emit(
-        "karaoke-ready",
-        KaraokeReady {
-            artist: rec.artist,
-            title: rec.title,
-            album: rec.album,
-            duration_ms: rec.duration_ms,
-            words,
-        },
-    );
+    publish(KaraokeReady {
+        artist: rec.artist,
+        title: rec.title,
+        album: rec.album,
+        duration_ms: rec.duration_ms,
+        words,
+    });
 }
 
 // ── Word lead (docs/specs/2026-09-04-word-lead-nudge.md) ──
@@ -791,6 +800,100 @@ pub async fn word_lead(app: AppHandle) -> i64 {
 mod tests {
     use super::*;
     use crate::align::TimedLine;
+
+    /// Explicit local integration test: real PCM/model through the production
+    /// worker, source cache, word cache and karaoke-ready payload. Never writes
+    /// the user's app cache. Run alone with the two environment paths below.
+    #[test]
+    #[ignore = "requires local licensed model assets and a complete evidence dump"]
+    fn acoustic_recording_reaches_cache_and_ready_payload() {
+        let evidence = PathBuf::from(
+            std::env::var_os("PALETTE_KARAOKE_EVIDENCE").expect("evidence directory"),
+        );
+        let model =
+            PathBuf::from(std::env::var_os("PALETTE_KARAOKE_MODEL").expect("model directory"));
+        acoustic::configure(model);
+        assert!(acoustic::assets().is_some());
+        let meta: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(evidence.join("meta.json")).unwrap()).unwrap();
+        let synced = std::fs::read_to_string(evidence.join("lyrics.lrc")).unwrap();
+        let raw = std::fs::read(evidence.join("pcm.i16")).unwrap();
+        let artist = meta["artist"].as_str().unwrap().to_string();
+        let title = meta["title"].as_str().unwrap().to_string();
+        let album = meta["album"].as_str().unwrap().to_string();
+        let duration_ms = meta["duration_ms"].as_i64().unwrap();
+        let key = lyrics::key_for_ms(&artist, &title, &album, duration_ms);
+        let rec = Rec {
+            key: key.clone(),
+            artist: artist.clone(),
+            title: title.clone(),
+            album: album.clone(),
+            duration_ms,
+            origin_ms: meta["origin_ms"].as_i64().unwrap(),
+            rate_in: TARGET_HZ,
+            phase: 0,
+            acc: 0.0,
+            n: 0,
+            samples: raw
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32767.0)
+                .collect(),
+            peak: 1.0,
+            started: None,
+            received: raw.len() as u64 / 2,
+            anchors: serde_json::from_value(meta["anchors"].clone()).unwrap(),
+            last_anchor_at: 0,
+            seek_strikes: 0,
+        };
+        assert!(rec.can_finalize());
+        let map = TimeMap::fit(&rec.anchors, TARGET_HZ, rec.origin_ms);
+        assert!(cache_complete(map.pos_ms(rec.samples.len()), duration_ms));
+        let root = std::env::temp_dir().join(format!(
+            "palette-native-worker-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        let source = root.join("lyrics");
+        let cache = root.join("karaoke");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join(format!("{key}.json")),
+            serde_json::to_vec(&serde_json::json!({"synced":synced})).unwrap(),
+        )
+        .unwrap();
+        let mut ready = None;
+        commit_recording(rec, &source, &cache, None, |event| {
+            ready = Some(serde_json::to_value(event).unwrap());
+        });
+        let words = load(&cache, &artist, &title, &album, duration_ms, Some(&synced));
+        let expected = align::parse_lrc(&synced)
+            .iter()
+            .map(|l| align::tokenize(&l.text).len())
+            .sum::<usize>();
+        assert_eq!(words.len(), expected);
+        assert!(words.iter().all(|w| w.line_t.is_some()
+            && w.end
+                .is_some_and(|end| end > w.t && end <= map.pos_ms(raw.len() / 2))));
+        let event = ready.expect("ready payload after persistence");
+        assert_eq!(event["title"], title);
+        assert_eq!(event["words"].as_array().unwrap().len(), expected);
+        let stored: StoreFile =
+            serde_json::from_slice(&std::fs::read(cache.join(format!("{key}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(stored.recipe, acoustic::RECIPE);
+        assert!(load(
+            &cache,
+            &artist,
+            &title,
+            &album,
+            duration_ms,
+            Some("[00:01.00]different lyrics")
+        )
+        .is_empty());
+        println!("Native worker produced {expected} cached words and a matching ready payload; temporary evidence: {}", root.display());
+    }
 
     // Persistence regressions: a useful diagnostic recording is not
     // necessarily a trustworthy permanent word cache.
