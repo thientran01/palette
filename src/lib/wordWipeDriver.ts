@@ -39,8 +39,17 @@ export function driveWordRows(
       const { row } = track;
       const active = row.index === currentLine || (p >= track.start && p < track.end);
       if (active !== track.active) {
-        if (active) row.style.setProperty("--word-bright", "rgb(var(--fg))");
-        else row.style.removeProperty("--word-bright");
+        if (active) {
+          row.style.setProperty("--word-bright", "rgb(var(--fg))");
+          row.style.setProperty("--word-peak", "rgb(var(--lyric-peak))");
+          row.style.setProperty("--lyric-scale", "1");
+          row.style.setProperty("--lyric-blur", "0px");
+        } else {
+          row.style.removeProperty("--word-bright");
+          row.style.removeProperty("--word-peak");
+          row.style.removeProperty("--lyric-scale");
+          row.style.removeProperty("--lyric-blur");
+        }
         track.active = active;
       }
       if (!active) continue;
@@ -49,6 +58,8 @@ export function driveWordRows(
         if (frac === track.last[i]) continue;
         track.last[i] = frac;
         row.spans[i].setProperty("--wipe", `${(frac * 100).toFixed(1)}%`);
+        row.spans[i].setProperty("--word-sheen", frac > 0 && frac < 1
+          ? "var(--word-peak, currentColor)" : "var(--word-bright, currentColor)");
       }
     }
   };
@@ -74,6 +85,11 @@ export function driveWordRows(
     disposed = true;
     unsubscribe();
     if (raf) frames.cancel(raf);
-    for (const track of tracks) if (track.active) track.row.style.removeProperty("--word-bright");
+    for (const track of tracks) if (track.active) {
+      track.row.style.removeProperty("--word-bright");
+      track.row.style.removeProperty("--word-peak");
+      track.row.style.removeProperty("--lyric-scale");
+      track.row.style.removeProperty("--lyric-blur");
+    }
   };
 }

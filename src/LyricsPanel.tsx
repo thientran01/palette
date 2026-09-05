@@ -125,7 +125,7 @@ function useWordWipe(
 
 /** Soft edge on the wipe, in px — a hard stop strobes at 60fps. */
 const WIPE_FEATHER = "5px";
-const WORD_GRADIENT = `linear-gradient(to right, var(--word-bright, currentColor) calc(var(--wipe, 0%) - ${WIPE_FEATHER}), currentColor calc(var(--wipe, 0%) + ${WIPE_FEATHER}))`;
+const WORD_GRADIENT = `linear-gradient(to right, var(--word-bright, currentColor) calc(var(--wipe, 0%) - 16px), var(--word-sheen, var(--word-bright, currentColor)) calc(var(--wipe, 0%) - ${WIPE_FEATHER}), currentColor calc(var(--wipe, 0%) + ${WIPE_FEATHER}))`;
 
 export type LyricsState =
   // "none" = a definitive served miss (LRCLIB has no lyrics for this track);
@@ -274,14 +274,14 @@ export type LyricsScale = "base" | "focus";
 
 /** Per-scale clothes + physics — same grammar, two rooms. The focus values
  * are the Soundboard design (panel verdict, 2026-07-12): 44px uniform rows
- * (recession by OPACITY, never size — Apple's fullscreen idiom, and size
- * steps would reflow the translate math), current line anchored slightly
+ * (recession uses tone and an inner paint-only scale; layout size remains
+ * fixed so activation never changes wrapping or the translate math), current line anchored slightly
  * deeper (0.46), and The Hang's asymmetric mask grafted on — the deep
  * bottom ramp is what makes the room read "a sentence, not a page". */
 const SCALE = {
   base: {
-    row: "px-3 py-1 text-base leading-normal",
-    marker: "h-4 w-[3px]",
+    row: "px-3 py-1.5 text-[18px] leading-[1.5] tracking-[-0.012em]",
+    marker: "h-4 w-[2px]",
     anchor: 0.4,
     mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
     chipTop: "top-8",
@@ -370,8 +370,8 @@ const LyricLineRow = memo(function LyricLineRow({
   const timed = words && words.length > 0;
   const tone = current
     ? timed
-      ? "font-medium text-muted/80"
-      : "font-medium text-fg"
+      ? "text-muted/80"
+      : "text-fg"
     : tier === null
       ? "text-muted/80"
       : focusTone(tier, browsing);
@@ -389,23 +389,25 @@ const LyricLineRow = memo(function LyricLineRow({
           }
         : {})}
       data-word-row={timed ? index : undefined}
+      data-current={current ? "true" : undefined}
+      data-distance={tier ?? 0}
+      data-browsing={browsing ? "true" : undefined}
       data-cascade
       {...(anchor ? { "data-anchor": true } : {})}
       style={{ "--cascade-delay": `${cascadeDelayMs}ms` } as React.CSSProperties}
-      className={`relative whitespace-pre-wrap rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${timed ? "font-medium" : ""} ${tone} ${
+      className={`lyric-row relative whitespace-pre-wrap rounded-md text-left font-semibold transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${tone} ${
         seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
       <span
         aria-hidden
         data-marker
-        // background-color joins opacity: an art-change retint must sweep the
-        // marker like every accent-painted surface (220ms EASE.out, the
-        // progress fills' retint timing) instead of snapping it.
-        className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-full bg-accent [transition:opacity_200ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].marker} ${
+        // A neutral hairline locates the active row without coloring its text.
+        className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-full bg-fg/35 [transition:opacity_200ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].marker} ${
           current ? "opacity-100" : "opacity-0"
         }`}
       />
+      <span className="lyric-ink">
       {timed
         ? words.map((w, wi) => (
             // Every span wears the same gradient; useWordWipe moves only
@@ -421,6 +423,7 @@ const LyricLineRow = memo(function LyricLineRow({
             </span>
           ))
         : text}
+      </span>
     </Tag>
   );
 });
@@ -723,7 +726,7 @@ export function LyricsPanel({
               current={i === idx}
               seekable={seekable}
               scale={scale}
-              tier={scale === "focus" ? Math.min(Math.abs(i - Math.max(idx, 0)), 3) : null}
+              tier={Math.min(Math.abs(i - Math.max(idx, 0)), 3)}
               browsing={browsing}
               anchor={anchor}
               cascadeDelayMs={cascadeDelayMs}
