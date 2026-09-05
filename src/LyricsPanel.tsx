@@ -683,6 +683,7 @@ export function LyricsPanel({
   const band = (viewportRef.current?.clientHeight ?? 0) * RELATCH_BAND;
   // Where "now" sits relative to the browse — drives the chip's edge/arrow.
   const nowBelow = browsing && autoOffset > (manualOffset as number);
+  const showReturn = browsing && Math.abs((manualOffset as number) - autoOffset) > band;
 
   const relatch = () => {
     setManualOffset(null);
@@ -765,10 +766,11 @@ export function LyricsPanel({
       </div>
       {/* Word-lead caption: the one piece of feedback the nudge hotkeys
        * give. Same chip grammar AND the same per-scale top seat as the
-       * return-to-now button (the focus room's ladder starts far lower). */}
+       * return-to-now button (the focus room's ladder starts far lower).
+       * Move to the opposite scale seat while the upper return is visible. */}
       <div
         aria-live="polite"
-        className={`pointer-events-none absolute inset-x-0 z-10 flex justify-center ${SCALE[scale].chipTop}`}
+        className={`pointer-events-none absolute inset-x-0 z-10 flex justify-center ${showReturn && !nowBelow ? SCALE[scale].chipBottom : SCALE[scale].chipTop}`}
       >
         {leadCaption && (
           <span className="rounded-full border border-border/10 bg-surface-2/90 px-2.5 py-1 text-[11px] leading-none text-muted [animation:caption-in_140ms_var(--ease-out-tk)_both]">
@@ -781,7 +783,7 @@ export function LyricsPanel({
        * band only (inside it the line is on screen and a wheel-back
        * re-latches anyway). 32px offsets clear the 28px mask fade. Exits
        * plain with the browse, per the house transition rule. */}
-      {browsing && Math.abs((manualOffset as number) - autoOffset) > band && (
+      {showReturn && (
         <button
           type="button"
           aria-label="Now — back to the current line"

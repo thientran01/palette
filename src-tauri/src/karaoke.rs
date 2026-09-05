@@ -19,21 +19,12 @@ const MAX_SAMPLES: usize = 16_000 * 60 * 8;
 const ARM_NEAR_START_MS: i64 = 8_000;
 const PEAK_ABORT: f32 = 1e-3;
 const MIN_LINE_COVERAGE: u32 = 30;
-/// v4 = the store carries the aligner RECIPE (align::Stages::RECIPE):
-/// a file whose recipe differs from the running aligner's is dropped on
-/// read and re-records, so an aligner change can never again leave stale
-/// word times behind (v3 files from the fixed-lead prior survived the
-/// switch to song-lead calibration on 2026-09-04 — Heart To Heart played
-/// ~216ms late all evening). v2 (energy-rise, 498ms) and v3 are dropped.
-const STORE_V: u32 = 4;
-/// Wall-clock deficit past which the capture is judged to have delivered
-/// nothing for a stretch (process loopback goes quiet with its target) —
-/// the gap is padded with silence so later word times don't drift early.
-/// Well above normal packet jitter (~10–50ms).
-const GAP_PAD_MS: u64 = 400;
-/// A gap this long is a stall, not silence: the recording is dropped rather
-/// than padded (the pad loop runs on the realtime thread under the lock).
-const GAP_PAD_MAX_MS: u64 = 5_000;
+/// v5 binds word times to the exact synced LRC as well as the aligner recipe.
+/// Older files lack source identity and must be recorded again.
+const STORE_V: u32 = 5;
+/// A delivery deficit cannot distinguish buffered audio from missing audio.
+/// Above normal packet jitter, discard rather than invent silence.
+const GAP_ABORT_MS: u64 = 400;
 /// Staleness projection cap: a position stamped longer ago than this is
 /// not extrapolated further (the pair is the player's, not the clock's).
 const STALE_CAP_MS: i64 = 5_000;
@@ -58,6 +49,8 @@ struct StoreFile {
     v: u32,
     #[serde(default)]
     recipe: String,
+    #[serde(default)]
+    synced: Option<String>,
     words: Vec<Word>,
 }
 
@@ -84,7 +77,7 @@ struct Rec {
     samples: Vec<f32>,
     peak: f32,
     /// Wall clock at the first delivered block + input frames received
-    /// since: the pair that detects a delivery gap (see GAP_PAD_MS).
+    /// since: the pair that detects a delivery gap (see GAP_ABORT_MS).
     started: Option<Instant>,
     received: u64,
     /// (output sample index, position_ms) from every fresh pair the media
@@ -106,6 +99,13 @@ enum Anchor {
 }
 
 impl Rec {
+    /// A lone unresolved seek strike is unsafe at stop/track change even
+    /// though live detection waits for a second pair. Never count it as a miss.
+    fn can_finalize(&self) -> bool {
+        let pcm_ms = self.samples.len() as i64 * 1000 / TARGET_HZ as i64;
+        self.seek_strikes == 0 && listen_enough(pcm_ms, self.origin_ms, self.duration_ms)
+    }
+
     /// Turn a fresh pair into an anchor, or flag a seek. The pair's
     /// staleness (now − position_at_ms) says how many input frames ago the
     /// position was true; that input index maps onto the 16kHz grid.
@@ -201,30 +201,46 @@ fn lyrics_dir(app: &AppHandle) -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("pulse-lyrics"))
 }
 
-pub fn load(dir: &Path, artist: &str, title: &str, album: &str, duration_ms: i64) -> Vec<Word> {
+pub fn load(
+    dir: &Path,
+    artist: &str,
+    title: &str,
+    album: &str,
+    duration_ms: i64,
+    synced: Option<&str>,
+) -> Vec<Word> {
     let key = lyrics::key_for_ms(artist, title, album, duration_ms);
-    read_file(&dir.join(format!("{key}.json")))
+    read_file(&dir.join(format!("{key}.json")), synced)
 }
 
-fn read_file(path: &Path) -> Vec<Word> {
+fn read_file(path: &Path, synced: Option<&str>) -> Vec<Word> {
+    // No current source means no usable word cache; keep the file for a
+    // later successful lyrics fetch instead of deleting it on a transient miss.
+    let Some(synced) = synced.filter(|s| !s.trim().is_empty()) else {
+        return Vec::new();
+    };
     let Ok(raw) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
     let Ok(file) = serde_json::from_str::<StoreFile>(&raw) else {
         return Vec::new();
     };
-    if file.v != STORE_V || file.recipe != align::Stages::RECIPE {
+    if file.v != STORE_V
+        || file.recipe != align::Stages::RECIPE
+        || file.synced.as_deref() != Some(synced)
+    {
         let _ = std::fs::remove_file(path);
         return Vec::new();
     }
     file.words
 }
 
-fn write_file(dir: &Path, key: &str, words: &[Word]) -> std::io::Result<()> {
+fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
         recipe: align::Stages::RECIPE.to_string(),
+        synced: Some(synced.to_string()),
         words: words.to_vec(),
     })
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -254,8 +270,21 @@ fn evict_old(cache_dir: &Path) {
     }
 }
 
-fn has_file(dir: &Path, key: &str) -> bool {
-    !read_file(&dir.join(format!("{key}.json"))).is_empty()
+fn has_file(dir: &Path, key: &str, synced: Option<&str>) -> bool {
+    !read_file(&dir.join(format!("{key}.json")), synced).is_empty()
+}
+
+/// Cache eligibility is stricter than the 55% diagnostic-dump threshold:
+/// mapped PCM must reach within END_GUARD_MS of a known track end.
+/// Incomplete listens remain retryable, regardless of alignment coverage.
+fn cache_complete(pcm_end_ms: i64, duration_ms: i64) -> bool {
+    duration_ms > 0 && pcm_end_ms >= duration_ms.saturating_sub(END_GUARD_MS)
+}
+
+/// Wall time alone cannot tell delayed buffered delivery from lost audio.
+/// Reject either ambiguous case; never synthesize samples to cover a deficit.
+fn ambiguous_gap(expected_frames: u64, received_frames: u64, sample_rate: u32) -> bool {
+    expected_frames.saturating_sub(received_frames) > sample_rate as u64 * GAP_ABORT_MS / 1000
 }
 
 pub(crate) fn listen_enough(pcm_ms: i64, origin_ms: i64, duration_ms: i64) -> bool {
@@ -268,17 +297,17 @@ pub(crate) fn listen_enough(pcm_ms: i64, origin_ms: i64, duration_ms: i64) -> bo
 }
 
 fn line_coverage(lines: &[align::TimedLine], words: &[Word]) -> u32 {
-    if lines.is_empty() {
-        return 0;
-    }
+    let mut total = 0u32;
     let mut hit = 0u32;
-    for (i, line) in lines.iter().enumerate() {
-        let next_t = lines.get(i + 1).map(|n| n.t).unwrap_or(i64::MAX);
-        if words.iter().any(|w| w.t >= line.t && w.t < next_t) {
+    for line in lines.iter().filter(|line| !line.text.trim().is_empty()) {
+        total += 1;
+        // A calibrated onset can precede the LRC stamp. Membership is the
+        // source line identity, never the word's position in a time window.
+        if words.iter().any(|w| w.line_t == Some(line.t)) {
             hit += 1;
         }
     }
-    hit * 100 / lines.len() as u32
+    (hit * 100).checked_div(total).unwrap_or(0)
 }
 
 pub fn observe(app: &AppHandle, np: &NowPlaying) {
@@ -330,12 +359,6 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     if let Some(rec) = old {
         try_commit(app, rec);
     }
-    let Some(dir) = karaoke_dir(app) else {
-        return;
-    };
-    if has_file(&dir, &key) {
-        return;
-    }
     if lock_misses().contains(&key) {
         return;
     }
@@ -350,6 +373,20 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     };
     let origin_ms = (np.position_ms + stale).max(0);
     if origin_ms >= ARM_NEAR_START_MS {
+        return;
+    }
+    // Only eligible near-start listens need lyrics/cache disk reads.
+    let Some(dir) = karaoke_dir(app) else {
+        return;
+    };
+    let synced = lyrics::cached_synced(
+        &lyrics_dir(app),
+        &np.artist,
+        &np.title,
+        &np.album,
+        np.duration_ms,
+    );
+    if has_file(&dir, &key, synced.as_deref()) {
         return;
     }
     let rec = Rec {
@@ -410,36 +447,18 @@ pub fn push_frames(frames: &[f32], sample_rate: u32) {
         *slot = None;
         return;
     }
-    // Delivery gap: the wall clock says far more audio has elapsed than
-    // arrived. Process loopback delivers nothing while its target renders
-    // nothing, and a recording that silently skips that stretch puts
-    // every later word early by its length — pad it as silence instead.
+    // Buffered delayed packets and actual missing audio look identical
+    // here. Either invalidates this recording, without poisoning retries.
     if let Some(t0) = rec.started {
         let expected = (t0.elapsed().as_secs_f64() * sample_rate as f64) as u64;
-        let deficit = expected.saturating_sub(rec.received);
-        if deficit > sample_rate as u64 * GAP_PAD_MAX_MS / 1000 {
-            // Seconds of missing audio is a stall (sleep, debugger), not a
-            // quiet target — and padding it here would spin the realtime
-            // thread under the lock. Drop the recording instead.
+        if ambiguous_gap(expected, rec.received, sample_rate) {
             log::info!(
-                "karaoke: {}ms capture gap during {} — dropping this recording",
-                deficit * 1000 / sample_rate as u64,
+                "karaoke: ambiguous delivery gap during {} — dropping recording",
                 rec.title
             );
             RECORDING.store(false, Ordering::Relaxed);
             *slot = None;
             return;
-        }
-        if deficit > sample_rate as u64 * GAP_PAD_MS / 1000 {
-            for _ in 0..deficit {
-                if !rec.push(0.0) {
-                    log::info!("karaoke: {} ran past MAX_SAMPLES — dropping", rec.title);
-                    RECORDING.store(false, Ordering::Relaxed);
-                    *slot = None;
-                    return;
-                }
-            }
-            rec.received += deficit;
         }
     }
     for &s in frames {
@@ -462,15 +481,11 @@ impl Drop for AlignGuard {
 }
 
 fn try_commit(app: &AppHandle, rec: Rec) {
-    let pcm_ms = if rec.samples.is_empty() {
-        0
-    } else {
-        rec.samples.len() as i64 * 1000 / TARGET_HZ as i64
-    };
-    if !listen_enough(pcm_ms, rec.origin_ms, rec.duration_ms) {
+    if !rec.can_finalize() {
         return;
     }
-    if rec.peak < PEAK_ABORT {
+    let map = TimeMap::fit(&rec.anchors, TARGET_HZ, rec.origin_ms);
+    if rec.peak < PEAK_ABORT && cache_complete(map.pos_ms(rec.samples.len()), rec.duration_ms) {
         lock_misses().insert(rec.key);
         log::info!("karaoke: silence on {} — leaving line karaoke", rec.title);
         return;
@@ -496,12 +511,18 @@ fn try_commit(app: &AppHandle, rec: Rec) {
         None
     };
     let handle = app.clone();
-    let _ = std::thread::Builder::new()
+    // Move the guard into the closure: a failed spawn drops the closure
+    // and releases ALIGNING too, even though the thread body never ran.
+    let guard = AlignGuard;
+    let result = std::thread::Builder::new()
         .name("karaoke-align".into())
         .spawn(move || {
-            let _g = AlignGuard;
+            let _g = guard;
             commit_sync(&handle, rec, &lyrics_dir, &karaoke_dir, dump_dir.as_deref());
         });
+    if let Err(e) = result {
+        log::warn!("karaoke: align thread spawn failed ({e})");
+    }
 }
 
 /// True when a fresh pair sits further from the running fit than a seek
@@ -555,6 +576,7 @@ fn write_dump(
     let words_json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
         recipe: align::Stages::RECIPE.to_string(),
+        synced: Some(lrc.to_string()),
         words: words.to_vec(),
     })
     .map_err(to_io)?;
@@ -608,9 +630,6 @@ fn commit_sync(
     karaoke_dir: &Path,
     dump_dir: Option<&Path>,
 ) {
-    if has_file(karaoke_dir, &rec.key) {
-        return;
-    }
     let Some(synced) = lyrics::cached_synced(
         lyrics_dir,
         &rec.artist,
@@ -620,6 +639,9 @@ fn commit_sync(
     ) else {
         return;
     };
+    if has_file(karaoke_dir, &rec.key, Some(&synced)) {
+        return;
+    }
     let lines = align::parse_lrc(&synced);
     if lines.is_empty() {
         return;
@@ -647,12 +669,19 @@ fn commit_sync(
             Err(e) => log::warn!("karaoke: dump failed ({e})"),
         }
     }
+    if !cache_complete(map.pos_ms(rec.samples.len()), rec.duration_ms) {
+        log::info!(
+            "karaoke: incomplete {} — dump only, retry next listen",
+            rec.title
+        );
+        return;
+    }
     if line_coverage(&lines, &words) < MIN_LINE_COVERAGE {
         lock_misses().insert(rec.key);
         log::info!("karaoke: align missed {} — leaving line karaoke", rec.title);
         return;
     }
-    if let Err(e) = write_file(karaoke_dir, &rec.key, &words) {
+    if let Err(e) = write_file(karaoke_dir, &rec.key, &synced, &words) {
         log::warn!("karaoke: persist failed ({e})");
         return;
     }
@@ -720,6 +749,165 @@ mod tests {
     use super::*;
     use crate::align::TimedLine;
 
+    // Persistence regressions: a useful diagnostic recording is not
+    // necessarily a trustworthy permanent word cache.
+    #[test]
+    fn cache_requires_pcm_near_known_track_end() {
+        assert!(listen_enough(99_000, 0, 180_000));
+        assert!(!cache_complete(99_000, 180_000));
+        assert!(!cache_complete(178_499, 180_000));
+        assert!(cache_complete(178_500, 180_000));
+        assert!(cache_complete(180_100, 180_000));
+        assert!(!cache_complete(180_000, 0));
+        // Use mapped PCM end, including the capture origin.
+        let map = TimeMap::from_origin(1_000, TARGET_HZ);
+        assert!(cache_complete(map.pos_ms(177_500 * 16), 180_000));
+    }
+
+    #[test]
+    fn pending_seek_rejects_finalization_until_a_good_pair() {
+        let mut rec = rec_with(two_anchors(), 180_000);
+        rec.samples.resize(100_000 * 16, 0.1);
+        assert!(rec.can_finalize());
+        rec.anchor(&pair(40_000, 180_000));
+        assert_eq!(rec.seek_strikes, 1);
+        assert!(!rec.can_finalize());
+        // Even an end-clamped pair cannot clear the unresolved strike.
+        rec.last_anchor_at = 0;
+        rec.anchor(&pair(179_000, 180_000));
+        assert!(!rec.can_finalize());
+        rec.last_anchor_at = 0;
+        rec.anchor(&pair(11_000, 180_000));
+        assert!(rec.can_finalize());
+    }
+
+    #[test]
+    fn delayed_delivery_is_rejected_not_padded() {
+        for rate in [16_000u32, 44_100, 48_000] {
+            let received = rate as u64 * 10;
+            assert!(!ambiguous_gap(received, received, rate));
+            assert!(!ambiguous_gap(received + rate as u64 / 20, received, rate));
+            assert!(!ambiguous_gap(
+                received + rate as u64 * 400 / 1000,
+                received,
+                rate
+            ));
+            assert!(ambiguous_gap(
+                received + rate as u64 * 400 / 1000 + 1,
+                received,
+                rate
+            ));
+            // A one-second backlog might still arrive intact: wall time
+            // cannot license inserting another second of synthetic zeros.
+            assert!(ambiguous_gap(received + rate as u64, received, rate));
+            assert!(!ambiguous_gap(received, received + rate as u64, rate));
+        }
+    }
+
+    #[test]
+    fn dropping_unstarted_alignment_job_releases_flag() {
+        ALIGNING.store(true, Ordering::SeqCst);
+        let guard = AlignGuard;
+        let job = move || {
+            let _g = guard;
+        };
+        // Failed Builder::spawn drops its captured job without running it.
+        drop(job);
+        assert!(!ALIGNING.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn store_requires_exact_current_lyrics_for_load_and_eligibility() {
+        let dir = std::env::temp_dir().join(format!("pulse-karaoke-source-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = lyrics::key_for_ms("a", "b", "c", 180_000);
+        let source = "[00:01.00]one";
+        let words = vec![Word {
+            t: 900,
+            text: "one".into(),
+            end: Some(1200),
+            line_t: Some(1000),
+        }];
+        write_file(&dir, &key, source, &words).unwrap();
+        assert_eq!(load(&dir, "a", "b", "c", 180_000, Some(source)), words);
+        assert!(has_file(&dir, &key, Some(source)));
+        for absent in [None, Some(""), Some("  ")] {
+            assert!(load(&dir, "a", "b", "c", 180_000, absent).is_empty());
+            assert!(!has_file(&dir, &key, absent));
+        }
+        // A transient missing source does not destroy an otherwise valid file.
+        assert!(has_file(&dir, &key, Some(source)));
+        for changed in ["[00:02.00]one", "[00:01.00]two", "[00:01.00]one\n"] {
+            write_file(&dir, &key, source, &words).unwrap();
+            assert!(!has_file(&dir, &key, Some(changed)));
+            write_file(&dir, &key, source, &words).unwrap();
+            assert!(load(&dir, "a", "b", "c", 180_000, Some(changed)).is_empty());
+        }
+        let path = dir.join(format!("{key}.json"));
+        // Even a current version/recipe without identity is ineligible.
+        write_file(&dir, &key, source, &words).unwrap();
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("synced");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(!has_file(&dir, &key, Some(source)));
+        assert!(!path.exists());
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn coverage_uses_line_identity_and_excludes_empty_markers() {
+        let lines = vec![
+            TimedLine {
+                t: 1000,
+                text: "one".into(),
+            },
+            TimedLine {
+                t: 1500,
+                text: "".into(),
+            },
+            TimedLine {
+                t: 2000,
+                text: "two".into(),
+            },
+            TimedLine {
+                t: 2500,
+                text: "  ".into(),
+            },
+        ];
+        let words = vec![
+            Word {
+                t: 900,
+                text: "one".into(),
+                end: Some(1200),
+                line_t: Some(1000),
+            },
+            Word {
+                t: 1800,
+                text: "two".into(),
+                end: Some(2100),
+                line_t: Some(2000),
+            },
+        ];
+        assert_eq!(line_coverage(&lines, &words), 100);
+        assert_eq!(line_coverage(&lines, &words[..1]), 50);
+        let unrelated = vec![
+            Word {
+                t: 1100,
+                line_t: Some(1500),
+                ..Word::default()
+            },
+            Word {
+                t: 2100,
+                line_t: None,
+                ..Word::default()
+            },
+        ];
+        assert_eq!(line_coverage(&lines, &unrelated), 0);
+        assert_eq!(line_coverage(&lines[1..2], &words), 0);
+        assert_eq!(line_coverage(&[], &words), 0);
+    }
+
     #[test]
     fn skip_through_is_not_enough() {
         assert!(!listen_enough(8_000, 0, 180_000));
@@ -751,8 +939,8 @@ mod tests {
                 line_t: Some(1000),
             },
         ];
-        write_file(&dir, "abc", &words).unwrap();
-        let got = read_file(&dir.join("abc.json"));
+        write_file(&dir, "abc", "[00:01.00]one two", &words).unwrap();
+        let got = read_file(&dir.join("abc.json"), Some("[00:01.00]one two"));
         assert_eq!(got, words);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -761,7 +949,7 @@ mod tests {
     fn empty_words_file_is_not_a_fill() {
         let dir = std::env::temp_dir().join(format!("pulse-karaoke-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let got = load(&dir, "a", "b", "c", 180_000);
+        let got = load(&dir, "a", "b", "c", 180_000, Some("[00:01.00]one"));
         assert!(got.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -773,17 +961,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("abc.json");
         std::fs::write(&path, r#"{"v":1,"words":[{"t":1,"text":"nope","end":2}]}"#).unwrap();
-        assert!(read_file(&path).is_empty());
+        assert!(read_file(&path, Some("[00:01.00]one")).is_empty());
         assert!(!path.is_file());
         // Right version, different aligner: also dropped.
         std::fs::write(
             &path,
             format!(
-                r#"{{"v":{STORE_V},"recipe":"other/9","words":[{{"t":1,"text":"nope","end":2}}]}}"#
+                r#"{{"v":{STORE_V},"recipe":"other/9","synced":"[00:01.00]one","words":[{{"t":1,"text":"nope","end":2}}]}}"#
             ),
         )
         .unwrap();
-        assert!(read_file(&path).is_empty());
+        assert!(read_file(&path, Some("[00:01.00]one")).is_empty());
         assert!(!path.is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }

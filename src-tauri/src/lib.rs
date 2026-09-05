@@ -462,7 +462,14 @@ async fn media_lyrics(
         let mut out =
             lyrics::LyricsOut::from(lyrics::fetch(&dir, &artist, &title, &album, duration_ms));
         if let Some(karaoke_dir) = karaoke_dir {
-            out.words = karaoke::load(&karaoke_dir, &artist, &title, &album, duration_ms);
+            out.words = karaoke::load(
+                &karaoke_dir,
+                &artist,
+                &title,
+                &album,
+                duration_ms,
+                out.synced.as_deref(),
+            );
         }
         out
     })

@@ -107,6 +107,10 @@ export function mainKeyToken(e: Pick<KeyboardEvent, "code">): string | null {
   if ((m = /^Digit(\d)$/.exec(c))) return m[1];
   if ((m = /^F(\d{1,2})$/.exec(c))) return `f${m[1]}`;
   switch (c) {
+    case "BracketLeft":
+      return "[";
+    case "BracketRight":
+      return "]";
     case "ArrowLeft":
       return "left";
     case "ArrowRight":

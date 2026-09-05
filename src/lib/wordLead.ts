@@ -1,9 +1,9 @@
 /**
  * The word-wipe lead: how far BEFORE a word's aligned onset its wipe
  * fires, on top of the per-player VOCAL_LEAD_MS the lines use. A karaoke
- * highlight is expected to lead the vocal; the aligner is unbiased against
- * tap truth (±70ms) yet Thien read words as "a little late" — the wipe
- * lands ON the onset and ramps 90ms, so full brightness trails the sound.
+ * highlight can lead the vocal; Thien preferred a 160ms lead with the
+ * 90ms brightness ramp. This is a perceptual preference, not a measured
+ * correction for the aligner's absolute error.
  *
  * Rust owns the value (settings.json "wordLeadMs"; karaoke.rs nudges it
  * from the Ctrl+Alt+[ / ] hotkeys and emits "word-lead"). This module
@@ -16,6 +16,9 @@ export const WORD_LEAD_DEFAULT_MS = 160;
 
 let value = WORD_LEAD_DEFAULT_MS;
 let seeded = false;
+let listening = false;
+let receivedEvent = false;
+let initializing: Promise<void> | undefined;
 const subs = new Set<(v: number, nudged: boolean) => void>();
 
 function set(v: number, nudged: boolean): void {
@@ -23,21 +26,30 @@ function set(v: number, nudged: boolean): void {
   subs.forEach((cb) => cb(v, nudged));
 }
 
-export function initWordLead(): void {
-  if (seeded) return;
-  seeded = true;
-  // A nudge can land before the seed round-trip resolves; the fresher
-  // value wins, and the seed must not un-caption it.
-  let nudged = false;
-  onWordLead((v) => {
-    nudged = true;
-    set(v, true);
+/** Register before reading the snapshot; live nudges always win over it.
+ * Failed attempts resolve safely and can be retried by the next consumer. */
+export function initWordLead(): Promise<void> {
+  if (seeded) return Promise.resolve();
+  if (initializing) return initializing;
+  initializing = (async () => {
+    if (!listening) {
+      await onWordLead((v) => {
+        receivedEvent = true;
+        set(v, true);
+      });
+      listening = true;
+    }
+    const initial = await commands.wordLead();
+    if (!receivedEvent) set(initial, false);
+    seeded = true;
+  })().catch(() => {
+    // Keep the default/latest event and retain any registered listener.
+    // Leave seeded false so a later initialization can retry.
+  }).finally(() => {
+    initializing = undefined;
   });
-  void commands.wordLead().then((v) => {
-    if (!nudged) set(v, false);
-  });
+  return initializing;
 }
-
 /** Current lead in ms (positive = earlier). */
 export function wordLeadMs(): number {
   return value;
@@ -48,7 +60,7 @@ export function wordLeadMs(): number {
 export function useWordLead(): { leadMs: number; nudges: number } {
   const [state, setState] = useState({ leadMs: value, nudges: 0 });
   useEffect(() => {
-    initWordLead();
+    void initWordLead();
     setState((s) => (s.leadMs === value ? s : { ...s, leadMs: value }));
     const cb = (v: number, nudged: boolean) =>
       setState((s) => ({ leadMs: v, nudges: nudged ? s.nudges + 1 : s.nudges }));

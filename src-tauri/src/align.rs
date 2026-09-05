@@ -1205,7 +1205,11 @@ mod tests {
     fn words_finish_before_a_marked_instrumental_break() {
         let pcm = vec![0.0f32; SR as usize * 20];
         let lyric = "가".repeat(20);
-        let words = run(&pcm, &format!("[00:01.00]{lyric}\n[00:03.00] \n[00:15.00]next"), Stages::PRIOR_ONLY);
+        let words = run(
+            &pcm,
+            &format!("[00:01.00]{lyric}\n[00:03.00] \n[00:15.00]next"),
+            Stages::PRIOR_ONLY,
+        );
         let first: Vec<_> = words.iter().filter(|w| w.line_t == Some(1000)).collect();
         assert_eq!(first.len(), 20);
         assert!(first.iter().all(|w| w.end.unwrap() <= 3000));
@@ -1215,7 +1219,11 @@ mod tests {
     #[test]
     fn partial_audio_never_invents_future_word_times() {
         let pcm = vec![0.0f32; SR as usize * 3];
-        let words = run(&pcm, "[00:01.00]one two\n[00:04.00]unheard\n[00:08.00]last", Stages::PRIOR_ONLY);
+        let words = run(
+            &pcm,
+            "[00:01.00]one two\n[00:04.00]unheard\n[00:08.00]last",
+            Stages::PRIOR_ONLY,
+        );
         assert_eq!(words.len(), 2);
         assert!(words.iter().all(|w| w.end.unwrap() <= 3000));
     }

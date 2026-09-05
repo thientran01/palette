@@ -1379,17 +1379,14 @@ if (!IN_TAURI) {
   };
 }
 
-export function onWordLead(cb: (v: number) => void): () => void {
+export async function onWordLead(cb: (v: number) => void): Promise<() => void> {
   if (!IN_TAURI) {
     mockWordLeadListeners.add(cb);
     return () => {
       mockWordLeadListeners.delete(cb);
     };
   }
-  const un = listen<number>("word-lead", (e) => cb(e.payload));
-  return () => {
-    un.then((f) => f());
-  };
+  return listen<number>("word-lead", (e) => cb(e.payload));
 }
 
 let lyricsGen = 0;
