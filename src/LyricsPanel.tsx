@@ -16,7 +16,6 @@ import {
   msUntilNextDot,
   msUntilNextLine,
   parseLrc,
-  wordWipe,
   type LyricLine,
   type LyricWord,
 } from "./lib/lrc";
@@ -24,6 +23,7 @@ import { commands, onKaraokeReady } from "./lib/backend";
 import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
+import { driveWordRows, type WordRow } from "./lib/wordWipeDriver";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
  * next line boundary, recomputed on every kernel anchor event (seek, pause,
@@ -99,59 +99,33 @@ function useBreakDots(line: LyricLine, leadMs: number, active: boolean): number 
   return active ? filled : 0;
 }
 
-/**
- * Drives the current line's word wipe imperatively: every `[data-word]`
- * span in the row carries the same fg→muted gradient and only its `--wipe`
- * stop moves — sung words sit at 100%, unsung at 0%, the live one eases
- * through its attack. One rAF loop while playing, a single write on each
- * clock anchor while paused, and NO React state per word: the earlier
- * state-driven index re-rendered the row on every word boundary and, for
- * the frame between the timer firing and React committing, wrote the new
- * word's near-zero wipe onto the OLD span — a visible un-fill flicker at
- * every boundary.
- */
+/** Keep word spans mounted across line changes. A single frame driver can
+ * paint an upcoming onset or an overlapping tail without changing line
+ * ownership, the scroll schedule, or React state at each word boundary. */
 function useWordWipe(
-  row: React.RefObject<HTMLElement | null>,
-  words: LyricWord[] | undefined,
-  leadMs: number,
+  list: React.RefObject<HTMLDivElement | null>,
+  lines: LyricLine[], currentLine: number, leadMs: number,
 ): void {
   useLayoutEffect(() => {
-    const el = row.current;
-    if (!el || !words || words.length === 0) return;
-    const spans = Array.from(el.querySelectorAll<HTMLElement>("[data-word]"));
-    if (spans.length === 0) return;
-    const last = new Array<number>(spans.length).fill(-1);
-    let raf = 0;
-    const write = () => {
-      const wipe = wordWipe(words, posClock.now(), leadMs);
-      const cur = wipe ? wipe.index : -1;
-      for (let i = 0; i < spans.length; i++) {
-        const frac = i < cur ? 1 : i === cur ? (wipe as { frac: number }).frac : 0;
-        if (frac === last[i]) continue;
-        last[i] = frac;
-        spans[i].style.setProperty("--wipe", `${(frac * 100).toFixed(1)}%`);
-      }
-    };
-    const loop = () => {
-      write();
-      raf = posClock.isPlaying() ? requestAnimationFrame(loop) : 0;
-    };
-    const kick = () => {
-      write();
-      if (posClock.isPlaying() && raf === 0) raf = requestAnimationFrame(loop);
-    };
-    kick();
-    const unsubscribe = posClock.subscribe(kick);
-    return () => {
-      unsubscribe();
-      cancelAnimationFrame(raf);
-    };
-  }, [row, words, leadMs]);
+    const root = list.current;
+    if (!root) return;
+    const rows: WordRow[] = [];
+    for (const el of root.querySelectorAll<HTMLElement>("[data-word-row]")) {
+      const index = Number(el.dataset.wordRow);
+      const words = lines[index]?.words;
+      if (!words?.length) continue;
+      rows.push({ index, words, style: el.style,
+        spans: Array.from(el.querySelectorAll<HTMLElement>("[data-word]"), span => span.style) });
+    }
+    return driveWordRows(rows, currentLine, leadMs, posClock, {
+      request: cb => requestAnimationFrame(cb), cancel: id => cancelAnimationFrame(id),
+    });
+  }, [list, lines, currentLine, leadMs]);
 }
 
 /** Soft edge on the wipe, in px — a hard stop strobes at 60fps. */
 const WIPE_FEATHER = "5px";
-const WORD_GRADIENT = `linear-gradient(to right, rgb(var(--fg)) calc(var(--wipe, 0%) - ${WIPE_FEATHER}), rgb(var(--muted) / 0.8) calc(var(--wipe, 0%) + ${WIPE_FEATHER}))`;
+const WORD_GRADIENT = `linear-gradient(to right, var(--word-bright, currentColor) calc(var(--wipe, 0%) - ${WIPE_FEATHER}), currentColor calc(var(--wipe, 0%) + ${WIPE_FEATHER}))`;
 
 export type LyricsState =
   // "none" = a definitive served miss (LRCLIB has no lyrics for this track);
@@ -373,7 +347,6 @@ const LyricLineRow = memo(function LyricLineRow({
   tier,
   browsing,
   words,
-  rowRef,
 }: {
   text: string;
   index: number;
@@ -392,14 +365,12 @@ const LyricLineRow = memo(function LyricLineRow({
   tier: number | null;
   browsing: boolean;
   words?: LyricWord[];
-  /** The current row's element, for the imperative word wipe. */
-  rowRef?: React.RefObject<HTMLElement | null>;
 }) {
   const Tag = seekable ? "button" : "div";
-  const timed = current && words && words.length > 0;
+  const timed = words && words.length > 0;
   const tone = current
     ? timed
-      ? "font-medium"
+      ? "font-medium text-muted/80"
       : "font-medium text-fg"
     : tier === null
       ? "text-muted/80"
@@ -417,11 +388,11 @@ const LyricLineRow = memo(function LyricLineRow({
             tabIndex: -1,
           }
         : {})}
-      ref={timed ? (rowRef as React.RefObject<HTMLDivElement & HTMLButtonElement>) : undefined}
+      data-word-row={timed ? index : undefined}
       data-cascade
       {...(anchor ? { "data-anchor": true } : {})}
       style={{ "--cascade-delay": `${cascadeDelayMs}ms` } as React.CSSProperties}
-      className={`relative whitespace-pre-wrap rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${tone} ${
+      className={`relative whitespace-pre-wrap rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${timed ? "font-medium" : ""} ${tone} ${
         seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
@@ -443,7 +414,7 @@ const LyricLineRow = memo(function LyricLineRow({
             <span
               key={`${w.t}-${wi}`}
               data-word
-              className="inline-block bg-clip-text text-transparent"
+              className="inline-block bg-clip-text [-webkit-text-fill-color:transparent]"
               style={{ backgroundImage: WORD_GRADIENT }}
             >
               {w.text}
@@ -557,13 +528,10 @@ export function LyricsPanel({
   scale?: LyricsScale;
 }) {
   const idx = useLyricIndex(lines, leadMs);
-  const currentWords = idx >= 0 ? lines[idx]?.words : undefined;
-  const currentRow = useRef<HTMLElement>(null);
   // Words fire ahead of their aligned onset by the nudgeable word lead
   // (on top of the per-player line lead). A nudge shows a short caption;
   // the seed never does.
   const wordLead = useWordLead();
-  useWordWipe(currentRow, currentWords, leadMs + wordLead.leadMs);
   const [leadCaption, setLeadCaption] = useState<string | null>(null);
   useEffect(() => {
     if (wordLead.nudges === 0) return;
@@ -573,6 +541,7 @@ export function LyricsPanel({
   }, [wordLead.nudges, wordLead.leadMs]);
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs);
   const [autoOffset, setAutoOffset] = useState(0);
   // Wheel-scrolling pauses auto-follow; it resumes via the "Now" chip,
   // scrolling back into the re-latch band, or a short idle (see RELATCH_BAND
@@ -759,7 +728,6 @@ export function LyricsPanel({
               anchor={anchor}
               cascadeDelayMs={cascadeDelayMs}
               words={line.words}
-              rowRef={i === idx ? currentRow : undefined}
             />
           );
         })}

@@ -16,7 +16,7 @@ export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
 
   test: {
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
     exclude: [".cursor/**", "node_modules/**"],
   },
 
