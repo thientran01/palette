@@ -19,13 +19,13 @@ const MAX_SAMPLES: usize = 16_000 * 60 * 8;
 const ARM_NEAR_START_MS: i64 = 8_000;
 const PEAK_ABORT: f32 = 1e-3;
 const MIN_LINE_COVERAGE: u32 = 30;
-/// v3 = the prior + refinement-ladder aligner (docs/specs/2026-09-04-
-/// karaoke-aligner-ladder.md). v2 files came from the energy-rise aligner
-/// that measured 498ms median against tap truth; they're dropped on read
-/// and re-record on the next full listen. (A spectral-flux DP aligner also
-/// wore v3 for a few hours on 2026-09-04; those files were already purged
-/// by the version check, so the number is safe to reuse.)
-const STORE_V: u32 = 3;
+/// v4 = the store carries the aligner RECIPE (align::Stages::RECIPE):
+/// a file whose recipe differs from the running aligner's is dropped on
+/// read and re-records, so an aligner change can never again leave stale
+/// word times behind (v3 files from the fixed-lead prior survived the
+/// switch to song-lead calibration on 2026-09-04 — Heart To Heart played
+/// ~216ms late all evening). v2 (energy-rise, 498ms) and v3 are dropped.
+const STORE_V: u32 = 4;
 /// Wall-clock deficit past which the capture is judged to have delivered
 /// nothing for a stretch (process loopback goes quiet with its target) —
 /// the gap is padded with silence so later word times don't drift early.
@@ -53,6 +53,8 @@ const DUMP_MAX: usize = 5;
 #[derive(Serialize, Deserialize)]
 struct StoreFile {
     v: u32,
+    #[serde(default)]
+    recipe: String,
     words: Vec<Word>,
 }
 
@@ -208,7 +210,7 @@ fn read_file(path: &Path) -> Vec<Word> {
     let Ok(file) = serde_json::from_str::<StoreFile>(&raw) else {
         return Vec::new();
     };
-    if file.v != STORE_V {
+    if file.v != STORE_V || file.recipe != align::Stages::RECIPE {
         let _ = std::fs::remove_file(path);
         return Vec::new();
     }
@@ -219,6 +221,7 @@ fn write_file(dir: &Path, key: &str, words: &[Word]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
+        recipe: align::Stages::RECIPE.to_string(),
         words: words.to_vec(),
     })
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -518,6 +521,7 @@ fn write_dump(
     let to_io = |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let words_json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
+        recipe: align::Stages::RECIPE.to_string(),
         words: words.to_vec(),
     })
     .map_err(to_io)?;
@@ -734,6 +738,16 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("abc.json");
         std::fs::write(&path, r#"{"v":1,"words":[{"t":1,"text":"nope","end":2}]}"#).unwrap();
+        assert!(read_file(&path).is_empty());
+        assert!(!path.is_file());
+        // Right version, different aligner: also dropped.
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"v":{STORE_V},"recipe":"other/9","words":[{{"t":1,"text":"nope","end":2}}]}}"#
+            ),
+        )
+        .unwrap();
         assert!(read_file(&path).is_empty());
         assert!(!path.is_file());
         let _ = std::fs::remove_dir_all(&dir);

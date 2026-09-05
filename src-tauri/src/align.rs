@@ -281,6 +281,13 @@ impl Stages {
         end: false,
     };
 
+    /// Names the shipped aligner for the word store: a stored file whose
+    /// recipe differs re-records on the next full listen. Bump this with
+    /// ANY change that moves word times — the 2026-09-04 fixed-lead →
+    /// song-lead switch shipped without a store bump and left Heart To
+    /// Heart's words ~216ms late for the rest of the evening.
+    pub const RECIPE: &str = "song-lead/1";
+
     /// The set the app runs. Measured on Blur + Heart To Heart via
     /// `karaoke_score matrix` (2026-09-04): song lead 177 / 160ms median
     /// vs the fixed prior's 183 / 374 — the stamp lead is per song
