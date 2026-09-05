@@ -87,6 +87,7 @@ function withBreaks(lines: LyricLine[], markers: number[], durationMs: number): 
     // never reinterpret mixed lyrics/ad-libs or fabricate syllable onsets.
     // One hyphenated token preserves the existing span/wrapping structure.
     const phrase = /^\(?oh(?:-oh)+[.!?,]?\)?$/i.test(lines[i].text)
+      && (i + 1 < lines.length || marker !== undefined)
       && Number.isFinite(phraseEnd) && phraseEnd > lines[i].t;
     out.push(phrase ? { ...lines[i], words: [{
       t: lines[i].t, text: lines[i].text, end: phraseEnd,

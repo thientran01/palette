@@ -211,5 +211,7 @@ describe("repeated vocalization phrase fallback", () => {
       expect(parseLrc(`[00:01.00]${text}\n[00:04.00]next`, 9000)[0].words).toBeUndefined();
     }
     expect(parseLrc("[00:01.00]Oh-oh", 0)[0].words).toBeUndefined();
+    expect(parseLrc("[00:01.00]Oh-oh", 180000)[0].words).toBeUndefined();
+    expect(parseLrc("[00:01.00]Oh-oh\n[00:03.00]", 180000)[0].words?.[0].end).toBe(3000);
   });
 });

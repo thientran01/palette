@@ -24,3 +24,5 @@ The fallback is intentionally limited to this observed text family. It cannot co
 ## Verification
 
 Regression test failed on the old code: expected source interval 2760–5620ms, received acoustic interval 2984–3225ms. Frontend suite increased 40 → 42, all passing; production build passes. Tests cover short blank-marker preservation, phrase midpoint wipe, repeated attachment, unchanged ordinary word data, and exclusions/missing end bounds. No Rust/model changes.
+
+Review caught a final-row endpoint bug: track duration alone is not a vocal endpoint. A regression test reproduced the 179-second wipe, then the fallback was restricted to a following source lyric or explicit empty marker. Four review perspectives ran; the confirmed finding was fixed.
