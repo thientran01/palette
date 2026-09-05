@@ -8,17 +8,21 @@
  * (the fullscreen takeover) — same grammar, bigger clothes.
  */
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { commands } from "./lib/backend";
 import {
   BREAK_DOTS,
+  attachWords,
   breakDotsFilled,
   currentLineIndex,
   msUntilNextDot,
   msUntilNextLine,
   parseLrc,
+  wordWipe,
   type LyricLine,
+  type LyricWord,
 } from "./lib/lrc";
+import { commands, onKaraokeReady } from "./lib/backend";
 import * as posClock from "./lib/posClock";
+import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
@@ -95,6 +99,60 @@ function useBreakDots(line: LyricLine, leadMs: number, active: boolean): number 
   return active ? filled : 0;
 }
 
+/**
+ * Drives the current line's word wipe imperatively: every `[data-word]`
+ * span in the row carries the same fg→muted gradient and only its `--wipe`
+ * stop moves — sung words sit at 100%, unsung at 0%, the live one eases
+ * through its attack. One rAF loop while playing, a single write on each
+ * clock anchor while paused, and NO React state per word: the earlier
+ * state-driven index re-rendered the row on every word boundary and, for
+ * the frame between the timer firing and React committing, wrote the new
+ * word's near-zero wipe onto the OLD span — a visible un-fill flicker at
+ * every boundary.
+ */
+function useWordWipe(
+  row: React.RefObject<HTMLElement | null>,
+  words: LyricWord[] | undefined,
+  leadMs: number,
+): void {
+  useLayoutEffect(() => {
+    const el = row.current;
+    if (!el || !words || words.length === 0) return;
+    const spans = Array.from(el.querySelectorAll<HTMLElement>("[data-word]"));
+    if (spans.length === 0) return;
+    const last = new Array<number>(spans.length).fill(-1);
+    let raf = 0;
+    const write = () => {
+      const wipe = wordWipe(words, posClock.now(), leadMs);
+      const cur = wipe ? wipe.index : -1;
+      for (let i = 0; i < spans.length; i++) {
+        const frac = i < cur ? 1 : i === cur ? (wipe as { frac: number }).frac : 0;
+        if (frac === last[i]) continue;
+        last[i] = frac;
+        spans[i].style.setProperty("--wipe", `${(frac * 100).toFixed(1)}%`);
+      }
+    };
+    const loop = () => {
+      write();
+      raf = posClock.isPlaying() ? requestAnimationFrame(loop) : 0;
+    };
+    const kick = () => {
+      write();
+      if (posClock.isPlaying() && raf === 0) raf = requestAnimationFrame(loop);
+    };
+    kick();
+    const unsubscribe = posClock.subscribe(kick);
+    return () => {
+      unsubscribe();
+      cancelAnimationFrame(raf);
+    };
+  }, [row, words, leadMs]);
+}
+
+/** Soft edge on the wipe, in px — a hard stop strobes at 60fps. */
+const WIPE_FEATHER = "5px";
+const WORD_GRADIENT = `linear-gradient(to right, rgb(var(--fg)) calc(var(--wipe, 0%) - ${WIPE_FEATHER}), rgb(var(--muted) / 0.8) calc(var(--wipe, 0%) + ${WIPE_FEATHER}))`;
+
 export type LyricsState =
   // "none" = a definitive served miss (LRCLIB has no lyrics for this track);
   // "offline" = the fetch bailed on a transport failure (offline/DNS/timeout),
@@ -135,11 +193,8 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
     let alive = true;
     void commands.lyrics(np.artist, np.title, np.album, np.duration_ms).then((l) => {
       if (!alive || lastKey.current !== key) return;
-      // Cap far beyond any real song (~100 lines) — a pathological LRC file
-      // shouldn't turn into thousands of DOM nodes.
-      const lines = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
-      // A transport failure (l.offline) is NOT a miss — surface it as its own
-      // state so the caption stays honest and a later track can retry.
+      const parsed = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
+      const lines = l.words && l.words.length > 0 ? attachWords(parsed, l.words) : parsed;
       setState(
         lines.length > 0
           ? { status: "synced", lines, key }
@@ -153,6 +208,16 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+  useEffect(() => {
+    return onKaraokeReady((p) => {
+      const incoming = `${p.artist}|${p.title}|${p.album}|${p.duration_ms}`;
+      if (incoming !== lastKey.current) return;
+      setState((prev) => {
+        if (prev.status !== "synced" || prev.key !== incoming) return prev;
+        return { ...prev, lines: attachWords(prev.lines, p.words) };
+      });
+    });
+  }, []);
   return state;
 }
 
@@ -307,6 +372,8 @@ const LyricLineRow = memo(function LyricLineRow({
   scale,
   tier,
   browsing,
+  words,
+  rowRef,
 }: {
   text: string;
   index: number;
@@ -324,10 +391,16 @@ const LyricLineRow = memo(function LyricLineRow({
   /** Clamped distance from the current line (focus recession); null at base. */
   tier: number | null;
   browsing: boolean;
+  words?: LyricWord[];
+  /** The current row's element, for the imperative word wipe. */
+  rowRef?: React.RefObject<HTMLElement | null>;
 }) {
   const Tag = seekable ? "button" : "div";
+  const timed = current && words && words.length > 0;
   const tone = current
-    ? "font-medium text-fg"
+    ? timed
+      ? "font-medium"
+      : "font-medium text-fg"
     : tier === null
       ? "text-muted/80"
       : focusTone(tier, browsing);
@@ -344,14 +417,14 @@ const LyricLineRow = memo(function LyricLineRow({
             tabIndex: -1,
           }
         : {})}
+      ref={timed ? (rowRef as React.RefObject<HTMLDivElement & HTMLButtonElement>) : undefined}
       data-cascade
       {...(anchor ? { "data-anchor": true } : {})}
       style={{ "--cascade-delay": `${cascadeDelayMs}ms` } as React.CSSProperties}
-      className={`relative rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${tone} ${
+      className={`relative whitespace-pre-wrap rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${tone} ${
         seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
-      {/* Accent lives on the marker, never the text (contrast floor is 3:1). */}
       <span
         aria-hidden
         data-marker
@@ -362,7 +435,21 @@ const LyricLineRow = memo(function LyricLineRow({
           current ? "opacity-100" : "opacity-0"
         }`}
       />
-      {text}
+      {timed
+        ? words.map((w, wi) => (
+            // Every span wears the same gradient; useWordWipe moves only
+            // its --wipe stop, so a word boundary is a style write, not
+            // a re-render or a class swap.
+            <span
+              key={`${w.t}-${wi}`}
+              data-word
+              className="inline-block bg-clip-text text-transparent"
+              style={{ backgroundImage: WORD_GRADIENT }}
+            >
+              {w.text}
+            </span>
+          ))
+        : text}
     </Tag>
   );
 });
@@ -470,6 +557,20 @@ export function LyricsPanel({
   scale?: LyricsScale;
 }) {
   const idx = useLyricIndex(lines, leadMs);
+  const currentWords = idx >= 0 ? lines[idx]?.words : undefined;
+  const currentRow = useRef<HTMLElement>(null);
+  // Words fire ahead of their aligned onset by the nudgeable word lead
+  // (on top of the per-player line lead). A nudge shows a short caption;
+  // the seed never does.
+  const wordLead = useWordLead();
+  useWordWipe(currentRow, currentWords, leadMs + wordLead.leadMs);
+  const [leadCaption, setLeadCaption] = useState<string | null>(null);
+  useEffect(() => {
+    if (wordLead.nudges === 0) return;
+    setLeadCaption(describeWordLead(wordLead.leadMs));
+    const t = window.setTimeout(() => setLeadCaption(null), 1600);
+    return () => window.clearTimeout(t);
+  }, [wordLead.nudges, wordLead.leadMs]);
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [autoOffset, setAutoOffset] = useState(0);
@@ -656,9 +757,20 @@ export function LyricsPanel({
               browsing={browsing}
               anchor={anchor}
               cascadeDelayMs={cascadeDelayMs}
+              words={line.words}
+              rowRef={i === idx ? currentRow : undefined}
             />
           );
         })}
+      </div>
+      {/* Word-lead caption: the one piece of feedback the nudge hotkeys
+       * give. Same chip grammar as the return-to-now button, top edge. */}
+      <div aria-live="polite" className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center">
+        {leadCaption && (
+          <span className="rounded-full border border-border/10 bg-surface-2/90 px-2.5 py-1 text-[11px] leading-none text-muted [animation:caption-in_140ms_var(--ease-out-tk)_both]">
+            {leadCaption}
+          </span>
+        )}
       </div>
       {/* Return-to-now chip — neutral chrome (accent stays on the line
        * marker), on the edge the live line sits past, outside the re-latch

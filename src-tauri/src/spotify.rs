@@ -244,6 +244,10 @@ pub fn connected(app: &AppHandle) -> bool {
     inner.tokens.is_some()
 }
 
+pub fn is_remote(app: &AppHandle) -> bool {
+    lock(&app.state::<SpotifyAuth>()).active_device.is_some()
+}
+
 /// True while a play_now jump is skipping through the queue — upnext::tick
 /// suspends its fed-pop bookkeeping for the duration.
 pub fn jump_active(app: &AppHandle) -> bool {

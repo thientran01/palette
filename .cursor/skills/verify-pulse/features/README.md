@@ -45,5 +45,5 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Mode ladder](./mode-ladder.md) covers pill, card, expanded, the resting empty state, and the focus-room mock.
 - [Transport](./transport.md) covers play/pause, ±10s seek, skip, and the Apple Music no-seek profile.
 - [Queue and history](./queue-history.md) covers the popover and expanded surface, Up next, Earlier, and play-now.
-- [Lyrics](./lyrics.md) covers the expanded karaoke view, click-to-seek, the art fallback, and a lyrics miss.
+- [Lyrics](./lyrics.md) covers the expanded karaoke view, click-to-seek, the art fallback, a lyrics miss, and the in-line word wipe.
 - [Search palette](./search-palette.md) covers history resurfacing, type-to-search, play, and queue.

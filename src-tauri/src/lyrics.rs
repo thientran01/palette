@@ -64,6 +64,8 @@ pub struct LyricsOut {
     pub synced: Option<String>,
     #[serde(default)]
     pub offline: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<crate::align::Word>,
 }
 
 impl From<Lyrics> for LyricsOut {
@@ -71,6 +73,7 @@ impl From<Lyrics> for LyricsOut {
         Self {
             synced: lyrics.synced,
             offline: lyrics.offline,
+            words: Vec::new(),
         }
     }
 }
@@ -157,13 +160,30 @@ fn session_misses() -> &'static Mutex<HashSet<String>> {
     MISSES.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-fn key_for(artist: &str, title: &str, album: &str, duration_s: i64) -> String {
+pub(crate) fn key_for(artist: &str, title: &str, album: &str, duration_s: i64) -> String {
     let mut h = DefaultHasher::new();
     // "v2" = the 2026-07-10 original-script preference: resalted so tracks
     // cached under the old picker (possibly romanized) refetch once; the
     // orphaned v1 files age out via the CACHE_MAX_FILES eviction.
     ("v2", artist, title, album, duration_s).hash(&mut h);
     format!("{:x}", h.finish())
+}
+
+pub(crate) fn key_for_ms(artist: &str, title: &str, album: &str, duration_ms: i64) -> String {
+    key_for(artist, title, album, (duration_ms + 500) / 1000)
+}
+
+pub(crate) fn cached_synced(
+    cache_dir: &Path,
+    artist: &str,
+    title: &str,
+    album: &str,
+    duration_ms: i64,
+) -> Option<String> {
+    let key = key_for_ms(artist, title, album, duration_ms);
+    let raw = std::fs::read_to_string(cache_dir.join(format!("{key}.json"))).ok()?;
+    let lyrics: Lyrics = serde_json::from_str(&raw).ok()?;
+    lyrics.synced.filter(|s| !s.trim().is_empty())
 }
 
 /// Strip parentheticals and "feat." tails for the fallback search — Apple

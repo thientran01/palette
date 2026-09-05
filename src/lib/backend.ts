@@ -15,6 +15,7 @@ import {
   type SpotifyDevice,
   type SpotifyStatus,
 } from "../types";
+import type { LyricWord } from "./lrc";
 import * as posClock from "./posClock";
 
 const MOCK_DURATION = 204_000;
@@ -29,9 +30,9 @@ const AM_PROFILE = !IN_TAURI && new URLSearchParams(window.location.search).has(
 
 /** `?lyrics=<ms>` delays the mock lyric fetch (LRCLIB takes seconds live) and
  * `?lyrics=none` forces a served miss, `?lyrics=offline` a transport failure
- * (the honest "unavailable — offline" caption) — both for exercising the
- * expanded view's art ↔ lyrics arrival transition + caption states in
- * preview. */
+ * (the honest "unavailable — offline" caption), `?lyrics=words` the in-line
+ * word wipe — both for exercising the expanded view's art ↔ lyrics arrival
+ * transition + caption states in preview. */
 const LYRICS_PARAM = IN_TAURI ? null : new URLSearchParams(window.location.search).get("lyrics");
 
 /** `?nothing` forces the no-session state (player "none") so the resting
@@ -717,6 +718,8 @@ const MOCK_HOTKEYS: HotkeyInfo[] = [
   { id: "prev", label: "Previous track", chord: "ctrl+alt+p", registered: true },
   { id: "showhide", label: "Show / hide Palette", chord: "ctrl+alt+m", registered: true },
   { id: "search", label: "Summon search", chord: "ctrl+alt+s", registered: true },
+  { id: "wordsearlier", label: "Lyrics: words earlier", chord: "ctrl+alt+[", registered: true },
+  { id: "wordslater", label: "Lyrics: words later", chord: "ctrl+alt+]", registered: true },
 ];
 
 /** Mutable browser-mock settings state so the prefs UI's toggles/segments and
@@ -1002,34 +1005,52 @@ export const commands = {
   ): Promise<Lyrics> {
     if (!IN_TAURI) {
       const numericParam =
-        LYRICS_PARAM && LYRICS_PARAM !== "none" && LYRICS_PARAM !== "offline";
+        LYRICS_PARAM &&
+        LYRICS_PARAM !== "none" &&
+        LYRICS_PARAM !== "offline" &&
+        LYRICS_PARAM !== "words";
       const delayMs = numericParam ? Number(LYRICS_PARAM) || 0 : 0;
       if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
       if (LYRICS_PARAM === "none") return LYRICS_MISS;
       if (LYRICS_PARAM === "offline") return LYRICS_OFFLINE;
-      // Mock: verses on a 4s cadence with real instrumental gaps, so preview
-      // exercises karaoke AND the break-synthesis paths (parseLrc): a 12s
-      // intro, a marker-pinned break (the empty stamp at 64s — the mock's
-      // start position of 63s sits right on its doorstep), an UN-marked
-      // 100→124s gap (keeps the previous lyric current — no guessed hold),
-      // and a marker-pinned outro.
       const stamp = (s: number) =>
         `[${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}.00]`;
       const lines: string[] = [];
+      const words: LyricWord[] = [];
       let n = 0;
       const verse = (from: number, to: number) => {
         for (let s = from; s <= to; s += 4) {
-          lines.push(`${stamp(s)}Mock lyric line ${++n} — la la la (${title})`);
+          const text = `Mock lyric line ${++n} — la la la (${title})`;
+          lines.push(`${stamp(s)}${text}`);
+          const parts = text.split(" ");
+          const span = 3200;
+          const dt = span / parts.length;
+          parts.forEach((p, i) => {
+            const t = s * 1000 + i * dt;
+            words.push({
+              t: Math.round(t),
+              text: i < parts.length - 1 ? `${p} ` : p,
+              end: Math.round(t + dt),
+            });
+          });
         }
       };
       verse(12, 60);
-      lines.push(`${stamp(64)} `); // vocal-end marker → break 64s→84s
+      lines.push(`${stamp(64)} `);
       verse(84, 100);
-      verse(124, 156); // unmarked gap before this verse keeps the prior lyric
-      lines.push(`${stamp(160)} `); // vocal-end marker → outro to durationMs
-      return { synced: lines.join("\n") };
+      verse(124, 156);
+      lines.push(`${stamp(160)} `);
+      return {
+        synced: lines.join("\n"),
+        words: LYRICS_PARAM === "words" ? words : undefined,
+      };
     }
     return lyricsLatestWins(() => invoke("media_lyrics", { artist, title, album, durationMs }));
+  },
+  /** Seed for src/lib/wordLead.ts: the persisted word-wipe lead in ms. */
+  async wordLead(): Promise<number> {
+    if (!IN_TAURI) return mockWordLead();
+    return invoke<number>("word_lead");
   },
   /** Free-text track search (spotify.rs search_tracks) — the search window's
    * result list. Debounce + latest-wins live with the caller. */
@@ -1307,9 +1328,68 @@ export const commands = {
 /** `offline` (lyrics.rs) distinguishes a transport failure from a served "no
  * lyrics" answer, so a caption can read "unavailable — offline" vs "No synced
  * lyrics". Optional/false everywhere except a genuine offline bail. */
-type Lyrics = { synced: string | null; offline?: boolean };
+type Lyrics = { synced: string | null; offline?: boolean; words?: LyricWord[] };
 const LYRICS_MISS: Lyrics = { synced: null };
 const LYRICS_OFFLINE: Lyrics = { synced: null, offline: true };
+
+export type KaraokeReady = {
+  artist: string;
+  title: string;
+  album: string;
+  duration_ms: number;
+  words: LyricWord[];
+};
+
+export function onKaraokeReady(cb: (p: KaraokeReady) => void): () => void {
+  if (!IN_TAURI) return () => {};
+  const un = listen<KaraokeReady>("karaoke-ready", (e) => cb(e.payload));
+  return () => {
+    un.then((f) => f());
+  };
+}
+
+/** Word-wipe lead (karaoke.rs "wordLeadMs"; src/lib/wordLead.ts mirrors).
+ * Mock: localStorage, and `window.__nudgeWordLead(±20)` from the console
+ * drives the panel caption in preview. */
+const WORD_LEAD_KEY = "pulse.wordLeadMs";
+const mockWordLeadListeners = new Set<(v: number) => void>();
+
+function mockWordLead(): number {
+  try {
+    const raw = window.localStorage.getItem(WORD_LEAD_KEY);
+    const v = raw === null ? NaN : Number(raw);
+    return Number.isFinite(v) ? v : 160;
+  } catch {
+    return 160;
+  }
+}
+
+if (!IN_TAURI) {
+  (window as unknown as { __nudgeWordLead?: (delta: number) => void }).__nudgeWordLead = (
+    delta: number,
+  ) => {
+    const v = Math.max(-200, Math.min(400, mockWordLead() + delta));
+    try {
+      window.localStorage.setItem(WORD_LEAD_KEY, String(v));
+    } catch {
+      /* private mode */
+    }
+    mockWordLeadListeners.forEach((cb) => cb(v));
+  };
+}
+
+export function onWordLead(cb: (v: number) => void): () => void {
+  if (!IN_TAURI) {
+    mockWordLeadListeners.add(cb);
+    return () => {
+      mockWordLeadListeners.delete(cb);
+    };
+  }
+  const un = listen<number>("word-lead", (e) => cb(e.payload));
+  return () => {
+    un.then((f) => f());
+  };
+}
 
 let lyricsGen = 0;
 
