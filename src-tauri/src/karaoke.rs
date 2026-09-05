@@ -19,11 +19,13 @@ const MAX_SAMPLES: usize = 16_000 * 60 * 8;
 const ARM_NEAR_START_MS: i64 = 8_000;
 const PEAK_ABORT: f32 = 1e-3;
 const MIN_LINE_COVERAGE: u32 = 30;
-/// v2 = the energy-rise aligner. A spectral-flux + DP aligner shipped
-/// briefly as v3 (2026-09-04) and regressed live — it latched onto beat
-/// onsets and its pre-stamp window merged lines; any v3 file on disk is
-/// dropped on read and the track re-records under v2.
-const STORE_V: u32 = 2;
+/// v3 = the prior + refinement-ladder aligner (docs/specs/2026-09-04-
+/// karaoke-aligner-ladder.md). v2 files came from the energy-rise aligner
+/// that measured 498ms median against tap truth; they're dropped on read
+/// and re-record on the next full listen. (A spectral-flux DP aligner also
+/// wore v3 for a few hours on 2026-09-04; those files were already purged
+/// by the version check, so the number is safe to reuse.)
+const STORE_V: u32 = 3;
 /// Wall-clock deficit past which the capture is judged to have delivered
 /// nothing for a stretch (process loopback goes quiet with its target) —
 /// the gap is padded with silence so later word times don't drift early.

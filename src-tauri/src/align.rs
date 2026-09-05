@@ -249,46 +249,310 @@ fn token_weight(tok: &str) -> f32 {
     1.0 + (n - 1.0) * 0.12
 }
 
+/// Which refinement rungs run on top of the prior. Every rung is
+/// switchable so the offline scorer can print what each one buys; the
+/// shipped set is the highest rung that won on BOTH truth songs
+/// (docs/specs/2026-09-04-karaoke-aligner-ladder.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartDetector {
+    /// First rise of the HP-RMS envelope above the voice floor.
+    EnergyRise,
+    /// Strongest spectral-flux peak inside the start window.
+    Flux,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stages {
+    pub start: Option<StartDetector>,
+    pub end: bool,
+}
+
+impl Stages {
+    pub const PRIOR_ONLY: Stages = Stages {
+        start: None,
+        end: false,
+    };
+
+    /// The set the app runs. Measured on Blur + a second song via
+    /// `karaoke_score matrix`; update this AND the spec together.
+    pub fn shipped() -> Stages {
+        Stages::PRIOR_ONLY
+    }
+
+    /// Every rung the scorer reports, in ladder order.
+    pub fn ladder() -> [(&'static str, Stages); 5] {
+        [
+            ("prior", Stages::PRIOR_ONLY),
+            (
+                "prior+energy",
+                Stages {
+                    start: Some(StartDetector::EnergyRise),
+                    end: false,
+                },
+            ),
+            (
+                "prior+flux",
+                Stages {
+                    start: Some(StartDetector::Flux),
+                    end: false,
+                },
+            ),
+            (
+                "prior+energy+end",
+                Stages {
+                    start: Some(StartDetector::EnergyRise),
+                    end: true,
+                },
+            ),
+            (
+                "prior+flux+end",
+                Stages {
+                    start: Some(StartDetector::Flux),
+                    end: true,
+                },
+            ),
+        ]
+    }
+}
+
+// ── Stage 0: the prior. Fitted on the Blur truth set (2026-09-04): the
+// first sung word sits a median 330ms after its stamp, the sung span
+// fills ~74% of the stamp window, and a flat syllable-weighted spread
+// inside the true span scores 44ms — the audio envelope inside a line
+// scored 127ms, so nothing here consults audio between the endpoints.
+const LEAD_MS: i64 = 330;
+const RATE_SYL_S: f32 = 3.1;
+const FILL: f32 = 0.9;
+/// The last word holds this long past its start before the row's end.
+const LAST_HOLD_MS: i64 = 250;
+/// A final line has no next stamp; give it a plausible window.
+const LAST_LINE_WINDOW_MS: i64 = 8_000;
+// ── Stage 1: start refinement window around the stamp (truth: p10 −71,
+// p90 +536) and the flux strength a peak needs to be believed.
+const START_PRE_MS: i64 = 300;
+const START_POST_MS: i64 = 900;
+const START_MIN_STRENGTH: f32 = 0.35;
+// ── Stage 2: end refinement looks this fraction of the span either side
+// of the prior end for a decay into quiet.
+const END_SEARCH_FRAC: f32 = 0.4;
+const END_QUIET_FRAMES: usize = 3;
+
 pub fn align(pcm: &[f32], sample_rate: u32, lines: &[TimedLine], map: &TimeMap) -> Vec<Word> {
+    align_with(pcm, sample_rate, lines, map, &Stages::shipped())
+}
+
+pub fn align_with(
+    pcm: &[f32],
+    sample_rate: u32,
+    lines: &[TimedLine],
+    map: &TimeMap,
+    stages: &Stages,
+) -> Vec<Word> {
     if sample_rate == 0 || pcm.is_empty() || lines.is_empty() {
         return Vec::new();
     }
     let pcm_end_ms = map.pos_ms(pcm.len());
+    let flux = if stages.start == Some(StartDetector::Flux) {
+        flux_features(pcm, sample_rate)
+    } else {
+        None
+    };
+    let ctx = Ctx {
+        pcm,
+        sample_rate,
+        map,
+        pcm_end_ms,
+        flux: flux.as_ref(),
+    };
     let mut words = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let next_t = lines.get(i + 1).map(|n| n.t).unwrap_or(pcm_end_ms);
-        if let Some(ws) = align_line(pcm, sample_rate, line, next_t, map, pcm_end_ms) {
+        let next_t = lines
+            .get(i + 1)
+            .map(|n| n.t)
+            .unwrap_or((line.t + LAST_LINE_WINDOW_MS).min(pcm_end_ms));
+        if let Some(ws) = align_line(&ctx, line, next_t, stages) {
             words.extend(ws);
         }
     }
     words
 }
 
-fn align_line(
-    pcm: &[f32],
+struct Ctx<'a> {
+    pcm: &'a [f32],
     sample_rate: u32,
-    line: &TimedLine,
-    next_t: i64,
-    map: &TimeMap,
+    map: &'a TimeMap,
     pcm_end_ms: i64,
-) -> Option<Vec<Word>> {
-    let tokens = tokenize(&line.text);
-    if tokens.is_empty() {
-        return None;
-    }
-    let win_lo = line.t.max(map.pos_ms(0));
-    let win_hi = next_t.min(pcm_end_ms);
-    if win_hi - win_lo < MIN_SPAN_MS {
-        return None;
-    }
-    let start = map.sample_at(win_lo);
-    let end = map.sample_at(win_hi).min(pcm.len());
-    let env = envelope(pcm, sample_rate, start, end)?;
-    place_tokens(&tokens, &env, start, map)
+    flux: Option<&'a Flux>,
 }
 
+/// Where a line's words go: `start` of the first token and the `span` from
+/// it to the LAST token's start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LinePrior {
+    start: i64,
+    span: i64,
+}
+
+fn prior(line_t: i64, next_t: i64, weights: &[f32]) -> LinePrior {
+    let start = line_t + LEAD_MS;
+    LinePrior {
+        start,
+        span: span_for(start, line_t, next_t, weights),
+    }
+}
+
+/// Syllable-rate span, capped so the line ends by FILL of its window
+/// whatever the start moved to.
+fn span_for(start: i64, line_t: i64, next_t: i64, weights: &[f32]) -> i64 {
+    let s = placed_weight(weights);
+    let window = (next_t - line_t).max(0) as f32;
+    let by_rate = (s / RATE_SYL_S * 1000.0) as i64;
+    let by_window = (FILL * window) as i64 - (start - line_t);
+    by_rate.min(by_window).max(MIN_SPAN_MS)
+}
+
+/// Total weight ahead of the last token — what the span is spread over.
+fn placed_weight(weights: &[f32]) -> f32 {
+    let total: f32 = weights.iter().sum();
+    (total - weights.last().copied().unwrap_or(0.0)).max(0.0)
+}
+
+fn spread(tokens: &[String], weights: &[f32], p: LinePrior, next_t: i64) -> Vec<Word> {
+    let s = placed_weight(weights);
+    let n = tokens.len();
+    let mut starts: Vec<i64> = Vec::with_capacity(n);
+    let mut acc = 0.0f32;
+    for (i, w) in weights.iter().enumerate() {
+        let u = if s > 0.0 && i > 0 { acc / s } else { 0.0 };
+        let mut t = p.start + (p.span as f32 * u).round() as i64;
+        if let Some(&prev) = starts.last() {
+            t = t.max(prev + HOP_MS);
+        }
+        starts.push(t);
+        acc += *w;
+    }
+    let last_end = (p.start + p.span + LAST_HOLD_MS)
+        .min(next_t)
+        .max(starts[n - 1] + HOP_MS);
+    tokens
+        .iter()
+        .enumerate()
+        .map(|(i, tok)| Word {
+            t: starts[i],
+            text: tok.clone(),
+            end: Some(if i + 1 < n { starts[i + 1] } else { last_end }),
+        })
+        .collect()
+}
+
+fn align_line(ctx: &Ctx, line: &TimedLine, next_t: i64, stages: &Stages) -> Option<Vec<Word>> {
+    let tokens = tokenize(&line.text);
+    if tokens.is_empty() || next_t <= line.t {
+        return None;
+    }
+    let weights: Vec<f32> = tokens.iter().map(|t| token_weight(t)).collect();
+    let mut p = prior(line.t, next_t, &weights);
+    if let Some(det) = stages.start {
+        if let Some(start) = detect_start(ctx, det, line.t, next_t) {
+            p.start = start;
+            p.span = span_for(start, line.t, next_t, &weights);
+        }
+    }
+    if stages.end {
+        if let Some(end) = detect_end(ctx, p, next_t) {
+            p.span = (end - p.start).max(MIN_SPAN_MS);
+        }
+    }
+    Some(spread(&tokens, &weights, p, next_t))
+}
+
+// ── Stage 1 ──
+
+fn detect_start(ctx: &Ctx, det: StartDetector, line_t: i64, next_t: i64) -> Option<i64> {
+    let lo = (line_t - START_PRE_MS).max(ctx.map.pos_ms(0));
+    let hi = (line_t + START_POST_MS).min(next_t).min(ctx.pcm_end_ms);
+    if hi - lo < MIN_SPAN_MS {
+        return None;
+    }
+    match det {
+        StartDetector::EnergyRise => {
+            let start = ctx.map.sample_at(lo);
+            let end = ctx.map.sample_at(hi);
+            let env = envelope(ctx.pcm, ctx.sample_rate, start, end)?;
+            let peak = env.values.iter().copied().fold(0.0f32, f32::max);
+            if peak < PEAK_FLOOR {
+                return None;
+            }
+            let floor = peak * VOICE_REL;
+            // A rise: below the floor, then at or above it. Loud from the
+            // first frame says nothing about where the voice began.
+            let f = (1..env.values.len())
+                .find(|&f| env.values[f] >= floor && env.values[f - 1] < floor)?;
+            Some(ctx.map.pos_ms(start + f * env.hop))
+        }
+        StartDetector::Flux => {
+            let flux = ctx.flux?;
+            let fa = flux.frame_at(ctx.map.sample_at(lo));
+            let fb = flux.frame_at(ctx.map.sample_at(hi)).min(flux.norm.len());
+            if fb <= fa + 2 {
+                return None;
+            }
+            let mut best: Option<(usize, f32)> = None;
+            for f in fa..fb {
+                let v = flux.norm[f];
+                if v < START_MIN_STRENGTH {
+                    continue;
+                }
+                let l = f.saturating_sub(2);
+                let r = (f + 2).min(flux.norm.len() - 1);
+                if flux.norm[l..=r].iter().any(|&x| x > v) {
+                    continue;
+                }
+                if best.map(|(_, b)| v > b).unwrap_or(true) {
+                    best = Some((f, v));
+                }
+            }
+            best.map(|(f, _)| ctx.map.pos_ms(f * flux.hop))
+        }
+    }
+}
+
+// ── Stage 2 ──
+
+fn detect_end(ctx: &Ctx, p: LinePrior, next_t: i64) -> Option<i64> {
+    let e = p.start + p.span;
+    let reach = (p.span as f32 * END_SEARCH_FRAC) as i64;
+    let lo = (e - reach).max(p.start);
+    let hi = (e + reach).min(next_t).min(ctx.pcm_end_ms);
+    if hi <= lo {
+        return None;
+    }
+    let start = ctx.map.sample_at(p.start);
+    let end = ctx.map.sample_at(hi);
+    let env = envelope(ctx.pcm, ctx.sample_rate, start, end)?;
+    let peak = env.values.iter().copied().fold(0.0f32, f32::max);
+    if peak < PEAK_FLOOR {
+        return None;
+    }
+    let floor = peak * VOICE_REL;
+    let from = ((ctx.map.sample_at(lo).saturating_sub(start)) / env.hop).min(env.values.len());
+    let mut quiet = 0usize;
+    for f in from..env.values.len() {
+        if env.values[f] < floor {
+            quiet += 1;
+            if quiet >= END_QUIET_FRAMES {
+                return Some(ctx.map.pos_ms(start + (f + 1 - quiet) * env.hop));
+            }
+        } else {
+            quiet = 0;
+        }
+    }
+    None
+}
+
+// ── Envelope (Stage 1 EnergyRise, Stage 2) ──
+
 struct Env {
-    hop_ms: i64,
     /// Hop in samples — frame `f` starts at `start + f * hop`.
     hop: usize,
     values: Vec<f32>,
@@ -296,228 +560,169 @@ struct Env {
 
 fn envelope(pcm: &[f32], sample_rate: u32, start: usize, end: usize) -> Option<Env> {
     let sr = sample_rate as i64;
-    let hop = (sr * HOP_MS / 1000).max(1);
+    let hop = (sr * HOP_MS / 1000).max(1) as usize;
     let win = hop * 2;
     let end = end.min(pcm.len());
-    if end <= start + win as usize {
+    if end <= start + win {
         return None;
     }
     let mut values = Vec::new();
     let mut prev = 0.0f32;
     let mut i = start;
-    while i + win as usize <= end {
+    while i + win <= end {
         let mut sum = 0.0f32;
-        for k in 0..win as usize {
-            let x = pcm[i + k];
+        for &x in &pcm[i..i + win] {
             let hp = x - prev;
             prev = x;
             sum += hp * hp;
         }
         values.push((sum / win as f32).sqrt());
-        i += hop as usize;
+        i += hop;
     }
     if values.is_empty() {
         return None;
     }
-    Some(Env {
-        hop_ms: HOP_MS,
-        hop: hop as usize,
-        values,
-    })
+    Some(Env { hop, values })
 }
 
-fn place_tokens(tokens: &[String], env: &Env, start: usize, map: &TimeMap) -> Option<Vec<Word>> {
-    let peak = env.values.iter().copied().fold(0.0f32, f32::max);
-    if peak < PEAK_FLOOR {
-        return None;
-    }
-    let floor = peak * VOICE_REL;
-    let first = env.values.iter().position(|&v| v >= floor)?;
-    let last = env
-        .values
-        .iter()
-        .rposition(|&v| v >= floor)
-        .unwrap_or(first);
-    if (last.saturating_sub(first) as i64) * env.hop_ms < MIN_SPAN_MS {
-        return None;
-    }
-    let span = &env.values[first..=last];
-    let weights: Vec<f32> = tokens.iter().map(|t| token_weight(t)).collect();
-    let total_w: f32 = weights.iter().sum();
-    if total_w <= 0.0 {
-        return None;
-    }
-    let mut cum = Vec::with_capacity(span.len() + 1);
-    let mut acc = 0.0f32;
-    cum.push(0.0);
-    for &v in span {
-        acc += v.max(0.0);
-        cum.push(acc);
-    }
-    if acc <= f32::EPSILON {
-        return None;
-    }
-    let onsets = pick_rises(span, floor, env.hop_ms);
-    if onsets.len() >= 2 {
-        return Some(place_on_onsets(
-            tokens, &onsets, start, first, last, env, map,
-        ));
-    }
-    let stamp = |frame: usize| map.pos_ms(start + (first + frame) * env.hop);
-    let mut words = Vec::with_capacity(tokens.len());
-    let mut consumed = 0.0f32;
-    let mut prev_t: Option<i64> = None;
-    for (tok, weight) in tokens.iter().zip(weights.iter()) {
-        let target = (consumed / total_w) * acc;
-        let frame = cum
-            .iter()
-            .position(|&c| c >= target)
-            .unwrap_or(0)
-            .min(span.len().saturating_sub(1));
-        consumed += *weight;
-        let next_target = (consumed / total_w) * acc;
-        let end_frame = cum
-            .iter()
-            .position(|&c| c >= next_target)
-            .unwrap_or(span.len())
-            .min(span.len());
-        let mut t = stamp(frame);
-        if let Some(prev) = prev_t {
-            t = t.max(prev + env.hop_ms);
-        }
-        let end = stamp(end_frame).max(t + env.hop_ms);
-        prev_t = Some(t);
-        words.push(Word {
-            t,
-            text: tok.clone(),
-            end: Some(end),
-        });
-    }
-    Some(words)
+// ── Spectral flux (Stage 1 Flux): SuperFlux-style onset strength over the
+// whole recording, normalized to the local max. Only ever consulted inside
+// a line's start window — over the whole line it latched onto drums
+// (2026-09-04, reverted).
+
+struct Flux {
+    hop: usize,
+    norm: Vec<f32>,
 }
 
-fn place_on_onsets(
-    tokens: &[String],
-    onsets: &[usize],
-    start: usize,
-    first: usize,
-    last: usize,
-    env: &Env,
-    map: &TimeMap,
-) -> Vec<Word> {
-    let k = onsets.len();
-    let n = tokens.len();
-    let hop_ms = env.hop_ms;
-    let island_end = map.pos_ms(start + (last + 1) * env.hop);
-    let stamp = |frame: usize| map.pos_ms(start + (first + frame) * env.hop);
-    let at = |i: usize| {
-        if n == 1 {
-            return onsets[0];
-        }
-        let den = n - 1;
-        let num = i * (k - 1);
-        let lo = (num / den).min(k - 1);
-        let rem = num % den;
-        let a = onsets[lo];
-        let b = onsets[(lo + 1).min(k - 1)];
-        a + (b.saturating_sub(a)) * rem / den
-    };
-    let mut words = Vec::with_capacity(n);
-    for (i, tok) in tokens.iter().enumerate() {
-        let t = stamp(at(i));
-        let end = if i + 1 < n {
-            stamp(at(i + 1))
-        } else {
-            island_end
-        };
-        words.push(Word {
-            t,
-            text: tok.clone(),
-            end: Some(end.max(t + hop_ms)),
-        });
+impl Flux {
+    fn frame_at(&self, sample: usize) -> usize {
+        sample / self.hop
     }
-    words
 }
 
-fn pick_rises(span: &[f32], floor: f32, hop_ms: i64) -> Vec<usize> {
-    let min_gap = (70 / hop_ms).max(1) as usize;
-    let mut out = Vec::new();
-    let mut last: Option<usize> = None;
-    for i in 0..span.len() {
-        let prev = if i == 0 { 0.0 } else { span[i - 1] };
-        if span[i] < floor || prev >= floor {
-            continue;
+const FLUX_BAND_LO_HZ: f32 = 150.0;
+const FLUX_BAND_HI_HZ: f32 = 5000.0;
+const FLUX_LOG_GAIN: f32 = 100.0;
+const FLUX_MAG_FLOOR: f32 = 0.002;
+const FLUX_LAG: usize = 2;
+const FLUX_NORM_BLOCK: usize = 150;
+
+fn flux_features(pcm: &[f32], sample_rate: u32) -> Option<Flux> {
+    use rustfft::{num_complex::Complex, FftPlanner};
+    let hop = (sample_rate as usize * HOP_MS as usize / 1000).max(1);
+    let frame = (hop * 3).next_power_of_two().max(64);
+    if pcm.len() < frame {
+        return None;
+    }
+    let n_frames = (pcm.len() - frame) / hop + 1;
+    let bin_hz = sample_rate as f32 / frame as f32;
+    let lo = ((FLUX_BAND_LO_HZ / bin_hz).round() as usize).max(1);
+    let hi = ((FLUX_BAND_HI_HZ / bin_hz).round() as usize).min(frame / 2 - 1);
+    if hi < lo + 3 {
+        return None;
+    }
+    let nb = hi - lo + 1;
+    let window: Vec<f32> = (0..frame)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / frame as f32).cos())
+        .collect();
+    let mag_scale = 4.0 / frame as f32;
+    let mut planner = FftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(frame);
+    let mut buf = vec![Complex::new(0.0f32, 0.0); frame];
+    let mut scratch = vec![Complex::new(0.0f32, 0.0); fft.get_inplace_scratch_len()];
+    let mut ring: Vec<Vec<f32>> = (0..=FLUX_LAG).map(|_| vec![0.0f32; nb]).collect();
+    let mut cur = vec![0.0f32; nb];
+    let mut osf = Vec::with_capacity(n_frames);
+    for i in 0..n_frames {
+        let start = i * hop;
+        for (k, slot) in buf.iter_mut().enumerate() {
+            *slot = Complex::new(pcm[start + k] * window[k], 0.0);
         }
-        if let Some(j) = last {
-            if i - j < min_gap {
-                continue;
+        fft.process_with_scratch(&mut buf, &mut scratch);
+        for (b, k) in (lo..=hi).enumerate() {
+            let m = buf[k].norm() * mag_scale;
+            cur[b] = (1.0 + FLUX_LOG_GAIN * m.max(FLUX_MAG_FLOOR)).ln();
+        }
+        let flux = if i >= FLUX_LAG {
+            let prev = &ring[(i - FLUX_LAG) % (FLUX_LAG + 1)];
+            let mut sum = 0.0f32;
+            for b in 0..nb {
+                let p_lo = if b == 0 { prev[0] } else { prev[b - 1] };
+                let p_hi = if b + 1 < nb {
+                    prev[b + 1]
+                } else {
+                    prev[nb - 1]
+                };
+                sum += (cur[b] - prev[b].max(p_lo).max(p_hi)).max(0.0);
             }
-        }
-        out.push(i);
-        last = Some(i);
+            sum
+        } else {
+            0.0
+        };
+        osf.push(flux);
+        std::mem::swap(&mut ring[i % (FLUX_LAG + 1)], &mut cur);
     }
-    out
+    let n_blocks = n_frames.div_ceil(FLUX_NORM_BLOCK);
+    let mut block_max = vec![0.0f32; n_blocks];
+    for (i, &v) in osf.iter().enumerate() {
+        let b = i / FLUX_NORM_BLOCK;
+        block_max[b] = block_max[b].max(v);
+    }
+    let norm = osf
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let b = i / FLUX_NORM_BLOCK;
+            let mut m = block_max[b];
+            if b > 0 {
+                m = m.max(block_max[b - 1]);
+            }
+            if b + 1 < n_blocks {
+                m = m.max(block_max[b + 1]);
+            }
+            if m > 1e-6 {
+                v / m
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    Some(Flux { hop, norm })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A sung-note stand-in: a sine with 8ms raised-cosine edges.
     fn tone(sr: u32, start_ms: i64, end_ms: i64, hz: f32, out: &mut [f32]) {
-        let sr_f = sample_rate(sr);
+        let sr_f = sr as f32;
         let lo = ((start_ms * sr as i64) / 1000) as usize;
         let hi = ((end_ms * sr as i64) / 1000).min(out.len() as i64) as usize;
+        let ramp = (sr as usize * 8 / 1000).max(1);
         for (i, s) in out.iter_mut().enumerate().take(hi).skip(lo) {
             let t = i as f32 / sr_f;
-            *s = (t * hz * std::f32::consts::TAU).sin() * 0.4;
+            let edge = (i - lo).min(hi - 1 - i);
+            let g = if edge < ramp {
+                0.5 - 0.5 * (std::f32::consts::PI * edge as f32 / ramp as f32).cos()
+            } else {
+                1.0
+            };
+            *s = (t * hz * std::f32::consts::TAU).sin() * 0.4 * g;
         }
     }
 
-    fn sample_rate(sr: u32) -> f32 {
-        sr as f32
-    }
+    const SR: u32 = 16_000;
 
-    #[test]
-    fn words_land_on_vocal_bursts() {
-        let sr = 16_000u32;
-        let mut pcm = vec![0.0f32; sr as usize * 4];
-        tone(sr, 1000, 1200, 1000.0, &mut pcm);
-        tone(sr, 1300, 1500, 1200.0, &mut pcm);
-        tone(sr, 1600, 1800, 1400.0, &mut pcm);
-        let lines = parse_lrc("[00:01.00]one two three\n[00:03.00]next");
-        let words = align(&pcm, sr, &lines, &TimeMap::from_origin(0, sr));
-        assert_eq!(words.len(), 3, "{words:?}");
-        assert_eq!(words[0].text.trim(), "one");
-        assert_eq!(words[1].text.trim(), "two");
-        assert_eq!(words[2].text.trim(), "three");
-        assert!(
-            (words[0].t - 1000).abs() <= 40,
-            "first word at {}, want ~1000",
-            words[0].t
-        );
-        assert!(
-            (words[1].t - 1300).abs() <= 40,
-            "second word at {}, want ~1300",
-            words[1].t
-        );
-        assert!(
-            (words[2].t - 1600).abs() <= 40,
-            "third word at {}, want ~1600",
-            words[2].t
-        );
-        assert!(
-            words[2].t < 2000,
-            "must not leak into the silent tail: {}",
-            words[2].t
-        );
-    }
-
-    #[test]
-    fn silent_line_emits_no_words() {
-        let sr = 16_000u32;
-        let pcm = vec![0.0f32; sr as usize * 3];
-        let lines = parse_lrc("[00:01.00]hello world\n[00:02.00]next");
-        assert!(align(&pcm, sr, &lines, &TimeMap::from_origin(0, sr)).is_empty());
+    fn run(pcm: &[f32], lrc: &str, stages: Stages) -> Vec<Word> {
+        align_with(
+            pcm,
+            SR,
+            &parse_lrc(lrc),
+            &TimeMap::from_origin(0, SR),
+            &stages,
+        )
     }
 
     #[test]
@@ -532,45 +737,141 @@ mod tests {
     }
 
     #[test]
-    fn connected_island_still_orders_tokens() {
-        let sr = 16_000u32;
-        let mut pcm = vec![0.0f32; sr as usize * 3];
-        tone(sr, 1000, 1900, 1000.0, &mut pcm);
-        let lines = parse_lrc("[00:01.00]one two three\n[00:02.50]next");
-        let words = align(&pcm, sr, &lines, &TimeMap::from_origin(0, sr));
-        assert_eq!(words.len(), 3);
-        assert!(words[0].t < words[1].t && words[1].t < words[2].t);
-        assert!(words[0].t >= 980 && words[0].t <= 1120);
-        assert!(words[2].t <= 1920);
-    }
-
-    #[test]
-    fn word_starts_snap_to_burst_attacks() {
-        let sr = 16_000u32;
-        let mut pcm = vec![0.0f32; sr as usize * 3];
-        tone(sr, 1000, 1180, 1000.0, &mut pcm);
-        tone(sr, 1600, 1780, 1200.0, &mut pcm);
-        let lines = parse_lrc("[00:01.00]one two\n[00:02.50]next");
-        let words = align(&pcm, sr, &lines, &TimeMap::from_origin(0, sr));
-        assert_eq!(words.len(), 2, "{words:?}");
-        assert!(
-            (words[0].t - 1000).abs() <= 40,
-            "first attack at {}, want ~1000",
-            words[0].t
-        );
-        assert!(
-            (words[1].t - 1600).abs() <= 40,
-            "second attack at {}, want ~1600",
-            words[1].t
-        );
-    }
-
-    #[test]
     fn parse_lrc_skips_empty_markers() {
         let lines = parse_lrc("[00:01.00]verse\n[00:04.00] \n[00:08.00]next");
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].text, "verse");
         assert_eq!(lines[1].t, 8000);
+    }
+
+    #[test]
+    fn prior_leads_the_stamp_and_spreads_by_weight() {
+        // Equal-weight syllables: the span splits evenly, the last token
+        // sits at start + span, ends chain to the next start.
+        let pcm = vec![0.0f32; SR as usize * 6];
+        let words = run(
+            &pcm,
+            "[00:01.00]가 나 다\n[00:05.00]next",
+            Stages::PRIOR_ONLY,
+        );
+        assert_eq!(words.len(), 4, "{words:?}");
+        let start = 1000 + LEAD_MS;
+        assert_eq!(words[0].t, start);
+        // S = 2 syllables → span = 2/3.1 s ≈ 645ms
+        let span = words[2].t - words[0].t;
+        assert!((span - 645).abs() <= 10, "{words:?}");
+        assert!((words[1].t - words[0].t - span / 2).abs() <= 1, "{words:?}");
+        assert_eq!(words[0].end, Some(words[1].t));
+        assert_eq!(words[2].end, Some(words[2].t + LAST_HOLD_MS));
+    }
+
+    #[test]
+    fn prior_span_is_capped_by_the_window() {
+        // 30 syllables want ~9.4s; a 2s window allows 0.9×2000 − 330.
+        let pcm = vec![0.0f32; SR as usize * 5];
+        let line = "가".repeat(30);
+        let words = run(
+            &pcm,
+            &format!("[00:01.00]{line}\n[00:03.00]next"),
+            Stages::PRIOR_ONLY,
+        );
+        assert_eq!(words.len(), 31);
+        let span = words[29].t - words[0].t;
+        assert!((span - (1800 - 330)).abs() <= 30, "span {span}");
+        assert!(words[29].end.unwrap() <= 3000, "{:?}", words[29]);
+    }
+
+    #[test]
+    fn prior_never_spreads_into_a_gap() {
+        // The 2026-09-04 worst class: a 20s gap after a short line.
+        let pcm = vec![0.0f32; SR as usize * 25];
+        let words = run(
+            &pcm,
+            "[00:01.00]one two three\n[00:21.00]next",
+            Stages::PRIOR_ONLY,
+        );
+        assert!(words[2].t < 2500, "{words:?}");
+    }
+
+    #[test]
+    fn silence_still_gets_the_prior() {
+        // karaoke.rs aborts silent recordings before align; align itself
+        // always has a prior to fall back on.
+        let pcm = vec![0.0f32; SR as usize * 3];
+        let words = run(
+            &pcm,
+            "[00:01.00]hello world\n[00:02.00]next",
+            Stages::shipped(),
+        );
+        // Both lines get prior words — the final line too, on its
+        // LAST_LINE_WINDOW_MS window.
+        assert_eq!(words.len(), 3, "{words:?}");
+        assert_eq!(words[0].t, 1000 + LEAD_MS);
+    }
+
+    fn start_of(det: StartDetector, burst_at: i64) -> i64 {
+        let mut pcm = vec![0.0f32; SR as usize * 5];
+        tone(SR, burst_at, burst_at + 400, 1000.0, &mut pcm);
+        let stages = Stages {
+            start: Some(det),
+            end: false,
+        };
+        run(&pcm, "[00:01.00]one two\n[00:04.00]next", stages)[0].t
+    }
+
+    #[test]
+    fn start_refinement_snaps_to_a_burst_in_range() {
+        for det in [StartDetector::EnergyRise, StartDetector::Flux] {
+            let t = start_of(det, 1500);
+            assert!((t - 1500).abs() <= 40, "{det:?}: {t}");
+        }
+    }
+
+    #[test]
+    fn start_refinement_ignores_a_burst_out_of_range() {
+        for det in [StartDetector::EnergyRise, StartDetector::Flux] {
+            let t = start_of(det, 2500);
+            assert_eq!(t, 1000 + LEAD_MS, "{det:?}");
+        }
+    }
+
+    #[test]
+    fn start_refinement_keeps_the_prior_in_silence() {
+        for det in [StartDetector::EnergyRise, StartDetector::Flux] {
+            let pcm = vec![0.0f32; SR as usize * 5];
+            let stages = Stages {
+                start: Some(det),
+                end: false,
+            };
+            let words = run(&pcm, "[00:01.00]one two\n[00:04.00]next", stages);
+            assert_eq!(words[0].t, 1000 + LEAD_MS, "{det:?}");
+        }
+    }
+
+    #[test]
+    fn end_refinement_pulls_the_span_in_at_the_decay() {
+        // Ten syllables: prior span 9/3.1 ≈ 2.9s; the voice actually stops
+        // at 60% of that.
+        let mut pcm = vec![0.0f32; SR as usize * 8];
+        let start = 1000 + LEAD_MS;
+        let prior_span = (9.0 / RATE_SYL_S * 1000.0) as i64;
+        let stop = start + prior_span * 6 / 10;
+        tone(SR, start, stop, 900.0, &mut pcm);
+        let line = "가".repeat(10);
+        let lrc = format!("[00:01.00]{line}\n[00:06.00]next");
+        let with = run(
+            &pcm,
+            &lrc,
+            Stages {
+                start: None,
+                end: true,
+            },
+        );
+        let without = run(&pcm, &lrc, Stages::PRIOR_ONLY);
+        let span_with = with[9].t - with[0].t;
+        let span_without = without[9].t - without[0].t;
+        assert!(span_with < span_without, "{span_with} vs {span_without}");
+        assert!((with[9].t - stop).abs() <= 60, "{:?} stop {stop}", with[9]);
     }
 
     /// Anchors every 5s of a 16kHz recording whose true origin is 700ms,
@@ -597,8 +898,6 @@ mod tests {
 
     #[test]
     fn floored_positions_average_out() {
-        // Apple Music floors to whole seconds: each anchor is up to 999ms
-        // behind the truth. The fit should land near the mean (~-500).
         let map = TimeMap::fit(&anchors(|k| -((k as i64 * 337) % 1000)), 16_000, 0);
         let bias = map.intercept_ms - 700.0;
         assert!(bias > -800.0 && bias < -200.0, "{map:?}");
@@ -607,7 +906,6 @@ mod tests {
 
     #[test]
     fn wild_slope_falls_back_to_nominal() {
-        // A rate 3% fast is not a clock, it's bad anchors.
         let bad: Vec<(usize, i64)> = (0..6)
             .map(|k| (k * 80_000, 700 + (k as i64 * 5000 * 103) / 100))
             .collect();

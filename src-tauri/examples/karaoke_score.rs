@@ -7,18 +7,21 @@
 //!   cargo run --example karaoke_score -- template <dump-dir>
 //!       re-runs the CURRENT aligner on the dump and writes
 //!       <dump-dir>/labels.template.txt — an Audacity label track with one
-//!       row per aligner token at the aligner's guess. Import pcm.i16 into
-//!       Audacity (File → Import → Raw Data: 16-bit signed, mono, 16000Hz),
-//!       import the labels, drag each marker onto the sung onset, export.
+//!       row per aligner token at the aligner's guess (also the token list
+//!       tap.html taps through). Matching is by row order, never text.
 //!
 //!   cargo run --example karaoke_score -- score <dump-dir> <labels.txt>
-//!       re-runs the aligner, pairs token i with label row i (order, never
-//!       text), and prints median/p90 |Δ|, share within 100ms, signed bias,
-//!       the five worst lines, the map's fit residual (clock error, kept
-//!       separate from aligner error), and whether the replay reproduces
-//!       the dump's live words.json exactly.
+//!       re-runs the shipped aligner, pairs token i with label row i, and
+//!       prints median/p90 |Δ|, share within 100ms, signed bias, the five
+//!       worst lines, the map's fit residual (clock error, kept separate
+//!       from aligner error), and how far the replay sits from the dump's
+//!       live words.json. A partial label file scores its prefix.
+//!
+//!   cargo run --example karaoke_score -- matrix <dump-dir> <labels.txt>
+//!       one row per rung of the ladder (Stages::ladder()), the shipped
+//!       set marked — the table that decides what ships.
 
-use pulse_lib::align::{self, TimeMap, TimedLine, Word};
+use pulse_lib::align::{self, Stages, TimeMap, TimedLine, Word};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -51,8 +54,11 @@ fn main() {
     match args.as_slice() {
         [cmd, dir] if cmd == "template" => template(Path::new(dir)),
         [cmd, dir, labels] if cmd == "score" => score(Path::new(dir), Path::new(labels)),
+        [cmd, dir, labels] if cmd == "matrix" => matrix(Path::new(dir), Path::new(labels)),
         _ => {
-            eprintln!("usage: karaoke_score template <dump-dir>\n       karaoke_score score <dump-dir> <labels.txt>");
+            eprintln!(
+                "usage: karaoke_score template <dump-dir>\n       karaoke_score score  <dump-dir> <labels.txt>\n       karaoke_score matrix <dump-dir> <labels.txt>"
+            );
             exit(2);
         }
     }
@@ -91,13 +97,13 @@ fn die(msg: &str) -> ! {
     exit(1)
 }
 
-fn realign(d: &Dump) -> Vec<Word> {
-    align::align(&d.pcm, RATE, &d.lines, &d.meta.map)
+fn realign(d: &Dump, stages: &Stages) -> Vec<Word> {
+    align::align_with(&d.pcm, RATE, &d.lines, &d.meta.map, stages)
 }
 
 fn template(dir: &Path) {
     let d = load(dir);
-    let words = realign(&d);
+    let words = realign(&d, &Stages::shipped());
     let mut out = String::new();
     for w in &words {
         let s = w.t as f64 / 1000.0;
@@ -117,7 +123,8 @@ fn template(dir: &Path) {
 /// Audacity label rows: `start\tend\ttext`, seconds. Blank lines skipped.
 fn read_labels(path: &Path) -> Vec<i64> {
     let text = String::from_utf8_lossy(&read(path.to_path_buf())).into_owned();
-    text.lines()
+    let labels: Vec<i64> = text
+        .lines()
         .filter(|l| !l.trim().is_empty())
         .enumerate()
         .map(|(i, l)| {
@@ -127,7 +134,11 @@ fn read_labels(path: &Path) -> Vec<i64> {
                 .map(|s| (s * 1000.0).round() as i64)
                 .unwrap_or_else(|_| die(&format!("labels row {}: bad start {start:?}", i + 1)))
         })
-        .collect()
+        .collect();
+    if labels.is_empty() {
+        die("label file has no rows");
+    }
+    labels
 }
 
 /// Index of the lyric line whose window holds `t`.
@@ -143,13 +154,18 @@ fn line_of(lines: &[TimedLine], t: i64) -> usize {
     idx
 }
 
-fn score(dir: &Path, labels_path: &Path) {
-    let d = load(dir);
-    let words = realign(&d);
-    let labels = read_labels(labels_path);
-    if labels.is_empty() {
-        die("label file has no rows");
-    }
+struct Stats {
+    median: i64,
+    p90: i64,
+    within_100: f64,
+    bias: f64,
+    /// (mean |Δ| ms, line index), worst first.
+    worst: Vec<(i64, usize)>,
+}
+
+/// Pairs token i with label i (a partial file scores its prefix); dies if a
+/// label sits outside its token's LRC line window (rows drifted).
+fn stats(d: &Dump, words: &[Word], labels: &[i64]) -> Stats {
     if labels.len() > words.len() {
         die(&format!(
             "label rows ({}) > aligner tokens ({}): a marker was added, or the dump is a different song",
@@ -157,21 +173,6 @@ fn score(dir: &Path, labels_path: &Path) {
             words.len(),
         ));
     }
-    // A partial label file scores the prefix it covers — marking stops
-    // wherever the person marking ran out of patience.
-    if labels.len() < words.len() {
-        let last_line = line_of(&d.lines, words[labels.len() - 1].t);
-        println!(
-            "partial       {} of {} tokens marked (through line {})",
-            labels.len(),
-            words.len(),
-            last_line + 1
-        );
-    }
-    // Rows are matched by order, so the only failure that matters is a
-    // label sitting outside its token's LRC line window (with slack for
-    // stamps that lead or trail the vocal). Distance from the aligner's
-    // guess is the measurement, never a rejection.
     for (i, (w, &l)) in words.iter().zip(labels.iter()).enumerate() {
         let li = line_of(&d.lines, w.t);
         let lo = d.lines[li].t - 2_000;
@@ -188,24 +189,56 @@ fn score(dir: &Path, labels_path: &Path) {
             ));
         }
     }
-    let deltas: Vec<i64> = words.iter().zip(&labels).map(|(w, &l)| w.t - l).collect();
+    let deltas: Vec<i64> = words.iter().zip(labels).map(|(w, &l)| w.t - l).collect();
     let mut abs: Vec<i64> = deltas.iter().map(|d| d.abs()).collect();
     abs.sort_unstable();
     let pct = |p: f64| abs[((abs.len() - 1) as f64 * p).round() as usize];
     let within = abs.iter().filter(|&&a| a <= 100).count();
-    let bias = deltas.iter().sum::<i64>() as f64 / deltas.len() as f64;
+    let mut per_line: Vec<(usize, Vec<i64>)> = Vec::new();
+    for (w, &delta) in words.iter().zip(&deltas) {
+        let li = line_of(&d.lines, w.t);
+        match per_line.last_mut() {
+            Some((i, v)) if *i == li => v.push(delta),
+            _ => per_line.push((li, vec![delta])),
+        }
+    }
+    let mut worst: Vec<(i64, usize)> = per_line
+        .iter()
+        .map(|(li, v)| (v.iter().map(|d| d.abs()).sum::<i64>() / v.len() as i64, *li))
+        .collect();
+    worst.sort_by_key(|(m, _)| std::cmp::Reverse(*m));
+    Stats {
+        median: pct(0.5),
+        p90: pct(0.9),
+        within_100: within as f64 * 100.0 / abs.len() as f64,
+        bias: deltas.iter().sum::<i64>() as f64 / deltas.len() as f64,
+        worst,
+    }
+}
+
+fn score(dir: &Path, labels_path: &Path) {
+    let d = load(dir);
+    let words = realign(&d, &Stages::shipped());
+    let labels = read_labels(labels_path);
+    let s = stats(&d, &words, &labels);
 
     println!("{} — {}", d.meta.artist, d.meta.title);
     println!("tokens        {}", words.len());
-    println!("median |Δ|    {} ms", pct(0.5));
-    println!("p90 |Δ|       {} ms", pct(0.9));
+    if labels.len() < words.len() {
+        println!(
+            "partial       {} of {} tokens marked (through line {})",
+            labels.len(),
+            words.len(),
+            line_of(&d.lines, words[labels.len() - 1].t) + 1
+        );
+    }
+    println!("median |Δ|    {} ms", s.median);
+    println!("p90 |Δ|       {} ms", s.p90);
+    println!("within 100ms  {:.0}%", s.within_100);
     println!(
-        "within 100ms  {:.0}%",
-        within as f64 * 100.0 / abs.len() as f64
-    );
-    println!(
-        "bias          {bias:+.0} ms ({})",
-        if bias < 0.0 { "early" } else { "late" }
+        "bias          {:+.0} ms ({})",
+        s.bias,
+        if s.bias < 0.0 { "early" } else { "late" }
     );
     let m = &d.meta.map;
     println!(
@@ -243,27 +276,49 @@ fn score(dir: &Path, labels_path: &Path) {
             moved.iter().max().unwrap_or(&0)
         );
     }
-
-    // Worst lines by mean |Δ|.
-    let mut per_line: Vec<(usize, Vec<i64>)> = Vec::new();
-    for (w, &delta) in words.iter().zip(&deltas) {
-        let li = line_of(&d.lines, w.t);
-        match per_line.last_mut() {
-            Some((i, v)) if *i == li => v.push(delta),
-            _ => per_line.push((li, vec![delta])),
-        }
-    }
-    per_line.sort_by_key(|(_, v)| {
-        std::cmp::Reverse(v.iter().map(|d| d.abs()).sum::<i64>() / v.len() as i64)
-    });
     println!("worst lines");
-    for (li, v) in per_line.iter().take(5) {
-        let mean = v.iter().map(|d| d.abs()).sum::<i64>() / v.len() as i64;
+    for (mean, li) in s.worst.iter().take(5) {
         println!(
             "  {:>5} ms  [{}] {}",
             mean,
             fmt_ms(d.lines[*li].t),
             d.lines[*li].text
+        );
+    }
+}
+
+fn matrix(dir: &Path, labels_path: &Path) {
+    let d = load(dir);
+    let labels = read_labels(labels_path);
+    let shipped = Stages::shipped();
+    println!(
+        "{} — {} ({} labels)",
+        d.meta.artist,
+        d.meta.title,
+        labels.len()
+    );
+    println!(
+        "{:<20} {:>7} {:>7} {:>8} {:>7}  worst line",
+        "stages", "median", "p90", "<=100ms", "bias"
+    );
+    for (name, stages) in Stages::ladder() {
+        let words = realign(&d, &stages);
+        let s = stats(&d, &words, &labels);
+        let (wm, wl) = s.worst.first().copied().unwrap_or((0, 0));
+        println!(
+            "{:<20} {:>4} ms {:>4} ms {:>7.0}% {:>+5.0}  {:>5} ms {}{}",
+            name,
+            s.median,
+            s.p90,
+            s.within_100,
+            s.bias,
+            wm,
+            d.lines[wl].text.chars().take(24).collect::<String>(),
+            if stages == shipped {
+                "   <- shipped"
+            } else {
+                ""
+            }
         );
     }
 }
