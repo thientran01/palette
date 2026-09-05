@@ -335,3 +335,23 @@ body {
   .lyric-ink { transform: none; filter: none; transition: none; }
   .lyric-row [data-word] { --word-sheen: var(--word-bright, currentColor) !important; }
 }
+
+/* Silver light: a quiet lens behind the sung line, plus a brief onset bloom.
+ * Neither runs an independent animation; both settle when playback stops. */
+.lyric-row::before {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  inset: 2px -4px;
+  border-radius: inherit;
+  background: radial-gradient(ellipse at 22% 50%, rgb(var(--fg) / 0.055), transparent 72%);
+  opacity: var(--lyric-presence, 0);
+  transition: opacity var(--transition-duration-5) var(--ease-out-tk);
+}
+.lyric-row[data-current="true"] { --lyric-presence: 1; }
+.lyric-ink { position: relative; }
+.lyric-row [data-word] { text-shadow: var(--word-bloom, none); }
+@media (prefers-reduced-motion: reduce) {
+  .lyric-row::before { display: none; }
+  .lyric-row [data-word] { text-shadow: none; }
+}

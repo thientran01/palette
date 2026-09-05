@@ -124,3 +124,25 @@ it("keeps row bounds across both voices regardless of printed order", () => {
   expect(css.values.has("--word-bright")).toBe(false);
   stop();
 });
+
+it("releases the singing bloom and clears its color on seek and disposal", () => {
+  const h=harness(1010);const current=row(1,1000,1500);
+  const stop=driveWordRows([current],0,0,h.clock,h.frames);
+  expect(current.spans[0].values.get("--word-bloom")).toContain("var(--word-halo, transparent)");
+  expect(current.style.values.has("--word-halo")).toBe(true);
+  h.anchor(1100,false);
+  const paused=current.spans[0].values.get("--word-bloom");
+  expect(h.pending.size).toBe(0);
+  h.frame(1200);
+  expect(current.spans[0].values.get("--word-bloom")).toBe(paused);
+  h.anchor(1260,true);
+  expect(current.spans[0].values.get("--word-bloom")).toBe("none");
+  h.anchor(1010,true);
+  h.anchor(500,false);
+  expect(current.style.values.has("--word-halo")).toBe(false);
+  expect(current.style.values.has("--lyric-presence")).toBe(false);
+  h.anchor(1010,true);
+  stop();
+  expect(current.style.values.has("--word-halo")).toBe(false);
+  expect(current.style.values.has("--lyric-presence")).toBe(false);
+});

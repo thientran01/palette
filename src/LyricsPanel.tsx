@@ -395,7 +395,7 @@ const LyricLineRow = memo(function LyricLineRow({
       data-cascade
       {...(anchor ? { "data-anchor": true } : {})}
       style={{ "--cascade-delay": `${cascadeDelayMs}ms` } as React.CSSProperties}
-      className={`lyric-row relative whitespace-pre-wrap rounded-md text-left font-medium transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${tone} ${
+      className={`lyric-row relative whitespace-pre-wrap rounded-md text-left font-[450] transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${tone} ${
         seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
