@@ -67,9 +67,10 @@ fn main() {
 
 fn load(dir: &Path) -> Dump {
     let bytes = read(dir.join("pcm.i16"));
-    let pcm: Vec<f32> = bytes
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+    let (chunks, _) = bytes.as_chunks::<2>();
+    let pcm: Vec<f32> = chunks
+        .iter()
+        .map(|c| i16::from_le_bytes(*c) as f32 / 32768.0)
         .collect();
     let lrc = String::from_utf8_lossy(&read(dir.join("lyrics.lrc"))).into_owned();
     let lines = align::parse_lrc(&lrc);
