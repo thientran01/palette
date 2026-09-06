@@ -1,4 +1,5 @@
 pub mod acoustic;
+mod acoustic_worker;
 pub mod align;
 mod audio;
 mod dock;

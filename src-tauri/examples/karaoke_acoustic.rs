@@ -25,10 +25,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     let lines = parse_lrc(&std::fs::read_to_string(args[0].join("lyrics.lrc"))?);
     let start = Instant::now();
-    let mut aligner = AcousticAligner::load(&args[1], &args[2])?;
+    let threads = std::env::var("PALETTE_BENCH_THREADS")
+        .ok()
+        .map(|s| s.parse::<usize>())
+        .transpose()?
+        .unwrap_or(2);
+    let spinning = std::env::var("PALETTE_BENCH_SPIN").map_or(true, |s| s != "0");
+    let mut aligner = AcousticAligner::load_tuned(&args[1], &args[2], threads, spinning)?;
     let loaded = start.elapsed().as_secs_f64();
     let words = aligner.align(&pcm, &lines, &map)?;
     let seconds = start.elapsed().as_secs_f64() - loaded;
+    if std::env::var_os("PALETTE_BENCH_REPEAT").is_some() {
+        let again = Instant::now();
+        let repeated = aligner.align(&pcm, &lines, &map)?;
+        assert_eq!(words, repeated, "model reuse changed timings");
+        eprintln!(
+            "warm align {:.3}s; identical words",
+            again.elapsed().as_secs_f64()
+        );
+    }
     let result = serde_json::json!({"model":"native-mms-int8", "load_seconds":loaded, "seconds":seconds, "words":words});
     std::fs::write(&args[3], serde_json::to_vec_pretty(&result)?)?;
     println!(

@@ -1,0 +1,11 @@
+if (!process.argv[3]) throw new Error('Usage: node scripts/perf/lyric-writes.cjs <baseline-ref> <word-cache.json>');
+const fs=require('fs'),cp=require('child_process'),ts=require(process.cwd()+'/node_modules/typescript'),crypto=require('crypto');
+function moduleFrom(source,dep){const exports={};new Function('exports','require',ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText)(exports,()=>dep);return exports;}
+const lrc=moduleFrom(fs.readFileSync('src/lib/lrc.ts','utf8'));
+const file='src/lib/wordWipeDriver.ts';const before=moduleFrom(cp.execFileSync('git',['show',(process.argv[2]||'origin/codex/lyric-sync-status')+':'+file],{encoding:'utf8'}),lrc);const after=moduleFrom(fs.readFileSync(file,'utf8'),lrc);
+const words=JSON.parse(fs.readFileSync(process.argv[3],'utf8')).words;
+function run(api){let writes=0,effective=0,pos=0,cb,idx=0;const hash=crypto.createHash('sha256');const style=(id)=>{const values=new Map();return {setProperty(k,v){writes++;if(values.get(k)!==v){effective++;values.set(k,v);hash.update(JSON.stringify([idx,id,k,v]));}},removeProperty(k){if(values.has(k)){values.delete(k);hash.update(JSON.stringify([idx,id,k,null]));}return '';}}};const groups=new Map();for(const w of words){const key=w.line_t??w.t;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(w);}
+const rows=[...groups.values()].map((words,i)=>({index:i,words,style:style('r'+i),spans:words.map((_,j)=>style(i+':'+j))}));const start=performance.now();const stop=api.driveWordRows(rows,0,220,{now:()=>pos,isPlaying:()=>true,subscribe:()=>()=>{}},{request(f){cb=f;return 1},cancel(){}});for(pos=0;pos<180000;pos+=1000/60){idx++;cb();}stop();return {milliseconds:performance.now()-start,writes,effective,hash:hash.digest('hex')};}
+const result={before:run(before),after:run(after)};
+console.log(JSON.stringify(result,null,2));
+if(result.before.hash!==result.after.hash||result.before.effective!==result.after.effective) throw new Error('Visual output changed');

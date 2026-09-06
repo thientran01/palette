@@ -317,23 +317,40 @@ impl AcousticAligner {
     /// Runtime must be an explicitly provisioned ONNX Runtime 1.22 DLL.
     /// Called only from the background alignment worker, never audio callbacks.
     pub fn load(model: &Path, runtime: &Path) -> Result<Self> {
+        Self::load_tuned(model, runtime, 2, true)
+    }
+
+    /// Benchmark seam; production settings are chosen by load().
+    pub fn load_tuned(
+        model: &Path,
+        runtime: &Path,
+        threads: usize,
+        spinning: bool,
+    ) -> Result<Self> {
+        if !(1..=8).contains(&threads) {
+            return Err("thread count must be 1..=8".into());
+        }
         if !model.is_file() || !runtime.is_file() {
             return Err("acoustic model/runtime missing".into());
         }
         verify_asset(model, MODEL_SHA256)?;
         verify_asset(runtime, RUNTIME_SHA256)?;
-        guard_runtime(|| Self::load_verified(model, runtime))
+        guard_runtime(|| Self::load_verified(model, runtime, threads, spinning))
     }
 
-    fn load_verified(model: &Path, runtime: &Path) -> Result<Self> {
+    fn load_verified(model: &Path, runtime: &Path, threads: usize, spinning: bool) -> Result<Self> {
         ort::init_from(runtime.to_string_lossy())
             .commit()
             .map_err(|e| e.to_string())?;
         let session = Session::builder()
             .map_err(|e| e.to_string())?
-            .with_intra_threads(2)
+            .with_intra_threads(threads)
             .map_err(|e| e.to_string())?
             .with_inter_threads(1)
+            .map_err(|e| e.to_string())?
+            .with_intra_op_spinning(spinning)
+            .map_err(|e| e.to_string())?
+            .with_inter_op_spinning(spinning)
             .map_err(|e| e.to_string())?
             .commit_from_file(model)
             .map_err(|e| e.to_string())?;

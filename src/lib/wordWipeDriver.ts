@@ -29,8 +29,10 @@ export function driveWordRows(
   const tracks = rows.filter(r => r.words.length > 0 && r.spans.length === r.words.length)
     .map(row => {
       const completed = row.words.map((word, i) => wordFillEnd(word, row.words[i + 1]?.t));
-      return { row, completed, active: false, last: new Array<number>(row.words.length).fill(-1),
-      halo: new Array<number>(row.words.length).fill(-1),
+      return { row, completed, active: false, last: new Array<string>(row.words.length).fill(""),
+      fractions: new Array<number>(row.words.length).fill(-1),
+      sheen: new Array<string>(row.words.length).fill(""),
+      halo: new Array<string>(row.words.length).fill(""),
       start: row.words.reduce((t, w) => Math.min(t, w.t), Infinity),
       end: row.words.reduce((t, w, i) => Math.max(t, w.end ?? w.t + WORD_ATTACK_MS, completed[i] + BLOOM_MS, w.t + 1), -Infinity),
       };
@@ -67,16 +69,26 @@ export function driveWordRows(
         // Keep the same clock/RAF so pause, seeks and skipped frames are exact.
         const elapsed = p - track.completed[i];
         const halo = elapsed >= 0 && elapsed < BLOOM_MS ? (1 - elapsed / BLOOM_MS) ** 2 : 0;
-        if (halo !== track.halo[i]) {
-          track.halo[i] = halo;
-          row.spans[i].setProperty("--word-bloom", halo > 0
-            ? `0 0 ${(12 * halo).toFixed(2)}px var(--word-halo, transparent)` : "none");
+        // Compare the values CSS receives, not unrounded floating-point
+        // progress. No timing/frame-rate change: only redundant writes vanish.
+        const bloom = halo > 0 ? `0 0 ${(12 * halo).toFixed(2)}px var(--word-halo, transparent)` : "none";
+        if (bloom !== track.halo[i]) {
+          track.halo[i] = bloom;
+          row.spans[i].setProperty("--word-bloom", bloom);
         }
-        if (frac === track.last[i]) continue;
-        track.last[i] = frac;
-        row.spans[i].setProperty("--wipe", `${(frac * 100).toFixed(1)}%`);
-        row.spans[i].setProperty("--word-sheen", frac > 0 && frac < 1
-          ? "var(--word-peak, currentColor)" : "var(--word-bright, currentColor)");
+        if (frac === track.fractions[i]) continue;
+        track.fractions[i] = frac;
+        const wipe = `${(frac * 100).toFixed(1)}%`;
+        if (wipe !== track.last[i]) {
+          track.last[i] = wipe;
+          row.spans[i].setProperty("--wipe", wipe);
+        }
+        const sheen = frac > 0 && frac < 1
+          ? "var(--word-peak, currentColor)" : "var(--word-bright, currentColor)";
+        if (sheen !== track.sheen[i]) {
+          track.sheen[i] = sheen;
+          row.spans[i].setProperty("--word-sheen", sheen);
+        }
       }
     }
   };
