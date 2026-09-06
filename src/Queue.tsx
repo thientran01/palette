@@ -56,7 +56,7 @@ const QSCALE = {
   base: {
     rowH: 56,
     swapAt: 32,
-    thumb: 40,
+    thumb: 44,
     row: "h-[56px] shrink-0 gap-2.5 rounded-md px-2",
     title: "text-sm leading-5",
     artist: "text-xs leading-4",
@@ -325,7 +325,7 @@ async function playTrackNow(t: { uri: string; title: string; artist: string }): 
 // ---- rows ----
 
 /** Cover thumb (remote url straight into an img; note glyph on a null OR
- * dead url) — 40px in the base queue rows; the search window passes its own size
+ * dead url) — 44px in the base queue rows; the search window passes its own size
  * (same grammar, bigger room). Exported for the search window's result rows. */
 export function RowThumb({ url, size = 26 }: { url: string | null; size?: number }) {
   // A dead art_url (CDN 403/404) degrades to the glyph — an empty tile reads
@@ -1218,8 +1218,8 @@ export function QueuePanel({
         ref={zoneRef}
         role="list"
         aria-label="Up next"
-        className={`flex flex-col rounded-lg border [transition:border-color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk)] ${
-          ghost?.over ? "border-accent/55 bg-accent/5" : "border-transparent"
+        className={`flex flex-col rounded-lg outline outline-1 -outline-offset-1 [transition:outline-color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk)] ${
+          ghost?.over ? "outline-accent/55 bg-accent/5" : "outline-transparent"
         }`}
       >
         {rows.length === 0 && !gated && (
