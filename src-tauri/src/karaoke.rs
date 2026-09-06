@@ -74,7 +74,7 @@ pub async fn karaoke_status(
     if recording {
         return SyncStatus {
             phase: "learning",
-            detail: "Learning timing… Keep Palette visible and listen through the end.",
+            detail: "Keep Palette visible and listen through the end.",
         };
     }
     stored.unwrap_or(SyncStatus {

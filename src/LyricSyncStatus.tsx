@@ -56,7 +56,7 @@ export function LyricSyncStatus({np, saved}: {np:NowPlaying; saved:boolean}) {
   useEffect(()=>clear,[]);
   const status=saved ? savedStatus : snapshot?.key===key ? snapshot.status : {phase:"waiting" as const,detail:"Checking word sync…"};
   const detail=status.phase==="learning" && np.status!=="playing"
-    ? "Learning paused. Resume playback to continue this listen." : status.detail;
+    ? "Learning paused. Resume playback to continue this listen." : status.phase === "learning" ? status.detail.replace(/^Learning timing…\s*/, "") : status.detail;
   return <div className="relative shrink-0"
     onMouseEnter={()=>{clear();timer.current=window.setTimeout(()=>setOpen(true),DUR[4]);}}
     onMouseLeave={()=>{clear();timer.current=window.setTimeout(()=>setOpen(false),DUR[2]);}}>

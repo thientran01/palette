@@ -1335,7 +1335,7 @@ const LYRICS_OFFLINE: Lyrics = { synced: null, offline: true };
 
 export type SyncStatus = { phase: "waiting" | "learning" | "processing" | "saved" | "failed"; detail: string };
 export async function karaokeStatus(np: NowPlaying): Promise<SyncStatus> {
-  if (!IN_TAURI) return {phase:"learning",detail:"Learning timing… Keep Palette visible and listen through the end."};
+  if (!IN_TAURI) return {phase:"learning",detail:"Keep Palette visible and listen through the end."};
   return invoke<SyncStatus>("karaoke_status", {artist:np.artist,title:np.title,album:np.album,durationMs:np.duration_ms});
 }
 
