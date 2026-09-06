@@ -1270,6 +1270,7 @@ pub fn run() {
             media_seek_abs,
             media_art,
             media_lyrics,
+            karaoke::karaoke_status,
             karaoke::word_lead,
             now_playing,
             set_reactive_enabled,
