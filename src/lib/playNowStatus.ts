@@ -1,6 +1,7 @@
 /** Statuses returned by spotify.rs play_now / start_playback. */
 export type PlayNowStatus =
   | "ok"
+  | "queued"
   | "partial"
   | "no_device"
   | "busy"
@@ -20,6 +21,8 @@ export function playNowNote(status: string): string | null {
   switch (status as PlayNowStatus) {
     case "ok":
       return null;
+    case "queued":
+      return "Added to Spotify — couldn’t confirm play now";
     case "partial":
       return "Played — some items couldn't re-queue";
     case "no_device":
