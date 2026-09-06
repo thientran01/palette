@@ -881,11 +881,8 @@ fn commit_recording(
             .map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
             .collect();
         let started = Instant::now();
-        let result = acoustic::AcousticAligner::load(
-            &dir.join("mms-fa-int8.onnx"),
-            &dir.join("onnxruntime.dll"),
-        )
-        .and_then(|mut model| model.align(&pcm, &lines, &map));
+        let result =
+            crate::acoustic_worker::align(pcm, lines.clone(), map.clone(), dir.to_path_buf());
         match result {
             Ok(words) => {
                 log::info!(

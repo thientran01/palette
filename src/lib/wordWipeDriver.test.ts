@@ -169,3 +169,15 @@ it("waits through acoustic subword holds and applies the existing lead offset", 
   expect(current.spans[0].values.get("--word-bloom")).toBe("none");
   stop();
 });
+
+it("does not rewrite identical CSS values as fractional progress changes", () => {
+  const h=harness(1100);const r=row(0,1000,3000);
+  const stop=driveWordRows([r],0,0,h.clock,h.frames);
+  r.spans[0].setProperty.mockClear();
+  h.frame(1100.001);
+  expect(r.spans[0].setProperty).not.toHaveBeenCalled();
+  h.frame(1200);
+  expect(r.spans[0].setProperty).toHaveBeenCalledWith("--wipe","10.0%");
+  expect(r.spans[0].setProperty).not.toHaveBeenCalledWith("--word-sheen",expect.anything());
+  stop();
+});
