@@ -10,7 +10,7 @@ const glyphs: Record<SyncStatus["phase"], MorphName> = {
   waiting:"syncWaiting", learning:"syncLearning", processing:"syncProcessing", saved:"syncSaved", failed:"syncFailed",
 };
 const titles = {waiting:"Waiting to learn",learning:"Learning timing",processing:"Finishing sync",saved:"Word sync saved",failed:"Couldn’t sync this track"};
-const savedStatus: SyncStatus = {phase:"saved",detail:"Word sync saved on this device."};
+const savedStatus: SyncStatus = {phase:"saved",detail:"Available on this device for future listens."};
 
 /** Quiet status, never a second beat visualizer. Snapshot polling is scoped
  * to this visible lyric surface and guarded against late replies on skips. */
@@ -55,8 +55,17 @@ export function LyricSyncStatus({np, saved}: {np:NowPlaying; saved:boolean}) {
   useEffect(()=>onCursorLeft(()=>{clear();setOpen(false);}),[]);
   useEffect(()=>clear,[]);
   const status=saved ? savedStatus : snapshot?.key===key ? snapshot.status : {phase:"waiting" as const,detail:"Checking word sync…"};
-  const detail=status.phase==="learning" && np.status!=="playing"
-    ? "Learning paused. Resume playback to continue this listen." : status.phase === "learning" ? status.detail.replace(/^Learning timing…\s*/, "") : status.detail;
+  // The heading names the state; the detail explains the result or next step.
+  // Keep this presentation-only so copy updates do not interrupt capture.
+  const detail = status.phase === "saved" ? savedStatus.detail
+    : status.phase === "processing" ? "Your recording is being matched to the lyrics."
+    : status.phase === "learning" ? np.status !== "playing"
+      ? "Resume playback to continue this listen."
+      : status.detail.replace(/^Learning timing…\s*/, "")
+    : status.detail
+      .replace(/^Couldn’t save word sync\.\s*/, "")
+      .replace("Couldn’t align this track’s vocals. Word sync was not saved.",
+        "This recording did not produce usable word timing. Keeping line sync.");
   return <div className="relative shrink-0"
     onMouseEnter={()=>{clear();timer.current=window.setTimeout(()=>setOpen(true),DUR[4]);}}
     onMouseLeave={()=>{clear();timer.current=window.setTimeout(()=>setOpen(false),DUR[2]);}}>
