@@ -1152,17 +1152,21 @@ export function QueuePanel({
               <p className="text-[22px] font-medium leading-tight text-fg">
                 Up next{rows.length > 0 && ` · ${rows.length}`}
               </p>
-              <p className={`${s.label} mt-0.5 text-muted/85`}>
-                {queueLive ? "Spotify · drag to reorder" : "Spotify"}
+              <p role="status" aria-live="polite" aria-atomic="true" title={toast || undefined}
+                className={`${s.label} mt-0.5 truncate leading-5 ${toast ? "text-fg" : "text-muted/85"}`}>
+                {toast || (queueLive ? "Spotify · drag to reorder" : "Spotify")}
               </p>
             </div>
           ) : (
             <>
-              <span className="text-sm font-medium text-fg">
+              <span className="shrink-0 text-sm font-medium text-fg">
                 Up next{rows.length > 0 && ` · ${rows.length}`}
               </span>
-              <span className={`${s.label} text-muted/85`}>
-                {queueLive && rows.length > 1 ? "Drag to reorder" : "Spotify"}
+              {/* Feedback replaces the hint in a fixed-height header, never a list row.
+                  Full text remains available to assistive tech and on hover. */}
+              <span role="status" aria-live="polite" aria-atomic="true" title={toast || undefined}
+                className={`min-w-0 flex-1 truncate ${s.label} leading-4 ${toast ? "text-fg" : "text-muted/85"}`}>
+                {toast || (queueLive && rows.length > 1 ? "Drag to reorder" : "Spotify")}
               </span>
             </>
           )}
@@ -1193,18 +1197,7 @@ export function QueuePanel({
             </button>
           )}
         </div>
-        {/* Always reserve one compact status line: a toast expiring must not move
-            the remove buttons while the user is working through the queue.
-            Long results can scroll inside this slot without resizing it. */}
-        <p
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-          tabIndex={toast ? 0 : undefined}
-          className={`m-0 mt-1 overflow-y-auto break-words ${s.toast} text-fg ${room ? "h-5 leading-5" : "h-4 leading-4"}`}
-        >
-          {toast}
-        </p>
+
       </div>
       {/* The gate NARRATES instead of hiding: the list persists across
           players/connection, and queued rows vanishing on an Apple Music
