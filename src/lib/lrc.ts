@@ -23,7 +23,7 @@ export interface LyricLine {
    * renders as the five-dot countdown instead of text. */
   end?: number;
   words?: LyricWord[];
-  /** Repeated-oh backing phrase spans the source line, not its printed tail. */
+  /** Source-timed backing sweep; display fractions, not measured word onsets. */
   backingPhrase?: { textStart: number; t: number; end: number };
 }
 
@@ -93,7 +93,8 @@ function withBreaks(lines: LyricLine[], markers: number[], durationMs: number): 
     const phrase = /^\(?oh(?:-oh)+[.!?,]?\)?$/i.test(lines[i].text)
       && (i + 1 < lines.length || marker !== undefined)
       && Number.isFinite(phraseEnd) && phraseEnd > lines[i].t;
-    const backing = /\(oh(?:[\s,-]+oh)+[.!?]?\)$/i.exec(lines[i].text);
+    const backing = /\(oh(?:[\s,-]+oh)+[.!?]?\)$/i.exec(lines[i].text)
+      ?? introBacking(lines[i].text, phraseEnd - lines[i].t);
     const hasEndpoint = (i + 1 < lines.length || marker !== undefined)
       && Number.isFinite(phraseEnd) && phraseEnd > lines[i].t;
     const line = backing && backing.index > 0 && lines[i].text.slice(0, backing.index).trim()
@@ -186,6 +187,27 @@ export function msUntilNextLine(
   const next = lines[idx + 1];
   if (!next) return null;
   return Math.max(next.t - leadMs - positionMs, 0);
+}
+
+/** Narrow fallback for an interjection plus a repeated backing chant, or
+ * a single-word echo (Orchestra / Orches-orchestra). The Orchestra capture
+ * produced unstable forced word times across models. Source timing is a
+ * phrase-level fallback, never a claim of acoustically measured syllables.
+ * Ordinary parenthetical replies and long/unknown intervals stay acoustic. */
+function introBacking(text: string, duration: number): RegExpExecArray | null {
+  if (!(duration > 0 && duration <= 8_000)) return null;
+  const tail = /\(([^()]+)\)$/.exec(text);
+  if (!tail || tail.index === 0 || !/\s/.test(text[tail.index - 1])) return null;
+  const lead = text.slice(0, tail.index).trim().toLowerCase();
+  const parts = tail[1].toLowerCase().match(/[a-z]+(?:'[a-z]+)*/g) ?? [];
+  // Restrict this fallback to ASCII spellings; romanized scripts are not
+  // evidence of the same chant structure in the displayed source.
+  if (!/^[\x00-\x7f]*$/.test(text) || parts.length < 2) return null;
+  const chant = /^(?:a+h+|h+a+h*|o+h+)[.!?,]?$/.test(lead)
+    && parts[0] === parts[1];
+  const echo = /^[a-z]{4,}$/.test(lead) && parts.length === 2
+    && parts[0].length >= 4 && lead.startsWith(parts[0]) && parts[1] === lead;
+  return chant || echo ? tail : null;
 }
 
 /** Keep existing word-sized spans (and wrapping) while mapping the backing

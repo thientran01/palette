@@ -258,3 +258,49 @@ describe("acoustic spelling fill", () => {
     expect(wordWipeFraction({ ...word, timing: "phrase" }, 1500, 0)).toBe(.5);
   });
 });
+
+
+describe("Orchestra intro backing phrases", () => {
+  const source = "[00:00.08]Orchestra (Orches-orchestra)\n[00:05.96]Ah (Elegant elegant dangerous)\n[00:10.86]Hah (Slow slow)\n[00:15.07]Ad astra";
+  // Actual cached serial alignment compressed Slow slow into 481ms and
+  // held the second elegant for 3.6s. Preserve lead timing and source text.
+  const words = [
+    {t:5661,end:5821,text:"Ah ",line_t:5960},
+    {t:5821,end:6524,text:"(Elegant ",line_t:5960},
+    {t:6584,end:10216,text:"elegant ",line_t:5960},
+    {t:10216,end:10818,text:"dangerous)",line_t:5960},
+    {t:10881,end:11081,text:"Hah ",line_t:10860},
+    {t:11101,end:11262,text:"(Slow ",line_t:10860},
+    {t:11302,end:11582,text:"slow)",line_t:10860},
+  ];
+  it("keeps lead stamps, word spans and wrapping while giving backing its source interval", () => {
+    const lines=attachWords(parseLrc(source,177000),words);
+    expect(lines[1].words?.[0]).toEqual(words[0]);
+    expect(lines[2].words?.[0]).toEqual(words[4]);
+    expect(lines[1].words).toHaveLength(4);
+    expect(lines[2].words).toHaveLength(3);
+    expect(lines[1].words?.map(w=>w.text).join("")).toBe(lines[1].text);
+    expect(lines[2].words?.map(w=>w.text).join("")).toBe(lines[2].text);
+    expect(lines[1].words?.[1]).toMatchObject({t:5960,timing:"phrase"});
+    expect(lines[1].words?.[3].end).toBe(10860);
+    expect(lines[2].words?.[1]).toMatchObject({t:10860,timing:"phrase"});
+    expect(lines[2].words?.[2].end).toBe(15070);
+    expect(wordWipeFraction(lines[2].words![2],14000,0)).toBeGreaterThan(0);
+    expect(wordWipeFraction(lines[2].words![2],14000,0)).toBeLessThan(1);
+    expect(attachWords(lines,words)).toEqual(lines);
+  });
+  it("recognizes a printed echo and leaves ordinary parenthetical replies acoustic", () => {
+    expect(parseLrc(source,177000)[0].backingPhrase).toMatchObject({t:80,end:5960});
+    for(const text of ['더워진 이 공기 탓일까 (Breathe)', '피치가 내려가 (Please)', "It's blue (it's blue)", 'Ah (Please)', 'Ah (unfinished', 'Ah(Elegant elegant dangerous)', 'Orchestra(Orches-orchestra)']) {
+      expect(parseLrc(`[00:01.00]${text}\n[00:06.00]next`,10000)[0].backingPhrase).toBeUndefined();
+    }
+    expect(parseLrc('[00:01.00]Ah (Elegant elegant dangerous)',177000)[0].backingPhrase).toBeUndefined();
+    expect(parseLrc('[00:01.00]Ah (Elegant elegant dangerous)\n[00:20.00]next',30000)[0].backingPhrase).toBeUndefined();
+  });
+  it("respects a blank source endpoint and rejects mismatched cached text", () => {
+    const lines=parseLrc('[00:10.86]Hah (Slow slow)\n[00:14.00]\n[00:22.00]next',30000);
+    expect(attachWords(lines,words).find(l=>l.t===10860)?.words?.at(-1)?.end).toBe(14000);
+    const changed=words.slice(4).map(w=>({...w,text:w.text.replace('Slow','Changed')}));
+    expect(attachWords(lines,changed).find(l=>l.t===10860)?.words).toEqual(changed);
+  });
+});
