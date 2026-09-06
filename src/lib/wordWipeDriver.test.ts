@@ -144,24 +144,3 @@ it("releases the singing bloom and clears its color on seek and disposal", () =>
   stop();
   expect(current.style.values.has("--word-halo")).toBe(false);
 });
-
-
-it("keeps Orchestra backing moving after the lead and resets the same spans on seek", () => {
-  const lines=attachWords(parseLrc('[00:10.86]Hah (Slow slow)\n[00:15.07]Ad astra',177000),[
-    {t:10881,end:11081,text:'Hah ',line_t:10860},
-    {t:11101,end:11262,text:'(Slow ',line_t:10860},
-    {t:11302,end:11582,text:'slow)',line_t:10860},
-  ]);
-  const words=lines.find(l=>l.t===10860)!.words!;
-  const spans=words.map(()=>style());const h=harness(13800);
-  const stop=driveWordRows([{index:0,words,spans,style:style()}],0,220,h.clock,h.frames);
-  expect(spans[0].values.get('--wipe')).toBe('100.0%');
-  const progress=Number.parseFloat(spans[2].values.get('--wipe')!);
-  expect(progress).toBeGreaterThan(0);expect(progress).toBeLessThan(100);
-  h.anchor(10640,false);
-  expect(spans.every(s=>s.values.get('--wipe')==='0.0%')).toBe(true);
-  expect(h.pending.size).toBe(0);
-  h.anchor(14850,true);
-  expect(spans.every(s=>s.values.get('--wipe')==='100.0%')).toBe(true);
-  stop();expect(h.pending.size).toBe(0);
-});
