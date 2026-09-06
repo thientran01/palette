@@ -214,7 +214,9 @@ fn local_worker_preserves_cold_and_warm_results() {
     let map: TimeMap = serde_json::from_value(meta["map"].clone()).unwrap();
     let raw = std::fs::read(dump.join("pcm.i16")).unwrap();
     let pcm: Vec<i16> = raw
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
     let lines = crate::align::parse_lrc(&std::fs::read_to_string(dump.join("lyrics.lrc")).unwrap());
