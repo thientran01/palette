@@ -582,7 +582,7 @@ export default function Focus() {
                         }`}
                       >
                         <div className="relative z-20 h-0 shrink-0">
-                          <div className="absolute right-0 bottom-1">
+                          <div className="pointer-events-none absolute right-0 bottom-1 opacity-0 transition-opacity duration-2 ease-out-tk group-hover/focus:pointer-events-auto group-hover/focus:opacity-100 has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100">
                             <LyricSyncStatus np={np} saved={lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
                           </div>
                         </div>

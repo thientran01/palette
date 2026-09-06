@@ -61,10 +61,10 @@ export function LyricSyncStatus({np, saved}: {np:NowPlaying; saved:boolean}) {
     onMouseEnter={()=>{clear();timer.current=window.setTimeout(()=>setOpen(true),DUR[4]);}}
     onMouseLeave={()=>{clear();timer.current=window.setTimeout(()=>setOpen(false),DUR[2]);}}>
     <button type="button" aria-label={`Lyric sync: ${titles[status.phase]}`} aria-describedby={open?id:undefined}
-      className="flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-fg/5 hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg/50"
+      className="grid h-7 w-7 place-items-center rounded-md text-fg [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/10 active:scale-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg/50"
       onFocus={()=>{clear();setOpen(true);}} onBlur={()=>{clear();setOpen(false);}}
       onClick={()=>{clear();setOpen(true);}} onKeyDown={e=>{if(e.key==="Escape"){clear();setOpen(false);e.stopPropagation();}}}>
-      <MorphIcon name={glyphs[status.phase]} size={15} dur={DUR[5]} />
+      <MorphIcon name={glyphs[status.phase]} size={13} dur={DUR[5]} />
     </button>
     <AnimatePresence>{open && <motion.div id={id} role="tooltip"
       initial={{opacity:0,y:-2}} animate={{opacity:1,y:0}} exit={{opacity:0}}

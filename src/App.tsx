@@ -1026,9 +1026,6 @@ function ExpandedView({
               <TruncateTip text={np.artist} className="text-xs leading-4 text-muted" />
             </TrackFadeSpan>
           </div>
-          {active === "lyrics" && lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && (
-            <LyricSyncStatus np={np} saved={lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
-          )}
         </div>
 
         {/* Lyrics view — the top-[52px] body box clears the fixed header.
@@ -1237,6 +1234,14 @@ function ExpandedView({
           morph from the old track's miss.
           11a: the note seat is the ONLY lyrics entry — from the queue
           surface it EXITS to lyrics (or art when none are synced). */}
+      {active === "lyrics" && lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && (
+        <div
+          className="pointer-events-none absolute right-[7px] top-9 z-20 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100"
+          onMouseDown={e => e.stopPropagation()}
+        >
+          <LyricSyncStatus np={np} saved={lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
+        </div>
+      )}
       <ViewToggle
         glyph={
           queueOpen

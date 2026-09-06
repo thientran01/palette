@@ -1,6 +1,6 @@
 # Lyric sync status
 
-The lyric header owns a neutral 15px authored morph icon. Its three cubic strokes morph only on state changes; it never runs a second ambient animation beside the waveform. Hover, focus, or click reveals the explanatory chip. Escape dismisses it before Focus handles Escape. Reduced motion disables icon and chip transitions.
+The lyric view owns a neutral 13px authored morph icon, seated below the view toggle on the same right-side rail. It follows the same hover and keyboard-focus reveal as the other controls. Its three cubic strokes morph only on state changes; it never runs a second ambient animation beside the waveform. Hover, focus, or click reveals the explanatory chip. Escape dismisses it before Focus handles Escape. Reduced motion disables icon and chip transitions.
 
 ## States
 
