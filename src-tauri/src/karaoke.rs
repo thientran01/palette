@@ -491,6 +491,20 @@ pub fn push_frames(frames: &[f32], sample_rate: u32) {
     rec.received += frames.len() as u64;
 }
 
+// Writing opt-in diagnostic PCM must not contend with model inference.
+static SAVING_EVIDENCE: AtomicBool = AtomicBool::new(false);
+struct EvidenceGuard;
+impl EvidenceGuard {
+    fn acquire() -> Option<Self> {
+        (!SAVING_EVIDENCE.swap(true, Ordering::SeqCst)).then(|| Self)
+    }
+}
+impl Drop for EvidenceGuard {
+    fn drop(&mut self) {
+        SAVING_EVIDENCE.store(false, Ordering::SeqCst);
+    }
+}
+
 struct AlignGuard;
 
 impl Drop for AlignGuard {
@@ -501,6 +515,32 @@ impl Drop for AlignGuard {
 
 fn try_commit(app: &AppHandle, rec: Rec) {
     if !rec.can_finalize() {
+        // Opt-in diagnostics must survive a short replay or a suspect final
+        // position pair. These are explicitly untrusted audio, never cached
+        // timings and never a karaoke-ready event. Disk work has its own gate.
+        if rec.samples.len() >= TARGET_HZ as usize * 15 {
+            let Some(guard) = EvidenceGuard::acquire() else {
+                log::warn!("karaoke: evidence writer busy for {}", rec.title);
+                return;
+            };
+            let handle = app.clone();
+            let result = std::thread::Builder::new().name("karaoke-evidence".into()).spawn(move || {
+                let _guard = guard;
+                if !settings::get_bool(&handle, DUMP_SETTING, false) { return; }
+                let synced = lyrics::cached_synced(&lyrics_dir(&handle), &rec.artist, &rec.title, &rec.album, rec.duration_ms).unwrap_or_default();
+                let Ok(root) = handle.path().app_data_dir() else { return; };
+                let dir = root.join("karaoke-diagnostics").join(&rec.key);
+                let map = TimeMap::fit(&rec.anchors, TARGET_HZ, rec.origin_ms);
+                if let Err(e) = write_dump(&dir, &rec, &synced, &[], &map) {
+                    log::warn!("karaoke: rejected evidence dump failed ({e})");
+                } else {
+                    log::info!("karaoke: retained untrusted diagnostic audio for {} at {} ({} unresolved strikes); no cache update", rec.title, dir.display(), rec.seek_strikes);
+                }
+            });
+            if let Err(e) = result {
+                log::warn!("karaoke: evidence thread spawn failed ({e})");
+            }
+        }
         return;
     }
     let map = TimeMap::fit(&rec.anchors, TARGET_HZ, rec.origin_ms);
@@ -814,6 +854,29 @@ pub async fn word_lead(app: AppHandle) -> i64 {
 mod tests {
     use super::*;
     use crate::align::TimedLine;
+    static ALIGNMENT_FLAG_TEST_GATE: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn short_evidence_can_save_while_another_song_is_aligning() {
+        let _test_gate = ALIGNMENT_FLAG_TEST_GATE.lock().unwrap();
+        ALIGNING.store(true, Ordering::SeqCst);
+        let _align = AlignGuard;
+        let evidence = EvidenceGuard::acquire().expect("diagnostics must not share the model gate");
+        assert!(
+            EvidenceGuard::acquire().is_none(),
+            "one disk writer at a time"
+        );
+        assert!(
+            EvidenceGuard::acquire().is_none(),
+            "failed acquisition must not release the active writer"
+        );
+        drop(evidence);
+        assert!(
+            ALIGNING.load(Ordering::SeqCst),
+            "saving evidence must not unlock inference"
+        );
+        assert!(EvidenceGuard::acquire().is_some());
+    }
 
     /// Explicit local integration test: real PCM/model through the production
     /// worker, source cache, word cache and karaoke-ready payload. Never writes
@@ -997,6 +1060,7 @@ mod tests {
 
     #[test]
     fn dropping_unstarted_alignment_job_releases_flag() {
+        let _test_gate = ALIGNMENT_FLAG_TEST_GATE.lock().unwrap();
         ALIGNING.store(true, Ordering::SeqCst);
         let guard = AlignGuard;
         let job = move || {
