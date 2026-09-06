@@ -1,5 +1,9 @@
 import unittest
-from karaoke_audit import onset_metrics
+from karaoke_audit import onset_metrics as measure
+
+def onset_metrics(words, labels, mapping, lead=0):
+    words = [dict(w, line_t=0) for w in words]
+    return measure(words, labels, mapping, words, lead)
 
 class TimingAuditTests(unittest.TestCase):
     def test_audio_clock_and_display_lead_are_not_conflated(self):
@@ -16,6 +20,12 @@ class TimingAuditTests(unittest.TestCase):
             onset_metrics([{'text': 'two', 't': 1000}], '1\t1\tone', mapping)
         with self.assertRaises(ValueError):
             onset_metrics([], '1\t1\tone', mapping)
+
+    def test_repeated_text_cannot_replace_missing_labeled_occurrence(self):
+        source = [{'text': 'again', 'line_t': 1000}, {'text': 'again', 'line_t': 2000}]
+        words = [{'text': 'again', 'line_t': 2000, 't': 1000}]
+        with self.assertRaises(ValueError):
+            measure(words, '1\t1\tagain', {'intercept_ms': 0, 'slope_ms': .0625}, source)
 
     def test_tail_error_is_visible_even_when_median_is_perfect(self):
         words = [{'text': str(i), 't': 1000 * i + (1000 if i == 9 else 0)} for i in range(10)]

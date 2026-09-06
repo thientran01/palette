@@ -2,7 +2,7 @@
 //! karaoke_acoustic <dump-dir> <model.onnx> <onnxruntime.dll> <output.json>
 use pulse_lib::{
     acoustic::AcousticAligner,
-    align::{parse_lrc, TimeMap},
+    align::{parse_lrc, tokenize, TimeMap},
 };
 use std::{path::PathBuf, time::Instant};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,7 +50,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             again.elapsed().as_secs_f64()
         );
     }
-    let result = serde_json::json!({"model":"native-mms-int8", "load_seconds":loaded, "seconds":seconds, "words":words, "margin_ms":margin, "diagnostics":diagnostics});
+    let source_tokens: Vec<_> = lines
+        .iter()
+        .flat_map(|line| {
+            tokenize(&line.text)
+                .into_iter()
+                .map(move |text| serde_json::json!({"line_t": line.t, "text": text}))
+        })
+        .collect();
+    let result = serde_json::json!({"model":"native-mms-int8", "load_seconds":loaded, "seconds":seconds, "words":words, "margin_ms":margin, "diagnostics":diagnostics, "source_tokens":source_tokens});
     std::fs::write(&args[3], serde_json::to_vec_pretty(&result)?)?;
     println!(
         "{} words; load {:.2}s; align {:.2}s; {}",

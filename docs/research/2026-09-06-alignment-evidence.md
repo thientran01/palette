@@ -29,7 +29,7 @@ The current decoder consumes each row as one ordered token stream. It cannot rep
 
 CTC letter support is exported for inspection. It is not calibrated confidence in timing; a low value alone must not decide cache replacement or visual fallback. The largest Blur errors include both low and moderate median support.
 
-The user identified Free by Rumi: high notes, exaggerated syllables, and harmonies. Its saved timing cache exists, but no original audio dump was retained. Diagnostic capture was prepared with the existing cache backed up and its words preserved. This is the next fixture needed to distinguish onset errors from premature vowel endings. Restore the prior diagnostic setting after collecting it.
+The user identified Free by Rumi: high notes, exaggerated syllables, and harmonies. A new 187.72-second recording was collected. The app flagged an unresolved end-of-track reset and retained untrusted diagnostic evidence instead of updating the cache. The preceding 41 anchors fit at 38ms RMS; absolute clock accuracy remains uncertain. The prior capture setting and saved Free cache were restored.
 
 ## Reproduction and validation
 
@@ -37,7 +37,25 @@ The user identified Free by Rumi: high notes, exaggerated syllables, and harmoni
 - Run the acoustic example with dump/model/runtime/output arguments. `PALETTE_PROBE_MARGIN_MS=0|500|1000` changes only the offline example; the app always calls margin 500 without diagnostics.
 - `karaoke_score score-words <dump> <labels> <output>` remains the canonical source-identity scorer.
 - `python scripts/karaoke_audit.py <output> --meta <meta.json> --labels <labels.txt> --lead-ms 0` reports comparable raw onset errors, plus row acoustic support and distance from window edges. Repeat with `--lead-ms 220` for displayed onset errors.
-- Audit metrics reconciled with the Rust scorer on both fixtures. Three Python tests pin audio/song clock conversion, display lead, missing/incorrect identity rejection, and outlier accounting.
+- Audit metrics reconciled with the Rust scorer on both fixtures. Four Python tests pin audio/song clock conversion, display lead, missing/incorrect source occurrence rejection (including repeated text), and outlier accounting.
 - 126 Rust tests pass (4 ignored), Clippy passes. Opt-in real-worker parity test reproduces all 372 Delulu word timings from the pre-investigation baseline; cold and reused results match exactly.
 
 Next experiments should target Free's observed failures and compare acoustic preparation/model behavior against the same audio. Do not promote a candidate on stability or path support alone. Keep timing source improvements separate from presentation smoothing.
+## Free: model precision and vocal separation
+
+The two chorus rows at 70.82s and 125.56s have low acoustic support. On the same diagnostic audio, full-precision and int8 MMS give identical starts/ends for both occurrences of the title word in both original-mix rows. More model precision does not resolve these examples. The independent torchaudio decoder with int8 emissions reproduces native boundaries on these rows.
+
+An offline [Hybrid Demucs MUSDB-HQ pipeline](https://docs.pytorch.org/audio/2.8/generated/torchaudio.pipelines.HDEMUCS_HIGH_MUSDB.html) isolated vocals in the two windows. Input is already mono 16kHz: upsampling and duplicating channels cannot recover discarded stereo or high-frequency detail. Two seconds of extra context surround alignment margins. Sample count and time map are preserved. No model/audio is bundled into the app.
+
+| Chorus / occurrence | Original mix duration ms | Isolated vocals duration ms (int8) |
+|---|---:|---:|
+| First / first | 222 | 1426 |
+| First / second | 362 | 402 |
+| Second / first | 280 | 501 |
+| Second / second | 260 | 822 |
+
+Separation took 3.06s and 4.06s wall time with two CPU threads for these context windows, excluding load; this is not a full-song cost estimate. The first separated chorus agrees across float/int8, but the second differs substantially. Longer spans alone are not proof of accuracy. No candidate was promoted.
+
+A local A/B player uses the original captured audio with original-mix versus separated timing. It compares raw boundaries without app lead/smoothing and is not a reproduction of the final UI. Audio and personal fixtures stay local.
+
+Reproduction: `scripts/research/karaoke_precision_probe.py <dump> <models> <output.json> --lines 70820 125560` uses existing float/int8 ONNX exports in the torch/torchaudio 2.8 environment. It supports only ASCII rows without numbers or punctuation-only tokens. `karaoke_separation_probe.py <dump> <new-directory> --lines 70820 125560` downloads official weights into TORCH_HOME and writes a separate experimental PCM fixture. Run the precision probe on that fixture. Neither script accesses app caches.
