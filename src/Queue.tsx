@@ -1193,7 +1193,7 @@ export function QueuePanel({
             </button>
           )}
         </div>
-        {/* Always reserve two status lines: a toast expiring must not move
+        {/* Always reserve one compact status line: a toast expiring must not move
             the remove buttons while the user is working through the queue.
             Long results can scroll inside this slot without resizing it. */}
         <p
@@ -1201,7 +1201,7 @@ export function QueuePanel({
           aria-live="polite"
           aria-atomic="true"
           tabIndex={toast ? 0 : undefined}
-          className={`m-0 mt-1 overflow-y-auto break-words ${s.toast} text-fg ${room ? "h-10 leading-5" : "h-8 leading-4"}`}
+          className={`m-0 mt-1 overflow-y-auto break-words ${s.toast} text-fg ${room ? "h-5 leading-5" : "h-4 leading-4"}`}
         >
           {toast}
         </p>
