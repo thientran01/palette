@@ -312,3 +312,33 @@ body {
     opacity: 0;
   }
 }
+
+/* Lyric spotlight: neutral ink, paint-only lift, no idle shimmer loop.
+ * Layout is always measured at full size; only the inner ink scales. */
+.lyric-row {
+  --lyric-peak: 255 255 255;
+}
+[data-theme="light"] .lyric-row { --lyric-peak: var(--fg); }
+.lyric-ink {
+  display: block;
+  transform-origin: left center;
+  transform: scale(var(--lyric-scale, 0.97));
+  filter: blur(var(--lyric-blur, 0px));
+  transition: transform var(--transition-duration-4) var(--ease-in-out-tk);
+}
+.lyric-row[data-current="true"] { --lyric-scale: 1; --lyric-blur: 0px; }
+.lyric-row[data-distance="3"]:not([data-current="true"]):not([data-browsing="true"]):not(:hover) {
+  --lyric-blur: 0.45px;
+}
+.lyric-row:hover, .lyric-row[data-browsing="true"] { --lyric-blur: 0px; }
+@media (prefers-reduced-motion: reduce) {
+  .lyric-ink { transform: none; filter: none; transition: none; }
+  .lyric-row [data-word] { --word-sheen: var(--word-bright, currentColor) !important; }
+}
+
+/* A brief onset bloom on the glyphs; the row background stays clear. */
+.lyric-ink { position: relative; }
+.lyric-row [data-word] { text-shadow: var(--word-bloom, none); }
+@media (prefers-reduced-motion: reduce) {
+  .lyric-row [data-word] { text-shadow: none; }
+}
