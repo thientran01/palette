@@ -20,3 +20,5 @@ User asked to push the direction further while keeping it light. Typography is n
 Native correction: removed the radial row background entirely and its driver state. Restored the active-line marker to the shared album accent (matching waveform/progress). Lyric text stays neutral; lighter typography and glyph-level effects remain.
 
 Latest native feedback: restore original typography; retain highlight and shimmer only. Restored base text-base size, original padding/leading/tracking and original medium timed-word weight. Removed scale and distance blur, and restored base context tone. Accent marker and word glint/bloom remain; timing is unchanged.
+
+Clarification: user liked spacing, scaling and blur; only typography was rejected. Restored 6px vertical row padding, .97-to-1 inner scale and .45px distant blur. Original text-base size, medium timed-word weight, default tracking and base context tone stay intact. Highlight, shimmer and accent marker remain.

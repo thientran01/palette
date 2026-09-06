@@ -279,7 +279,7 @@ export type LyricsScale = "base" | "focus";
  * bottom ramp is what makes the room read "a sentence, not a page". */
 const SCALE = {
   base: {
-    row: "px-3 py-1 text-base leading-normal",
+    row: "px-3 py-1.5 text-base leading-normal",
     marker: "h-4 w-[2px]",
     anchor: 0.4,
     mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
@@ -371,7 +371,7 @@ const LyricLineRow = memo(function LyricLineRow({
     ? timed
       ? "font-medium text-muted/80"
       : "font-medium text-fg"
-    : tier === null
+    : scale === "base" || tier === null
       ? "text-muted/80"
       : focusTone(tier, browsing);
   return (
@@ -388,6 +388,9 @@ const LyricLineRow = memo(function LyricLineRow({
           }
         : {})}
       data-word-row={timed ? index : undefined}
+      data-current={current ? "true" : undefined}
+      data-distance={tier ?? 0}
+      data-browsing={browsing ? "true" : undefined}
       data-cascade
       {...(anchor ? { "data-anchor": true } : {})}
       style={{ "--cascade-delay": `${cascadeDelayMs}ms` } as React.CSSProperties}
@@ -722,7 +725,7 @@ export function LyricsPanel({
               current={i === idx}
               seekable={seekable}
               scale={scale}
-              tier={scale === "focus" ? Math.min(Math.abs(i - Math.max(idx, 0)), 3) : null}
+              tier={Math.min(Math.abs(i - Math.max(idx, 0)), 3)}
               browsing={browsing}
               anchor={anchor}
               cascadeDelayMs={cascadeDelayMs}
