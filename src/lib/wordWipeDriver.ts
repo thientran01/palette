@@ -44,14 +44,10 @@ export function driveWordRows(
           row.style.setProperty("--word-bright", "rgb(var(--fg))");
           row.style.setProperty("--word-peak", "rgb(var(--lyric-peak))");
           row.style.setProperty("--word-halo", "rgb(var(--lyric-peak) / 0.28)");
-          row.style.setProperty("--lyric-scale", "1");
-          row.style.setProperty("--lyric-blur", "0px");
         } else {
           row.style.removeProperty("--word-bright");
           row.style.removeProperty("--word-peak");
           row.style.removeProperty("--word-halo");
-          row.style.removeProperty("--lyric-scale");
-          row.style.removeProperty("--lyric-blur");
         }
         track.active = active;
       }
@@ -101,8 +97,6 @@ export function driveWordRows(
       track.row.style.removeProperty("--word-bright");
       track.row.style.removeProperty("--word-peak");
       track.row.style.removeProperty("--word-halo");
-      track.row.style.removeProperty("--lyric-scale");
-      track.row.style.removeProperty("--lyric-blur");
     }
   };
 }

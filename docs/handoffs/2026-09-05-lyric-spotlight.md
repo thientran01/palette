@@ -18,3 +18,5 @@ User asked to push the direction further while keeping it light. Typography is n
 47 frontend tests pass, including bloom release, paused state, seek and disposal; production build passes. Browser preview confirms450 weight and the expected active-row radial field. Native appearance feedback remains pending.
 
 Native correction: removed the radial row background entirely and its driver state. Restored the active-line marker to the shared album accent (matching waveform/progress). Lyric text stays neutral; lighter typography and glyph-level effects remain.
+
+Latest native feedback: restore original typography; retain highlight and shimmer only. Restored base text-base size, original padding/leading/tracking and original medium timed-word weight. Removed scale and distance blur, and restored base context tone. Accent marker and word glint/bloom remain; timing is unchanged.
