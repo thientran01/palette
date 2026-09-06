@@ -61,6 +61,8 @@ struct StoreFile {
     #[serde(default)]
     synced: Option<String>,
     words: Vec<Word>,
+    #[serde(default)]
+    detail_v: u32,
 }
 
 #[derive(Serialize, Clone)]
@@ -245,6 +247,7 @@ fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::R
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
+        detail_v: 1,
         recipe: recipe().to_string(),
         synced: Some(synced.to_string()),
         words: words.to_vec(),
@@ -277,7 +280,17 @@ fn evict_old(cache_dir: &Path) {
 }
 
 fn has_file(dir: &Path, key: &str, synced: Option<&str>) -> bool {
-    !read_file(&dir.join(format!("{key}.json")), synced).is_empty()
+    let path = dir.join(format!("{key}.json"));
+    if read_file(&path, synced).is_empty() {
+        return false;
+    }
+    // Old accurate word caches remain readable while the next full listen
+    // upgrades acoustic detail. Mark the attempt even for non-English songs.
+    crate::acoustic::assets().is_none()
+        || std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<StoreFile>(&bytes).ok())
+            .is_some_and(|file| file.detail_v >= 1)
 }
 
 /// Cache eligibility is stricter than the 55% diagnostic-dump threshold:
@@ -581,6 +594,7 @@ fn write_dump(
     let to_io = |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let words_json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
+        detail_v: 1,
         recipe: recipe().to_string(),
         synced: Some(lrc.to_string()),
         words: words.to_vec(),
@@ -883,6 +897,37 @@ mod tests {
             serde_json::from_slice(&std::fs::read(cache.join(format!("{key}.json"))).unwrap())
                 .unwrap();
         assert_eq!(stored.recipe, acoustic::RECIPE);
+        assert_eq!(stored.detail_v, 1);
+        let detailed = words.iter().filter(|w| !w.points.is_empty()).count();
+        assert!(detailed > 0, "English evidence must retain acoustic detail");
+        for word in &words {
+            if let (Some(first), Some(last)) = (word.points.first(), word.points.last()) {
+                assert_eq!(first.t, word.t);
+                assert_eq!(Some(last.t), word.end);
+                assert_eq!(first.fraction, 0.0);
+                assert_eq!(last.fraction, 1.0);
+                assert!(word
+                    .points
+                    .windows(2)
+                    .all(|p| p[0].t <= p[1].t && p[0].fraction <= p[1].fraction));
+            }
+        }
+        assert!(has_file(&cache, &key, Some(&synced)));
+        // A legacy cache still displays, but allows one future detail upgrade.
+        let mut legacy = serde_json::to_value(&stored).unwrap();
+        legacy.as_object_mut().unwrap().remove("detail_v");
+        std::fs::write(
+            cache.join(format!("{key}.json")),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            load(&cache, &artist, &title, &album, duration_ms, Some(&synced)),
+            words
+        );
+        assert!(!has_file(&cache, &key, Some(&synced)));
+        println!("Retained acoustic spelling detail for {detailed} words");
+
         assert!(load(
             &cache,
             &artist,
@@ -973,6 +1018,7 @@ mod tests {
             text: "one".into(),
             end: Some(1200),
             line_t: Some(1000),
+            points: Vec::new(),
         }];
         write_file(&dir, &key, source, &words).unwrap();
         assert_eq!(load(&dir, "a", "b", "c", 180_000, Some(source)), words);
@@ -1027,12 +1073,14 @@ mod tests {
                 text: "one".into(),
                 end: Some(1200),
                 line_t: Some(1000),
+                points: Vec::new(),
             },
             Word {
                 t: 1800,
                 text: "two".into(),
                 end: Some(2100),
                 line_t: Some(2000),
+                points: Vec::new(),
             },
         ];
         assert_eq!(line_coverage(&lines, &words), 100);
@@ -1077,12 +1125,14 @@ mod tests {
                 text: "one ".into(),
                 end: Some(1200),
                 line_t: Some(1000),
+                points: Vec::new(),
             },
             Word {
                 t: 1300,
                 text: "two".into(),
                 end: Some(1500),
                 line_t: Some(1000),
+                points: Vec::new(),
             },
         ];
         write_file(&dir, "abc", "[00:01.00]one two", &words).unwrap();
@@ -1143,6 +1193,7 @@ mod tests {
             text: "one".into(),
             end: Some(1400),
             line_t: Some(1000),
+            points: Vec::new(),
         }];
         assert_eq!(line_coverage(&lines, &words), 33);
         assert!(line_coverage(&lines, &[]) == 0);

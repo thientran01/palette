@@ -1,6 +1,6 @@
 //! Local MMS_FA acoustic alignment. No labels, network, or UI clock access.
 //! The caller supplies a 16 kHz recording and its capture-to-song time map.
-use crate::align::{tokenize, TimeMap, TimedLine, Word};
+use crate::align::{tokenize, TimeMap, TimedLine, Word, WordPoint};
 use ort::{session::Session, value::Tensor};
 use sha2::{Digest, Sha256};
 use std::{
@@ -333,12 +333,26 @@ impl AcousticAligner {
             let spans = ctc_spans(logp, CLASSES, &plan.targets)?;
             let ratio = (end - begin) as f64 / shape[1] as f64;
             let positions = word_frames(&plan.ranges, &spans);
-            for (text, (start, end)) in plan.tokens.into_iter().zip(positions) {
+            for ((text, range), (start, end)) in
+                plan.tokens.into_iter().zip(&plan.ranges).zip(positions)
+            {
+                let points = range
+                    .as_ref()
+                    .map(|range| {
+                        spelling_points(
+                            &text,
+                            &plan.targets[range.clone()],
+                            &spans[range.clone()],
+                            |frame| to_time(begin as f64 + frame as f64 * ratio),
+                        )
+                    })
+                    .unwrap_or_default();
                 words.push(Word {
                     text,
                     t: to_time(begin as f64 + start as f64 * ratio),
                     end: Some(to_time(begin as f64 + end as f64 * ratio)),
                     line_t: Some(line.t),
+                    points,
                 });
             }
         }
@@ -346,9 +360,82 @@ impl AcousticAligner {
     }
 }
 
+/// Keep internal CTC spans only when labels map directly to displayed ASCII
+/// spelling. Romanized scripts retain their existing syllable-token behavior.
+fn spelling_points(
+    text: &str,
+    targets: &[usize],
+    spans: &[TokenSpan],
+    time: impl Fn(usize) -> i64,
+) -> Vec<WordPoint> {
+    if !text.is_ascii() {
+        return Vec::new();
+    }
+    let letters: Vec<_> = text
+        .bytes()
+        .enumerate()
+        .filter(|(_, b)| b.is_ascii_alphabetic() || *b == b'\'')
+        .collect();
+    if letters.len() < 4
+        || letters.len() != targets.len()
+        || spans.len() != targets.len()
+        || letters
+            .iter()
+            .zip(targets)
+            .any(|((_, b), &target)| LABELS.get(target) != Some(&b.to_ascii_lowercase()))
+    {
+        return Vec::new();
+    }
+    let width = text.trim_end().len() as f64;
+    let mut points = Vec::with_capacity(spans.len() * 2);
+    for (i, ((offset, _), span)) in letters.iter().zip(spans).enumerate() {
+        let fraction = if i == 0 { 0.0 } else { *offset as f64 / width };
+        points.push(WordPoint {
+            t: time(span.start),
+            fraction,
+        });
+        let fraction = if i + 1 == letters.len() {
+            1.0
+        } else {
+            letters[i + 1].0 as f64 / width
+        };
+        points.push(WordPoint {
+            t: time(span.end),
+            fraction,
+        });
+    }
+    points
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn spelling_detail_preserves_internal_gap_and_source_punctuation() {
+        let romanizer = uroman::Uroman::new();
+        let plan = plan_tokens(vec!["(hallway!) ".into()], &romanizer).unwrap();
+        let range = plan.ranges[0].clone().unwrap();
+        let spans: Vec<_> = (0..7)
+            .map(|i| TokenSpan {
+                start: i * 10 + if i >= 4 { 30 } else { 0 },
+                end: i * 10 + 5 + if i >= 4 { 30 } else { 0 },
+                confidence: 1.0,
+            })
+            .collect();
+        let points = spelling_points(&plan.tokens[0], &plan.targets[range], &spans, |frame| {
+            1000 + frame as i64 * 10
+        });
+        assert_eq!(points.first().unwrap().fraction, 0.0);
+        assert_eq!(points.last().unwrap().fraction, 1.0);
+        assert_eq!(points[7].fraction, points[8].fraction);
+        assert_eq!(points[8].t - points[7].t, 350);
+        assert!(points
+            .windows(2)
+            .all(|p| p[0].t <= p[1].t && p[0].fraction <= p[1].fraction));
+        assert!(spelling_points("한글", &[1; 7], &spans, |f| f as i64).is_empty());
+        assert!(spelling_points("hallway", &[1; 7], &spans, |f| f as i64).is_empty());
+    }
+
     #[test]
     fn repeated_letters_require_blank_and_have_distinct_spans() {
         let scores = [0.01f32, 0.99, 0.99, 0.01, 0.01, 0.99].map(f32::ln);

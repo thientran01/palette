@@ -9,7 +9,7 @@
  * break, and short gaps stay as they were (previous line current).
  */
 import { describe, expect, it } from "vitest";
-import { attachWords, currentLineIndex, parseLrc, wordWipe, type LyricLine } from "./lrc";
+import { attachWords, currentLineIndex, parseLrc, wordWipe, wordWipeFraction, type LyricLine } from "./lrc";
 
 /** Lines that render as the five-dot rest row. */
 function breaks(lines: LyricLine[]): LyricLine[] {
@@ -229,5 +229,32 @@ describe("concurrent backing phrase attachment", () => {
     expect(once[0].words?.[0]).toEqual(words[0]);
     expect(once[0].words?.[1]).toMatchObject({t:1000,end:4000,timing:"phrase"});
     expect(attachWords(once,words)).toEqual(once);
+  });
+});
+
+
+describe("acoustic spelling fill", () => {
+  const word = { t: 1000, end: 2000, text: "hallway ", points: [
+    { t: 1000, fraction: 0 }, { t: 1200, fraction: 4 / 7 },
+    { t: 1600, fraction: 4 / 7 }, { t: 2000, fraction: 1 },
+  ] };
+  it("holds inside a compound word until the next acoustic segment", () => {
+    expect(wordWipeFraction(word, 1300, 0)).toBeCloseTo(4 / 7);
+    expect(wordWipeFraction(word, 1500, 0)).toBeCloseTo(4 / 7);
+    expect(wordWipeFraction(word, 1800, 0)).toBeCloseTo(5.5 / 7);
+    expect(wordWipeFraction(word, 2000, 0)).toBe(1);
+  });
+  it("uses the same lead and resets immediately on backward seek", () => {
+    expect(wordWipeFraction(word, 1640, 160)).toBeCloseTo(5.5 / 7);
+    expect(wordWipeFraction(word, 940, 160)).toBeCloseTo(2 / 7);
+    expect(wordWipeFraction(word, 800, 160)).toBe(0);
+  });
+  it("uses measured duration for legacy English words instead of a 90ms flash", () => {
+    expect(wordWipeFraction({ t: 1000, end: 2000, text: "comeback" }, 1500, 0)).toBe(.5);
+    expect(wordWipeFraction({ t: 1000, end: 2000, text: "한" }, 1090, 0)).toBe(1);
+  });
+  it("ignores malformed detail and phrase remapping overrides acoustic detail", () => {
+    expect(wordWipeFraction({ ...word, points: [...word.points].reverse() }, 1500, 0)).toBe(.5);
+    expect(wordWipeFraction({ ...word, timing: "phrase" }, 1500, 0)).toBe(.5);
   });
 });

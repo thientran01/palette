@@ -4,6 +4,8 @@ export interface LyricWord {
   t: number;
   text: string;
   end?: number;
+  /** Acoustic spelling checkpoints within the original word span. */
+  points?: { t: number; fraction: number }[];
   /** Source-timed vocal phrase, not an acoustically measured word. */
   timing?: "phrase";
   /** Stamp of the LRC line this word belongs to (align.rs). Attachment
@@ -201,8 +203,8 @@ function backingWords(line: LyricLine, words: LyricWord[]): LyricWord[] {
     if (offset <= phrase.textStart) return [word];
     const cut = Math.max(phrase.textStart - start, 0);
     const backing: LyricWord = { ...word, text: word.text.slice(cut),
-      t: time(start + cut), end: time(offset), timing: "phrase" };
-    return cut ? [{ ...word, text: word.text.slice(0, cut) }, backing] : [backing];
+      t: time(start + cut), end: time(offset), timing: "phrase", points: undefined };
+    return cut ? [{ ...word, text: word.text.slice(0, cut), points: undefined }, backing] : [backing];
   });
 }
 
@@ -241,9 +243,8 @@ export function currentWordIndex(words: LyricWord[], positionMs: number, leadMs:
   return ans;
 }
 
-/** How long a word takes to fill after its onset. The rest of the word
- * stays fully bright — crawling through a hold reads as a progress bar,
- * not a beat. Matches DUR[1]. */
+/** Short tokens and Hangul blocks retain the onset attack (DUR[1]).
+ * Longer English spellings use acoustic checkpoints or measured duration. */
 export const WORD_ATTACK_MS = 90;
 
 export function wordWipe(
@@ -263,8 +264,27 @@ export function wordWipeFraction(w: LyricWord, positionMs: number, leadMs: numbe
   const end = w.end ?? nextT;
   if (end === undefined) return 1;
   const span = Math.max(end - w.t, 1);
-  const attack = w.timing === "phrase" ? span : Math.min(WORD_ATTACK_MS, span);
+  const points = w.points;
+  if (w.timing !== "phrase" && points && points.length >= 2 &&
+      points[0].t === w.t && points[0].fraction === 0 &&
+      points[points.length - 1].t === end && points[points.length - 1].fraction === 1 &&
+      points.every((point, i) => Number.isFinite(point.t) && Number.isFinite(point.fraction) &&
+        point.fraction >= 0 && point.fraction <= 1 &&
+        (i === 0 || (point.t >= points[i - 1].t && point.fraction >= points[i - 1].fraction)))) {
+    const p = positionMs + leadMs;
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1], b = points[i];
+      if (p < b.t) return a.fraction + (b.fraction - a.fraction) *
+        Math.max(0, (p - a.t) / Math.max(b.t - a.t, 1));
+    }
+    return 1;
+  }
+  // Legacy caches have no inner timing. Longer English words use their
+  // measured duration; never manufacture phonetic syllable boundaries.
+  const sustained = w.timing === "phrase" || (/^[\x00-\x7f]*$/.test(w.text) &&
+    /^[^a-z]*[a-z][a-z'-]{3,}[^a-z]*$/i.test(w.text));
+  const attack = sustained ? span : Math.min(WORD_ATTACK_MS, span);
   const p = positionMs + leadMs;
   const u = Math.min(Math.max((p - w.t) / attack, 0), 1);
-  return w.timing === "phrase" ? u : 1 - (1 - u) ** 3;
+  return sustained ? u : 1 - (1 - u) ** 3;
 }

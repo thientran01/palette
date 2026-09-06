@@ -579,12 +579,14 @@ mod tests {
                 text: "one".into(),
                 line_t: Some(1000),
                 end: Some(1200),
+                points: Vec::new(),
             },
             Word {
                 t: 1300,
                 text: "two".into(),
                 line_t: Some(1000),
                 end: Some(1500),
+                points: Vec::new(),
             },
         ];
         assert_eq!(prediction_indices(&d, &words).unwrap(), vec![0, 1]);
