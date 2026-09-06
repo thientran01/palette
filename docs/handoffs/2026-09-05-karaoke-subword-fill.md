@@ -1,0 +1,9 @@
+# Acoustic detail inside English words
+
+English words previously finished their wipe within 90ms even with a much longer measured span. The renderer now uses optional CTC spelling checkpoints inside the existing word span; older caches use measured duration for ASCII words with at least four spelling characters. Short tokens and Hangul blocks retain the onset attack. This is acoustic spelling alignment, not a phonetic syllabifier or a guarantee of precise syllable boundaries. Character fractions approximate visual width in the proportional font.
+
+The model, decoder, word starts/ends, 160ms user lead, source-line ownership and DOM structure are unchanged. No additional model pass, timers or spans. Only source ASCII spellings whose normalized target labels match are eligible. Source-derived backing phrases override detail. Invalid checkpoints fall back to the existing word envelope.
+
+Store detail_v=1 marks a completed detail upgrade without changing the word recipe. Legacy caches remain readable while a future complete visible local listen refreshes detail. Failed/partial recordings leave the previous cache intact. No cache deletion or manual relabeling is required.
+
+Validation: 51 frontend tests, 119 Rust library tests plus 5 scorer tests; fmt, clippy and production frontend build pass. The explicit local Heart to Heart recording-to-cache/ready integration passes, including legacy cache readability and refresh eligibility. All 118 word text/start/end/line_t values exactly match native-installed-heart.json; 66 words gain detail. Four independent quick-review perspectives (correctness, project fit, failure modes, recurring bug families) found no actionable issues. Live listening remains the check for perceptual quality, especially silent letters, held vowels and layered vocals.

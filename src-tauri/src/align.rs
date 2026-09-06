@@ -13,6 +13,13 @@ pub struct TimedLine {
     pub text: String,
 }
 
+/// Acoustic spelling checkpoints, not phonetic syllable boundaries.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct WordPoint {
+    pub t: i64,
+    pub fraction: f64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Word {
     pub t: i64,
@@ -25,6 +32,8 @@ pub struct Word {
     /// attachment glued it onto the previous row ("MoveFly", 2026-09-05).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_t: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<WordPoint>,
 }
 
 /// Sample-index → track-position map for one recording: a least-squares
@@ -608,6 +617,7 @@ fn spread(tokens: &[String], weights: &[f32], p: LinePrior, next_t: i64) -> Vec<
             text: tok.clone(),
             end: Some(if i + 1 < n { starts[i + 1] } else { last_end }),
             line_t: None,
+            points: Vec::new(),
         })
         .collect()
 }

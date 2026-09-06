@@ -50,7 +50,7 @@ describe("word rows follow onsets independently of the line marker", () => {
   it("clears future highlights on a backward seek and recomputes their wipe", () => {
     const h = harness(3200); const upcoming = row(1, 3000);
     const stop = driveWordRows([upcoming], 0, 0, h.clock, h.frames);
-    expect(upcoming.spans[0].values.get("--wipe")).toBe("100.0%");
+    expect(upcoming.spans[0].values.get("--wipe")).toBe("20.0%");
     h.anchor(1000, false);
     expect(upcoming.style.values.has("--word-bright")).toBe(false);
     expect(upcoming.style.values.has("--word-peak")).toBe(false);
@@ -79,10 +79,10 @@ describe("word rows follow onsets independently of the line marker", () => {
     expect(current.style.values.has("--lyric-blur")).toBe(false);
   });
   it("does not write unchanged spans or animate empty panels", () => {
-    const h = harness(1500); const current = row(0, 1000);
+    const h = harness(2500); const current = row(0, 1000);
     const stop = driveWordRows([current], 0, 0, h.clock, h.frames);
     current.spans[0].setProperty.mockClear();
-    h.frame(1550); h.frame(1600);
+    h.frame(2550); h.frame(2600);
     expect(current.spans[0].setProperty).not.toHaveBeenCalled();
     stop();
     driveWordRows([], -1, 0, h.clock, h.frames)();
