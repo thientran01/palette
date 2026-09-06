@@ -439,8 +439,30 @@ fn line_coverage(lines: &[align::TimedLine], words: &[Word]) -> u32 {
     (hit * 100).checked_div(total).unwrap_or(0)
 }
 
+// A source handoff invalidates the audio/clock association, even when paused.
+fn discard_non_music(np: &NowPlaying, slot: &mut Option<Rec>) -> Option<Rec> {
+    if crate::history::music_source(&np.player, &np.media_kind) {
+        None
+    } else {
+        slot.take()
+    }
+}
+
 pub fn observe(app: &AppHandle, np: &NowPlaying) {
-    if np.player == "none" || np.status != "playing" {
+    if !crate::history::music_source(&np.player, &np.media_kind) {
+        RECORDING.store(false, Ordering::Relaxed);
+        let discarded = discard_non_music(np, &mut lock_rec());
+        if let Some(rec) = discarded {
+            log::info!(
+                "karaoke: source changed to {} — discarding capture for {}",
+                np.player,
+                rec.title
+            );
+            sync_state(&rec.key, "waiting", "Playback switched away from the music app. Replay from the beginning to learn timing.");
+        }
+        return;
+    }
+    if np.status != "playing" {
         return;
     }
     if np.title.is_empty() && np.artist.is_empty() {
@@ -529,6 +551,13 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     if has_file(&dir, &key, synced.as_deref()) {
         return;
     }
+    log::info!(
+        "karaoke: recording {} from {} at {}ms; timed lyrics cached={}",
+        np.title,
+        np.player,
+        origin_ms,
+        synced.is_some()
+    );
     let rec = Rec {
         key,
         artist: np.artist.clone(),
@@ -877,6 +906,7 @@ fn commit_recording(
             "failed",
             "Timed lyrics weren’t available for this recording.",
         );
+        log::warn!("karaoke: cannot align {} — timed lyrics missing", rec.title);
         return;
     };
     if has_file(karaoke_dir, &rec.key, Some(&synced)) {
@@ -1539,6 +1569,39 @@ mod tests {
             anchors,
             last_anchor_at: 0,
             seek_strikes: 0,
+        }
+    }
+
+    #[test]
+    fn browser_handoff_discards_recording_even_when_paused() {
+        let mut slot = Some(rec_with(vec![], 180_000));
+        let browser = NowPlaying {
+            player: "other".into(),
+            media_kind: "music".into(),
+            title: "Quiet vocals · onset experiment".into(),
+            status: "paused".into(),
+            ..Default::default()
+        };
+        assert!(discard_non_music(&browser, &mut slot).is_some());
+        assert!(slot.is_none());
+        assert!(discard_non_music(&browser, &mut slot).is_none());
+    }
+
+    #[test]
+    fn music_source_guard_preserves_paused_music_but_rejects_video() {
+        for player in ["spotify", "apple_music"] {
+            let mut slot = Some(rec_with(vec![], 180_000));
+            let mut np = NowPlaying {
+                player: player.into(),
+                media_kind: "unknown".into(),
+                status: "paused".into(),
+                ..Default::default()
+            };
+            assert!(discard_non_music(&np, &mut slot).is_none());
+            assert!(slot.is_some());
+            np.media_kind = "video".into();
+            assert!(discard_non_music(&np, &mut slot).is_some());
+            assert!(slot.is_none());
         }
     }
 
