@@ -45,7 +45,7 @@ export const POPOVER_W = 312;
 export const POPOVER_GAP = 12;
 
 /** Per-scale clothes + physics (the LyricsPanel SCALE precedent: same
- * grammar, two rooms). "base" is the widget's 44px grid — rowH is the drag
+ * grammar, two rooms). "base" is the widget's 56px grid — rowH is the drag
  * math's grid, swapAt just past half a row. "room" is the focus takeover's
  * setlist (2026-09-01): a reading column, not a one-rung-up popover —
  * taller rows, 52px art, type in the room's metadata register. Row height
@@ -54,13 +54,13 @@ export const POPOVER_GAP = 12;
 export type QueueScale = "base" | "room";
 const QSCALE = {
   base: {
-    rowH: 44,
-    swapAt: 26,
-    thumb: 26,
-    row: "h-[44px] gap-2.5 rounded-md px-2",
-    title: "text-xs",
-    artist: "text-[11px]",
-    label: "text-[10px]",
+    rowH: 56,
+    swapAt: 32,
+    thumb: 44,
+    row: "h-[56px] shrink-0 gap-2.5 rounded-md px-2",
+    title: "text-sm leading-5",
+    artist: "text-xs leading-4",
+    label: "text-[11px]",
     // One rung above the labels: the chip carries action RESULTS and errors
     // (Search/Prefs seat the same role at 12px; 10px buried "Couldn't find
     // it on Spotify" in the header row).
@@ -325,7 +325,7 @@ async function playTrackNow(t: { uri: string; title: string; artist: string }): 
 // ---- rows ----
 
 /** Cover thumb (remote url straight into an img; note glyph on a null OR
- * dead url) — 26px in the queue rows; the search window passes its own size
+ * dead url) — 44px in the base queue rows; the search window passes its own size
  * (same grammar, bigger room). Exported for the search window's result rows. */
 export function RowThumb({ url, size = 26 }: { url: string | null; size?: number }) {
   // A dead art_url (CDN 403/404) degrades to the glyph — an empty tile reads
@@ -380,7 +380,7 @@ function RowActionButton({
         e.stopPropagation();
         onClick();
       }}
-      className={`grid ${s.btn} shrink-0 place-items-center rounded-md text-fg opacity-0 [transition:opacity_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/10 active:scale-95 group-hover/row:opacity-100 group-focus-within/row:opacity-100`}
+      className={`grid ${s.btn} shrink-0 place-items-center rounded-md text-fg ${label === "Add to queue" ? "opacity-50" : "opacity-0"} [transition:opacity_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/10 active:scale-95 group-hover/row:opacity-100 group-focus-within/row:opacity-100`}
     >
       {children}
     </button>
@@ -1145,24 +1145,28 @@ export function QueuePanel({
       onScroll={onScroll}
       className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain [scrollbar-width:none]"
     >
-      <div className={room ? "px-1 pb-3 pt-1" : "px-2 pb-0.5 pt-1.5"}>
+      <div className={room ? "px-1 pb-3 pt-1" : "px-2"}>
         <div className={room ? "flex items-end gap-3" : "flex items-center gap-1.5"}>
           {room ? (
             <div className="min-w-0 flex-1">
               <p className="text-[22px] font-medium leading-tight text-fg">
                 Up next{rows.length > 0 && ` · ${rows.length}`}
               </p>
-              <p className={`${s.label} mt-0.5 text-muted/85`}>
-                {queueLive ? "Spotify · drag to reorder" : "Spotify"}
+              <p role="status" aria-live="polite" aria-atomic="true" title={toast || undefined}
+                className={`${s.label} mt-0.5 truncate leading-5 ${toast ? "text-fg" : "text-muted/85"}`}>
+                {toast || (queueLive ? "Spotify · drag to reorder" : "Spotify")}
               </p>
             </div>
           ) : (
             <>
-              <span className={`${s.label} uppercase tracking-widest text-muted`}>
+              <span className="shrink-0 text-sm font-medium text-fg">
                 Up next{rows.length > 0 && ` · ${rows.length}`}
               </span>
-              <span className={`${s.label} text-muted/85`}>
-                {queueLive ? "Spotify · drag to reorder" : "Spotify"}
+              {/* Feedback replaces the hint in a fixed-height header, never a list row.
+                  Full text remains available to assistive tech and on hover. */}
+              <span role="status" aria-live="polite" aria-atomic="true" title={toast || undefined}
+                className={`min-w-0 flex-1 truncate ${s.label} leading-4 ${toast ? "text-fg" : "text-muted/85"}`}>
+                {toast || (queueLive && rows.length > 1 ? "Drag to reorder" : "Spotify")}
               </span>
             </>
           )}
@@ -1193,13 +1197,7 @@ export function QueuePanel({
             </button>
           )}
         </div>
-        {/* Feedback on its own row — never competes with the sparkle for width
-            (a truncated "Last.fm doesn't know this o…" read as broken chrome). */}
-        {toast ? (
-          <p aria-live="polite" className={`m-0 pt-1 ${s.toast} leading-snug text-fg`}>
-            {toast}
-          </p>
-        ) : null}
+
       </div>
       {/* The gate NARRATES instead of hiding: the list persists across
           players/connection, and queued rows vanishing on an Apple Music
@@ -1218,13 +1216,13 @@ export function QueuePanel({
         ref={zoneRef}
         role="list"
         aria-label="Up next"
-        className={`flex flex-col rounded-lg border [transition:border-color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk)] ${
-          ghost?.over ? "border-accent/55 bg-accent/5" : "border-transparent"
+        className={`flex flex-col rounded-lg outline outline-1 -outline-offset-1 [transition:outline-color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk)] ${
+          ghost?.over ? "outline-accent/55 bg-accent/5" : "outline-transparent"
         }`}
       >
         {rows.length === 0 && !gated && (
-          <p className={`m-0 px-2 py-2 ${s.prose} text-muted`}>
-            Queue is empty — press + on a track below or drag one here.
+          <p className={`m-0 px-2 ${room ? "py-2" : "py-1"} ${s.prose} text-muted`}>
+            Nothing queued. Add a track from Earlier.
           </p>
         )}
         {(() => {
@@ -1253,11 +1251,11 @@ export function QueuePanel({
           });
         })()}
       </div>
-      <div className={room ? "px-1 pb-2 pt-8" : "px-2 pb-0.5 pt-2.5"}>
+      <div className={room ? "px-1 pb-2 pt-8" : "px-2 pt-1"}>
         {room ? (
           <p className="text-[22px] font-medium leading-tight text-fg">Earlier</p>
         ) : (
-          <span className={`${s.label} uppercase tracking-widest text-muted`}>Earlier</span>
+          <span className={`block ${s.label} leading-4 uppercase tracking-widest text-muted`}>Earlier</span>
         )}
       </div>
       <div role="list" aria-label="Earlier" className="flex flex-col">
