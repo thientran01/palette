@@ -31,7 +31,8 @@ export type MorphName =
   | "mic"
   | "micOff"
   | "note"
-  | "queue";
+  | "queue"
+  | "syncWaiting" | "syncLearning" | "syncProcessing" | "syncSaved" | "syncFailed";
 
 export type Stroke = { d: string; o: 0 | 1 };
 
@@ -41,6 +42,33 @@ export type Stroke = { d: string; o: 0 | 1 };
 export const STROKE_WIDTH = 1.75;
 
 export const ICONS: Record<MorphName, [Stroke, Stroke, Stroke]> = {
+  // Lyric sync family: authored in the same 3-stroke / 2-cubic grammar.
+  // The enclosing stroke gathers into a seal; the inner verb becomes a check.
+  syncWaiting: [
+    {d:"M 3,4 C 4.7,4 6.3,4 8,4 C 9.7,4 11.3,4 13,4",o:1},
+    {d:"M 3,8 C 4.3,8 5.7,8 7,8 C 8.3,8 9.7,8 11,8",o:1},
+    {d:"M 3,12 C 4,12 5,12 6,12 C 7,12 8,12 9,12",o:1},
+  ],
+  syncLearning: [
+    {d:"M 5,2.5 C 1,2.5 1,8 2.5,10 C 3,12 4,13.5 5,13.5",o:1},
+    {d:"M 5,8 C 6,8 6,4 8,4 C 10,4 10,8 11,8",o:1},
+    {d:"M 11,2.5 C 15,2.5 15,8 13.5,10 C 13,12 12,13.5 11,13.5",o:1},
+  ],
+  syncProcessing: [
+    {d:"M 3,2.5 C 6,2.5 10,2.5 13,2.5 C 13,5 10,7 8,8",o:1},
+    {d:"M 3,13.5 C 6,13.5 10,13.5 13,13.5 C 13,11 10,9 8,8",o:1},
+    {d:"M 3,2.5 C 3,5 6,7 8,8 C 6,9 3,11 3,13.5",o:1},
+  ],
+  syncSaved: [
+    {d:"M 8,2 C 0,2 0,14 8,14 C 16,14 16,2 8,2",o:1},
+    {d:"M 5,8 C 5.7,8.7 6.3,9.3 7,10 C 8.3,8.7 9.7,7.3 11,6",o:1},
+    {d:"M 7,10 C 7,10 7,10 7,10 C 7,10 7,10 7,10",o:0},
+  ],
+  syncFailed: [
+    {d:"M 8,2 C 0,2 0,14 8,14 C 16,14 16,2 8,2",o:1},
+    {d:"M 8,5 C 8,5.7 8,6.3 8,7 C 8,7.7 8,8.3 8,9",o:1},
+    {d:"M 8,11 C 8,11 8,11 8,11 C 8,11 8,11 8,11",o:1},
+  ],
   // Outline triangle; centroid (not bbox) centered so it isn't left-heavy.
   // Stroke 0 is byte-identical to pause's left bar — the play↔pause morph
   // has a perfectly static welded anchor and the toggle is stroke 1 alone.

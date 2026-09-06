@@ -163,12 +163,69 @@ struct TokenPlan {
     ranges: Vec<Option<std::ops::Range<usize>>>,
 }
 
+fn expand_digit(token: &str) -> String {
+    const NAMES: [&str; 10] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    ];
+    // Multi-digit values need language/context (12 != one two); leave them
+    // to the existing romanizer rather than inventing a pronunciation.
+    if token.chars().filter(char::is_ascii_digit).count() != 1 {
+        return token.to_string();
+    }
+    token
+        .chars()
+        .map(|c| {
+            if c.is_ascii_digit() {
+                NAMES[c as usize - '0' as usize].to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
 fn plan_tokens(tokens: Vec<String>, romanizer: &uroman::Uroman) -> Result<TokenPlan> {
     let mut targets = vec![STAR];
     let mut ranges = Vec::new();
+    // No reliable language tag accompanies LRC. Require ASCII plus multiple
+    // English context words before assigning English names to bare digits.
+    // 4sho is an explicit English rebus, not a language-wide number rule.
+    let english_context = tokens.iter().all(|t| t.is_ascii())
+        && tokens
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t.trim()
+                        .trim_matches(|c: char| !c.is_alphabetic())
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "the"
+                        | "we"
+                        | "all"
+                        | "my"
+                        | "you"
+                        | "your"
+                        | "fingers"
+                        | "door"
+                        | "doors"
+                        | "know"
+                        | "this"
+                        | "for"
+                        | "and"
+                )
+            })
+            .count()
+            >= 2;
     for token in &tokens {
+        // Preserve display text while giving isolated digits (and 4sho-style
+        // spellings) an English spoken target. Never drop a spoken digit.
+        let spoken = if english_context || token.trim().eq_ignore_ascii_case("4sho") {
+            expand_digit(token)
+        } else {
+            token.clone()
+        };
         let normalized: String = romanizer
-            .romanize_string::<uroman::rom_format::Str>(token, None)
+            .romanize_string::<uroman::rom_format::Str>(&spoken, None)
             .to_string()
             .to_lowercase()
             .chars()
@@ -527,5 +584,35 @@ mod tests {
         assert!(ctc_spans(&[0.0, f32::NAN], 2, &[1]).is_err());
         assert!(ctc_spans(&[0.0, 0.0], 2, &[0]).is_err());
         assert!(ctc_spans(&[0.0, 0.0], 2, &[2]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod digit_tests {
+    use super::*;
+    #[test]
+    fn four_sho_spoken_digits_keep_original_display_slots() {
+        let roman = uroman::Uroman::new();
+        let tokens = tokenize("All we know 4 fingers up");
+        let original = tokens.clone();
+        let plan = plan_tokens(tokens, &roman).unwrap();
+        assert_eq!(plan.tokens, original);
+        let range = plan.ranges[3].clone().unwrap();
+        let spoken: String = plan.targets[range]
+            .iter()
+            .map(|&i| LABELS[i] as char)
+            .collect();
+        assert_eq!(spoken, "four");
+        let slang = plan_tokens(vec!["4sho".into()], &roman).unwrap();
+        let spoken: String = slang.targets[slang.ranges[0].clone().unwrap()]
+            .iter()
+            .map(|&i| LABELS[i] as char)
+            .collect();
+        assert_eq!(spoken, "foursho");
+        assert_eq!(slang.tokens[0], "4sho");
+        assert_eq!(expand_digit("12"), "12");
+        assert_eq!(expand_digit("hello"), "hello");
+        assert!(plan_tokens(tokenize("4월"), &roman).is_err());
+        assert!(plan_tokens(vec!["4".into()], &roman).is_err());
     }
 }

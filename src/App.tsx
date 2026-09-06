@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import type { MorphName } from "./icons/geometry";
 import { MorphIcon } from "./icons/MorphIcon";
+import { LyricSyncStatus } from "./LyricSyncStatus";
 import { useBracketPulse } from "./icons/useBracketPulse";
 import {
   commands,
@@ -1025,6 +1026,9 @@ function ExpandedView({
               <TruncateTip text={np.artist} className="text-xs leading-4 text-muted" />
             </TrackFadeSpan>
           </div>
+          {active === "lyrics" && lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && (
+            <LyricSyncStatus np={np} saved={lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
+          )}
         </div>
 
         {/* Lyrics view — the top-[52px] body box clears the fixed header.

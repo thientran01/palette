@@ -41,6 +41,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { MorphIcon } from "./icons/MorphIcon";
+import { LyricSyncStatus } from "./LyricSyncStatus";
 import {
   commands,
   onFocusShown,
@@ -580,6 +581,11 @@ export default function Focus() {
                           entrance ? "" : "animate-[caption-in_90ms_var(--ease-out-tk)_both]"
                         }`}
                       >
+                        <div className="relative z-20 h-0 shrink-0">
+                          <div className="absolute right-0 bottom-1">
+                            <LyricSyncStatus np={np} saved={lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
+                          </div>
+                        </div>
                         <LyricsPanel
                           lines={lyrics.lines}
                           seekable={seekable}

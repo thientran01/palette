@@ -7,12 +7,81 @@ use crate::media::NowPlaying;
 use crate::settings::{self, write_atomic};
 use crate::spotify;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
+
+#[derive(Clone, Serialize)]
+pub struct SyncStatus {
+    phase: &'static str,
+    detail: &'static str,
+}
+static SYNC_STATES: OnceLock<Mutex<VecDeque<(String, SyncStatus)>>> = OnceLock::new();
+fn sync_states() -> std::sync::MutexGuard<'static, VecDeque<(String, SyncStatus)>> {
+    SYNC_STATES
+        .get_or_init(|| Mutex::new(VecDeque::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+fn sync_state(key: &str, phase: &'static str, detail: &'static str) {
+    update_sync_state(key, phase, detail, true);
+}
+fn finish_sync_state(key: &str, phase: &'static str, detail: &'static str) {
+    update_sync_state(key, phase, detail, false);
+}
+fn update_sync_state(key: &str, phase: &'static str, detail: &'static str, preserve_worker: bool) {
+    let mut states = sync_states();
+    // An interrupted replay must not hide a worker already finishing this song.
+    if preserve_worker
+        && phase == "waiting"
+        && states
+            .iter()
+            .any(|(k, s)| k == key && s.phase == "processing")
+    {
+        return;
+    }
+    states.retain(|(k, _)| k != key);
+    states.push_back((key.to_string(), SyncStatus { phase, detail }));
+    while states.len() > 64 {
+        states.pop_front();
+    }
+}
+
+/// Snapshot covers mounts after an event and track switches during alignment.
+/// In-memory only; no model, cache I/O, or settings work on this command.
+#[tauri::command]
+pub async fn karaoke_status(
+    artist: String,
+    title: String,
+    album: String,
+    duration_ms: i64,
+) -> SyncStatus {
+    let key = lyrics::key_for_ms(&artist, &title, &album, duration_ms);
+    let recording = lock_rec().as_ref().is_some_and(|r| r.key == key);
+    let stored = sync_states()
+        .iter()
+        .find(|(k, _)| k == &key)
+        .map(|(_, s)| s.clone());
+    if stored
+        .as_ref()
+        .is_some_and(|s| matches!(s.phase, "saved" | "processing"))
+    {
+        return stored.unwrap();
+    }
+    if recording {
+        return SyncStatus {
+            phase: "learning",
+            detail: "Learning timing… Keep Palette visible and listen through the end.",
+        };
+    }
+    stored.unwrap_or(SyncStatus {
+        phase: "waiting",
+        detail: "Play from the beginning with Palette visible to learn word timing.",
+    })
+}
 
 const CACHE_MAX_FILES: usize = 500;
 const TARGET_HZ: u32 = 16_000;
@@ -236,7 +305,18 @@ fn read_file(path: &Path, synced: Option<&str>) -> Vec<Word> {
     let Ok(file) = serde_json::from_str::<StoreFile>(&raw) else {
         return Vec::new();
     };
-    if file.v != STORE_V || file.recipe != recipe() || file.synced.as_deref() != Some(synced) {
+    // Only numeric caches need the revised pronunciation targets. Preserve
+    // unrelated songs and their already accurate acoustic timings.
+    let stale_digits = file.detail_v < 2
+        && file
+            .words
+            .iter()
+            .any(|w| w.text.chars().any(|c| c.is_ascii_digit()));
+    if stale_digits
+        || file.v != STORE_V
+        || file.recipe != recipe()
+        || file.synced.as_deref() != Some(synced)
+    {
         let _ = std::fs::remove_file(path);
         return Vec::new();
     }
@@ -247,7 +327,7 @@ fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::R
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        detail_v: 1,
+        detail_v: 2,
         recipe: recipe().to_string(),
         synced: Some(synced.to_string()),
         words: words.to_vec(),
@@ -367,6 +447,11 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
                         residual,
                         n
                     );
+                    sync_state(
+                        &rec.key,
+                        "waiting",
+                        "Seeking interrupted learning. Play from the beginning to try again.",
+                    );
                     *slot = None;
                 }
             }
@@ -377,6 +462,12 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     };
     if let Some(rec) = old {
         try_commit(app, rec);
+    }
+    if sync_states()
+        .iter()
+        .any(|(k, s)| k == &key && s.phase == "processing")
+    {
+        return;
     }
     if lock_misses().contains(&key) {
         return;
@@ -515,6 +606,11 @@ impl Drop for AlignGuard {
 
 fn try_commit(app: &AppHandle, rec: Rec) {
     if !rec.can_finalize() {
+        sync_state(
+            &rec.key,
+            "waiting",
+            "Listen interrupted. Play from the beginning to try again.",
+        );
         // Opt-in diagnostics must survive a short replay or a suspect final
         // position pair. These are explicitly untrusted audio, never cached
         // timings and never a karaoke-ready event. Disk work has its own gate.
@@ -545,11 +641,21 @@ fn try_commit(app: &AppHandle, rec: Rec) {
     }
     let map = TimeMap::fit(&rec.anchors, TARGET_HZ, rec.origin_ms);
     if rec.peak < PEAK_ABORT && cache_complete(map.pos_ms(rec.samples.len()), rec.duration_ms) {
+        sync_state(
+            &rec.key,
+            "failed",
+            "No usable local audio was captured. Play on this computer to learn timing.",
+        );
         lock_misses().insert(rec.key);
         log::info!("karaoke: silence on {} — leaving line karaoke", rec.title);
         return;
     }
     if ALIGNING.swap(true, Ordering::SeqCst) {
+        sync_state(
+            &rec.key,
+            "waiting",
+            "Another track is finishing sync. This track needs a fresh listen afterward.",
+        );
         // Neither cached nor a miss: the track re-records on its next listen.
         log::info!("karaoke: align busy — skipping {} this listen", rec.title);
         return;
@@ -569,6 +675,12 @@ fn try_commit(app: &AppHandle, rec: Rec) {
     } else {
         None
     };
+    sync_state(
+        &rec.key,
+        "processing",
+        "Finishing sync… Your listen is captured; word timing is being aligned.",
+    );
+    let status_key = rec.key.clone();
     let handle = app.clone();
     // Move the guard into the closure: a failed spawn drops the closure
     // and releases ALIGNING too, even though the thread body never ran.
@@ -580,6 +692,11 @@ fn try_commit(app: &AppHandle, rec: Rec) {
             commit_sync(&handle, rec, &lyrics_dir, &karaoke_dir, dump_dir.as_deref());
         });
     if let Err(e) = result {
+        sync_state(
+            &status_key,
+            "failed",
+            "Couldn’t start sync processing. Try again on your next listen.",
+        );
         log::warn!("karaoke: align thread spawn failed ({e})");
     }
 }
@@ -634,7 +751,7 @@ fn write_dump(
     let to_io = |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let words_json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        detail_v: 1,
+        detail_v: 2,
         recipe: recipe().to_string(),
         synced: Some(lrc.to_string()),
         words: words.to_vec(),
@@ -695,6 +812,21 @@ fn commit_sync(
     });
 }
 
+struct SyncAttempt(String);
+impl Drop for SyncAttempt {
+    fn drop(&mut self) {
+        let mut states = sync_states();
+        if let Some((_, state)) = states.iter_mut().find(|(k, _)| k == &self.0) {
+            if state.phase == "processing" {
+                *state = SyncStatus {
+                    phase: "failed",
+                    detail: "Couldn’t save word sync. This listen did not produce usable timing.",
+                };
+            }
+        }
+    }
+}
+
 fn commit_recording(
     rec: Rec,
     lyrics_dir: &Path,
@@ -702,6 +834,7 @@ fn commit_recording(
     dump_dir: Option<&Path>,
     publish: impl FnOnce(KaraokeReady),
 ) {
+    let _status = SyncAttempt(rec.key.clone());
     let Some(synced) = lyrics::cached_synced(
         lyrics_dir,
         &rec.artist,
@@ -709,9 +842,15 @@ fn commit_recording(
         &rec.album,
         rec.duration_ms,
     ) else {
+        sync_state(
+            &rec.key,
+            "failed",
+            "Timed lyrics weren’t available for this recording.",
+        );
         return;
     };
     if has_file(karaoke_dir, &rec.key, Some(&synced)) {
+        sync_state(&rec.key, "saved", "Word sync saved on this device.");
         return;
     }
     let lines = align::parse_lrc(&synced);
@@ -760,6 +899,15 @@ fn commit_recording(
             Err(e) => {
                 // Never cache guessed timings under the acoustic recipe.
                 // Retain diagnostic audio and let a later listen retry.
+                sync_state(
+                    &rec.key,
+                    "failed",
+                    if e.contains("unrepresentable") {
+                        "Some lyric text couldn’t be aligned. Replaying alone won’t resolve this text issue."
+                    } else {
+                        "Couldn’t align this track’s vocals. Word sync was not saved."
+                    },
+                );
                 log::warn!("karaoke: acoustic alignment failed for {} ({e})", rec.title);
                 if let Some(dir) = dump_dir {
                     if let Err(e) = write_dump(dir, &rec, &synced, &[], &map) {
@@ -780,6 +928,11 @@ fn commit_recording(
         }
     }
     if !cache_complete(map.pos_ms(rec.samples.len()), rec.duration_ms) {
+        finish_sync_state(
+            &rec.key,
+            "waiting",
+            "The recording ended early. Listen from the beginning through the end.",
+        );
         log::info!(
             "karaoke: incomplete {} — dump only, retry next listen",
             rec.title
@@ -787,14 +940,25 @@ fn commit_recording(
         return;
     }
     if line_coverage(&lines, &words) < MIN_LINE_COVERAGE {
+        sync_state(
+            &rec.key,
+            "failed",
+            "Not enough vocals matched the lyrics. Keeping line sync for this track.",
+        );
         lock_misses().insert(rec.key);
         log::info!("karaoke: align missed {} — leaving line karaoke", rec.title);
         return;
     }
     if let Err(e) = write_file(karaoke_dir, &rec.key, &synced, &words) {
+        sync_state(
+            &rec.key,
+            "failed",
+            "Timing was aligned but couldn’t be saved on this device.",
+        );
         log::warn!("karaoke: persist failed ({e})");
         return;
     }
+    sync_state(&rec.key, "saved", "Word sync saved on this device.");
     publish(KaraokeReady {
         artist: rec.artist,
         title: rec.title,
@@ -960,7 +1124,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(cache.join(format!("{key}.json"))).unwrap())
                 .unwrap();
         assert_eq!(stored.recipe, acoustic::RECIPE);
-        assert_eq!(stored.detail_v, 1);
+        assert_eq!(stored.detail_v, 2);
         let detailed = words.iter().filter(|w| !w.points.is_empty()).count();
         assert!(detailed > 0, "English evidence must retain acoustic detail");
         for word in &words {
@@ -1359,5 +1523,88 @@ mod tests {
     fn no_fit_means_no_seek_verdict() {
         assert!(!seek_detected(&[(0, 1000)], 160_000, 40_000));
         assert!(!seek_detected(&[], 160_000, 40_000));
+    }
+}
+
+#[cfg(test)]
+mod sync_status_tests {
+    use super::*;
+    #[test]
+    fn numeric_cache_revision_keeps_unrelated_songs() {
+        let dir = std::env::temp_dir().join(format!("palette-digit-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (key, text, valid) in [("numeric", "4sho", false), ("ordinary", "hello", true)] {
+            let source = format!("[00:01.00]{text}");
+            let word = Word {
+                t: 1000,
+                text: text.into(),
+                end: Some(2000),
+                line_t: Some(1000),
+                points: Vec::new(),
+            };
+            write_file(&dir, key, &source, &[word]).unwrap();
+            let path = dir.join(format!("{key}.json"));
+            let mut old: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            old["detail_v"] = 1.into();
+            std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+            assert_eq!(!read_file(&path, Some(&source)).is_empty(), valid);
+            if path.exists() {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+        std::fs::remove_dir(dir).unwrap();
+    }
+    #[test]
+    fn worker_exit_reports_failure_unless_a_terminal_result_was_recorded() {
+        let failed = "status-test-failed";
+        sync_state(failed, "processing", "working");
+        drop(SyncAttempt(failed.into()));
+        assert_eq!(
+            sync_states()
+                .iter()
+                .find(|(k, _)| k == failed)
+                .unwrap()
+                .1
+                .phase,
+            "failed"
+        );
+        let active = "status-test-active";
+        sync_state(active, "processing", "working");
+        sync_state(active, "waiting", "interrupted replay");
+        assert_eq!(
+            sync_states()
+                .iter()
+                .find(|(k, _)| k == active)
+                .unwrap()
+                .1
+                .phase,
+            "processing"
+        );
+        finish_sync_state(active, "waiting", "listen ended early");
+        drop(SyncAttempt(active.into()));
+        assert_eq!(
+            sync_states()
+                .iter()
+                .find(|(k, _)| k == active)
+                .unwrap()
+                .1
+                .phase,
+            "waiting"
+        );
+        let saved = "status-test-saved";
+        sync_state(saved, "processing", "working");
+        let attempt = SyncAttempt(saved.into());
+        sync_state(saved, "saved", "saved");
+        drop(attempt);
+        let states = sync_states();
+        assert_eq!(
+            states.iter().find(|(k, _)| k == saved).unwrap().1.phase,
+            "saved"
+        );
+        assert_eq!(
+            states.iter().find(|(k, _)| k == failed).unwrap().1.phase,
+            "failed"
+        );
     }
 }
