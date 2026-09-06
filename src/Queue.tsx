@@ -1193,13 +1193,18 @@ export function QueuePanel({
             </button>
           )}
         </div>
-        {/* Feedback on its own row — never competes with the sparkle for width
-            (a truncated "Last.fm doesn't know this o…" read as broken chrome). */}
-        {toast ? (
-          <p aria-live="polite" className={`m-0 pt-1 ${s.toast} leading-snug text-fg`}>
-            {toast}
-          </p>
-        ) : null}
+        {/* Always reserve two status lines: a toast expiring must not move
+            the remove buttons while the user is working through the queue.
+            Long results can scroll inside this slot without resizing it. */}
+        <p
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          tabIndex={toast ? 0 : undefined}
+          className={`m-0 mt-1 overflow-y-auto break-words ${s.toast} text-fg ${room ? "h-10 leading-5" : "h-8 leading-4"}`}
+        >
+          {toast}
+        </p>
       </div>
       {/* The gate NARRATES instead of hiding: the list persists across
           players/connection, and queued rows vanishing on an Apple Music
