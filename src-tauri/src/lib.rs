@@ -15,6 +15,7 @@ mod search;
 mod settings;
 mod similar;
 mod spotify;
+mod spotify_jump;
 mod upnext;
 
 use media::ArtCache;

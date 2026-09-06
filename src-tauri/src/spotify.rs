@@ -174,6 +174,9 @@ pub struct QueueResult {
     pub status: String,
     pub currently_playing: Option<QueueTrack>,
     pub queue: Vec<QueueTrack>,
+    /// False when non-track/unparseable entries occupied positions in the raw list.
+    #[serde(skip)]
+    pub positions_complete: bool,
 }
 
 impl QueueResult {
@@ -182,6 +185,7 @@ impl QueueResult {
             status: status.into(),
             currently_playing: None,
             queue: Vec::new(),
+            positions_complete: false,
         }
     }
 }
@@ -971,10 +975,13 @@ pub(crate) fn queue_fresh(app: &AppHandle) -> QueueResult {
         Ok(None) => QueueResult::bare("no_playback"),
         Ok(Some(v)) => {
             let currently_playing = parse_track(&v["currently_playing"]);
-            let queue = v["queue"]
+            let queue: Vec<_> = v["queue"]
                 .as_array()
                 .map(|items| items.iter().filter_map(parse_track).collect())
                 .unwrap_or_default();
+            let positions_complete = v["queue"]
+                .as_array()
+                .is_some_and(|items| items.len() == queue.len());
             if currently_playing.is_none() && v["queue"].as_array().is_none() {
                 QueueResult::bare("no_playback")
             } else {
@@ -982,6 +989,7 @@ pub(crate) fn queue_fresh(app: &AppHandle) -> QueueResult {
                     status: "ok".into(),
                     currently_playing,
                     queue,
+                    positions_complete,
                 }
             }
         }
@@ -993,26 +1001,22 @@ pub(crate) fn queue_fresh(app: &AppHandle) -> QueueResult {
 /// Play `uri` NOW without losing the playlist context or the rest of the
 /// queue. Never `PUT /me/player/play` with bare uris (that kills the
 /// context — Thien's explicit constraint): the target is positioned in the
-/// real queue (added if absent), skipped to, the landing verified, and every
-/// skipped-over item re-queued in order. Under the managed up-next model
-/// Spotify's queue stays shallow, so the normal case is 0–2 skips.
+/// explicit queue via a verified insertion, then advanced one observed step
+/// at a time. Playlist continuation is never used as a skip plan. Preserved
+/// explicit items are restored after a verified landing.
 ///
-/// Returns: "ok" | "busy" | "gone" | "diverged" | "partial" | "no_device"
+/// Returns: "ok" | "busy" | "queued" | "gone" | "diverged" | "partial" | "no_device"
 /// (nothing playing AND Spotify open nowhere it can play) | "disconnected" |
 /// "offline". From silence it starts playback outright (start_playback).
 pub fn play_now(app: &AppHandle, uri: &str) -> &'static str {
     let auth = app.state::<SpotifyAuth>();
-    if auth
-        .jump_in_flight
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let upnext = app.state::<crate::upnext::UpNext>();
+    let Some(_jump) = crate::upnext::JumpGuard::start(&upnext, &auth.jump_in_flight) else {
         return "busy";
-    }
-    // RAII reset: a panic inside jump() (parse, HTTP, unwrap) would otherwise
-    // leak jump_in_flight SET forever, permanently disabling history ingestion
-    // and swallowing every queue-aware next.
-    let _flag = FlagGuard::new(&auth.jump_in_flight);
+    };
+    let Some(_feed) = crate::upnext::pause_feeding(&upnext) else {
+        return "busy";
+    };
     let outcome = jump(app, uri);
     // NO jump-cancel on "diverged" — upnext::try_queue_skip deliberately
     // lets suppression ride out its window there (the outcome is genuinely
@@ -1089,37 +1093,56 @@ fn jump(app: &AppHandle, target: &str) -> &'static str {
         "disconnected" => return "disconnected",
         _ => return "offline",
     }
+    if !q.positions_complete || q.currently_playing.is_none() {
+        return "offline"; // membership-only data cannot establish skip offsets
+    }
     if q.currently_playing
         .as_ref()
         .is_some_and(|t| t.uri == target)
     {
         return "ok"; // already playing
     }
-    let (skips, skipped, target_track): (usize, Vec<QueueTrack>, QueueTrack) =
-        match q.queue.iter().position(|t| t.uri == target) {
-            Some(k) => (k + 1, q.queue[..k].to_vec(), q.queue[k].clone()),
-            None => {
-                // Not in the queue (a history replay / Pulse up-next row):
-                // append it, then find where it landed — user-queued items
-                // sit before autoplay continuation, so the position after a
-                // fresh read is the real skip count.
-                if let Err(status) = add_to_queue(app, target) {
-                    return status;
-                }
-                let q2 = queue_fresh(app);
-                if q2.status != "ok" {
-                    // Nothing has been skipped yet — "gone" keeps this in
-                    // the pre-skip class (callers may safely fall back to a
-                    // plain next; "diverged" is reserved for skips-happened-
-                    // landing-unverified).
-                    return "gone";
-                }
-                let Some(k) = q2.queue.iter().position(|t| t.uri == target) else {
-                    return "gone";
-                };
-                (k + 1, q2.queue[..k].to_vec(), q2.queue[k].clone())
+    // A first-position target requires no traversal and no added duplicate.
+    // Otherwise ALWAYS establish an explicit insertion: presence farther down
+    // this mixed list is not evidence that the user queued that occurrence.
+    let (plan, end) = if q.queue.first().is_some_and(|t| t.uri == target) {
+        (q.clone(), 0)
+    } else {
+        if let Err(status) = add_to_queue(app, target) {
+            return status;
+        }
+        let before: Vec<_> = q.queue.iter().map(|t| t.uri.as_str()).collect();
+        let mut confirmed = None;
+        for _ in 0..6 {
+            std::thread::sleep(Duration::from_millis(250));
+            let next = queue_fresh(app);
+            if next.status != "ok" || !next.positions_complete {
+                break;
             }
+            if next.currently_playing.as_ref().map(|t| &t.uri)
+                != q.currently_playing.as_ref().map(|t| &t.uri)
+            {
+                break; // playback moved during the append; no stale skip plan
+            }
+            let after: Vec<_> = next.queue.iter().map(|t| t.uri.as_str()).collect();
+            if let Some(end) = crate::spotify_jump::insertion(&before, &after, target) {
+                confirmed = Some((next, end));
+                break;
+            }
+        }
+        let Some(plan) = confirmed else {
+            log::warn!("spotify jump: append accepted but insertion unconfirmed; no skips issued");
+            crate::upnext::remember_accepted_front(app, target);
+            return "queued"; // don't invite a retry that would append another copy
         };
+        plan
+    };
+    let target_track = &plan.queue[end];
+    log::info!(
+        "spotify jump: confirmed path, steps={}, preserved_prefix={}",
+        end + 1,
+        end
+    );
 
     // Arm the pill's announcement suppression in EVERY realm before skipping.
     // The queue UI arms its own realm frontend-side, but a search-initiated
@@ -1130,47 +1153,79 @@ fn jump(app: &AppHandle, target: &str) -> &'static str {
         serde_json::json!({ "title": target_track.title, "artist": target_track.artist }),
     );
 
-    // 2. Skip to it. A failure midway leaves playback partway — re-queue
-    // what was already consumed (best effort) and report "diverged": skips
-    // happened but the target's arrival is unconfirmed. ("partial" is
-    // reserved for a VERIFIED landing whose re-queue was incomplete —
-    // callers pop the queue front on it, so it must imply the target
-    // actually played; quick-review catch, 2026-07-11.)
-    for i in 0..skips {
-        if next_track(app).is_err() {
-            requeue(app, &skipped[..i.min(skipped.len())]);
+    // Each transition is observed before issuing the next command. A stale
+    // URI (especially repeated songs) cannot authorize another blind skip.
+    let mut previous = plan.clone();
+    let mut landed_track = None;
+    for i in 0..=end {
+        let expected = &plan.queue[i];
+        let remaining: Vec<_> = plan.queue[i + 1..].iter().map(|t| t.uri.as_str()).collect();
+        let previous_queue: Vec<_> = previous.queue.iter().map(|t| t.uri.as_str()).collect();
+        let sent = next_track(app).is_ok();
+        let mut observed = None;
+        let mut left_previous = false;
+        // Even a failed request can have reached Spotify. Observe it, but do
+        // not continue a sequence after an uncertain command result.
+        for _ in 0..6 {
+            std::thread::sleep(Duration::from_millis(250));
+            let next = queue_fresh(app);
+            if next.status != "ok" {
+                break;
+            }
+            left_previous |= next.currently_playing.as_ref().is_some_and(|t| {
+                Some(&t.uri) != previous.currently_playing.as_ref().map(|p| &p.uri)
+            });
+            if !next.positions_complete {
+                break;
+            }
+            let queue: Vec<_> = next.queue.iter().map(|t| t.uri.as_str()).collect();
+            if crate::spotify_jump::landed(
+                next.currently_playing.as_ref().map(|t| t.uri.as_str()),
+                &queue,
+                &expected.uri,
+                &remaining,
+                previous.currently_playing.as_ref().map(|t| t.uri.as_str()),
+                &previous_queue,
+            ) {
+                observed = Some(next);
+                break;
+            }
+            if next.currently_playing.as_ref().map(|t| &t.uri)
+                != previous.currently_playing.as_ref().map(|t| &t.uri)
+                && next.currently_playing.as_ref().map(|t| &t.uri) != Some(&expected.uri)
+            {
+                break; // another song arrived; stop instead of chasing the target
+            }
+        }
+        let Some(next) = observed else {
+            // Restore only songs VERIFIED to have been left behind. The last
+            // observed intermediate may still be playing; never duplicate it.
+            requeue(
+                app,
+                &plan.queue[..crate::spotify_jump::consumed_prefix(i, left_previous)],
+            );
+            log::warn!("spotify jump: transition {} unconfirmed; stopped", i + 1);
+            return "diverged";
+        };
+        if !sent && i != end {
+            requeue(app, &plan.queue[..i]);
             return "diverged";
         }
-        std::thread::sleep(Duration::from_millis(150));
+        landed_track = next.currently_playing.clone();
+        previous = next;
     }
 
-    // 3. Verify the landing — never keep acting on an unconfirmed state
-    // (matrix finding 3: never trust command bools; re-read).
-    let mut landing: Option<QueueTrack> = None;
-    for _ in 0..4 {
-        std::thread::sleep(Duration::from_millis(300));
-        let v = queue_fresh(app);
-        if v.currently_playing
-            .as_ref()
-            .is_some_and(|t| t.uri == target)
-        {
-            landing = v.currently_playing;
-            break;
-        }
+    // The appended copy replaces one existing explicit target, if present.
+    // Otherwise appending + replaying the old copy would create a duplicate.
+    let prefix: Vec<_> = plan.queue[..end].iter().map(|t| t.uri.as_str()).collect();
+    let restore: Vec<_> = crate::spotify_jump::restore_indices(&prefix, target)
+        .into_iter()
+        .map(|i| plan.queue[i].clone())
+        .collect();
+    let requeued_ok = requeue(app, &restore);
+    if let Some(t) = landed_track {
+        update_now(app, &t);
     }
-
-    // 4. Re-queue the skipped-over items in their original order. They were
-    // consumed unplayed — this includes a fed up-next front item, which then
-    // plays right after the target (upnext's fed marker stays armed; its
-    // tick suspends fed-pop bookkeeping while jump_in_flight is set).
-    let requeued_ok = requeue(app, &skipped);
-    let Some(t) = landing else {
-        return "diverged"; // concurrent user action — stopped, not forced
-    };
-    // The verified landing is trustworthy — enrich + publish here (mid-jump
-    // reads deliberately don't), so the heart follows a jump without waiting
-    // for the next settled enrich.
-    update_now(app, &t);
     if !requeued_ok {
         return "partial";
     }

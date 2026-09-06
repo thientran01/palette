@@ -7,6 +7,7 @@ describe("playNowNote", () => {
   });
 
   it("names every known failure the backend returns", () => {
+    expect(playNowNote("queued")).toBe("Added to Spotify — couldn’t confirm play now");
     expect(playNowNote("no_device")).toBe("Open Spotify somewhere first");
     expect(playNowNote("busy")).toBe("Still landing the last jump");
     expect(playNowNote("diverged")).toBe("Queue moved on — try again");

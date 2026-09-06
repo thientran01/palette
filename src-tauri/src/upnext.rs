@@ -44,6 +44,10 @@ struct Persisted {
     /// The front item already POSTed into Spotify's queue, if any — persisted
     /// so a restart doesn't double-feed the same track.
     fed: Option<String>,
+    #[serde(default)]
+    fed_unobserved: bool,
+    #[serde(default)]
+    fed_pending_since_ms: i64,
     list: Vec<QueueTrack>,
 }
 
@@ -57,12 +61,66 @@ pub struct UpNext {
     reconcile_in_flight: AtomicBool,
 }
 
+pub(crate) struct JumpGuard<'a> {
+    upnext: &'a UpNext,
+    flag: &'a AtomicBool,
+    track: Option<String>,
+    position: i64,
+}
+impl<'a> JumpGuard<'a> {
+    pub(crate) fn start(upnext: &'a UpNext, flag: &'a AtomicBool) -> Option<Self> {
+        let inner = lock(upnext);
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()?;
+        Some(Self {
+            upnext,
+            flag,
+            track: inner.last_track.clone(),
+            position: inner.last_raw_pos_ms,
+        })
+    }
+}
+impl Drop for JumpGuard<'_> {
+    fn drop(&mut self) {
+        let mut inner = lock(self.upnext);
+        // Replay from real pre-jump evidence, not a fabricated track change.
+        inner.last_track = self.track.clone();
+        inner.last_raw_pos_ms = self.position;
+        inner.reconcile_pending = true;
+        self.flag.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Exclude the late feeder during ALL play-now callers, including Search.
+/// The same atomic used by the feeder closes the check-then-spawn race.
+pub(crate) fn pause_feeding(upnext: &UpNext) -> Option<spotify::FlagGuard<'_>> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if upnext
+            .feed_in_flight
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Some(spotify::FlagGuard::new(&upnext.feed_in_flight));
+        }
+        if std::time::Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     dir: Option<PathBuf>,
     list: Vec<QueueTrack>,
     /// uri of the fed-but-not-yet-played front item.
     fed: Option<String>,
+    fed_unobserved: bool,
+    fed_pending_since_ms: i64,
+    fed_absences: u8,
+    reconcile_pending: bool,
+    last_reconcile_ms: i64,
     last_feed_attempt_ms: i64,
     /// Identity key of the last observed track — change detection. A session
     /// vanish does NOT clear it (AM-style stop/resume is not a track change).
@@ -93,6 +151,8 @@ fn persist(inner: &Inner) {
     let p = Persisted {
         v: 1,
         fed: inner.fed.clone(),
+        fed_unobserved: inner.fed_unobserved,
+        fed_pending_since_ms: inner.fed_pending_since_ms,
         list: inner.list.clone(),
     };
     if let Ok(json) = serde_json::to_string(&p) {
@@ -122,6 +182,8 @@ pub fn init(app: &AppHandle) {
     inner.dir = Some(dir);
     inner.list = loaded.list;
     inner.fed = loaded.fed;
+    inner.fed_unobserved = loaded.fed_unobserved;
+    inner.fed_pending_since_ms = loaded.fed_pending_since_ms;
 }
 
 /// Loose GSMTC↔Web-API track match: same title (case-insensitive) and the
@@ -144,6 +206,7 @@ fn pop_fed(inner: &mut Inner, fed_uri: &str) -> Vec<QueueTrack> {
         inner.list.remove(i);
     }
     inner.fed = None;
+    inner.fed_unobserved = false;
     persist(inner);
     inner.list.clone()
 }
@@ -181,8 +244,10 @@ pub fn tick(app: &AppHandle, np: &NowPlaying) {
                 };
             }
             if same && !restarted {
-                (None, false, false)
-            } else if jump_active {
+                let retry = inner.reconcile_pending
+                    || (inner.fed_unobserved && unix_ms() - inner.last_reconcile_ms >= 5_000);
+                (None, retry, false)
+            } else if spotify::jump_active(app) {
                 inner.last_track = Some(key);
                 (None, false, false)
             } else if restarted {
@@ -296,6 +361,9 @@ pub fn tick(app: &AppHandle, np: &NowPlaying) {
             // block feeding the REAL front.
             if inner.list.first().is_some_and(|t| t.uri == front.uri) {
                 inner.fed = Some(front.uri);
+                inner.fed_unobserved = true;
+                inner.fed_pending_since_ms = unix_ms();
+                inner.fed_absences = 0;
                 persist(&inner);
             } else {
                 log::warn!(
@@ -338,6 +406,22 @@ fn request_reconcile(app: &AppHandle) {
 
 fn reconcile_fed(app: &AppHandle) {
     let upnext = app.state::<UpNext>();
+    // A mid-jump absence is temporary: the item may be restored after landing.
+    // Share the feeder gate so reconciliation cannot erase that pending item.
+    if upnext
+        .feed_in_flight
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        lock(&upnext).reconcile_pending = true;
+        return;
+    }
+    let _gate = spotify::FlagGuard::new(&upnext.feed_in_flight);
+    {
+        let mut inner = lock(&upnext);
+        inner.reconcile_pending = false;
+        inner.last_reconcile_ms = unix_ms();
+    }
     let Some(fed_uri) = lock(&upnext).fed.clone() else {
         return;
     };
@@ -349,18 +433,39 @@ fn reconcile_fed(app: &AppHandle) {
         || q.currently_playing
             .as_ref()
             .is_some_and(|t| t.uri == fed_uri);
-    if still_there {
-        return;
-    }
     let list = {
         let mut inner = lock(&upnext);
-        // Re-check under the lock — the marker may have resolved meanwhile.
         if inner.fed.as_deref() != Some(fed_uri.as_str()) {
+            return;
+        }
+        if !may_consume_fed(&mut inner, still_there, unix_ms()) {
             return;
         }
         pop_fed(&mut inner, &fed_uri)
     };
     emit_list(app, &list);
+}
+
+/// Seeing an accepted entry establishes the evidence needed for a later
+/// absence to mean consumption. Persist this distinction across restarts.
+fn may_consume_fed(inner: &mut Inner, present: bool, now: i64) -> bool {
+    if present {
+        inner.fed_unobserved = false;
+        inner.fed_absences = 0;
+        persist(inner);
+        false
+    } else if inner.fed_unobserved {
+        // No API observation can distinguish consumption during downtime
+        // from a vanished append. After a settling grace, two separate fresh
+        // absences release that lost handoff without posting another copy.
+        if now.saturating_sub(inner.fed_pending_since_ms) < 30_000 {
+            return false;
+        }
+        inner.fed_absences = inner.fed_absences.saturating_add(1);
+        inner.fed_absences >= 2
+    } else {
+        true
+    }
 }
 
 /// Run a mutation, persist, emit. Everything the UI does routes through here.
@@ -389,6 +494,26 @@ pub fn append(app: &AppHandle, item: QueueTrack) {
     mutate(app, |inner| inner.list.push(item));
 }
 
+/// An append was accepted but play-now could not establish a safe path. Keep
+/// the managed front pending rather than POSTing a second copy at track end.
+/// Called while play-now holds the feeder gate.
+pub(crate) fn remember_accepted_front(app: &AppHandle, uri: &str) {
+    let upnext = app.state::<UpNext>();
+    let mut inner = lock(&upnext);
+    remember_front(&mut inner, uri);
+}
+
+fn remember_front(inner: &mut Inner, uri: &str) {
+    if inner.fed.is_none() && inner.list.first().is_some_and(|t| t.uri == uri) {
+        inner.fed = Some(uri.to_owned());
+        inner.fed_unobserved = true;
+        inner.fed_pending_since_ms = unix_ms();
+        inner.fed_absences = 0;
+        inner.reconcile_pending = true;
+        persist(inner);
+    }
+}
+
 /// Remove by uri (first occurrence). Public for play_now's queue-row path.
 pub fn remove(app: &AppHandle, uri: &str) {
     mutate(app, |inner| {
@@ -400,6 +525,7 @@ pub fn remove(app: &AppHandle, uri: &str) {
         // the feeder moves on to the new front.
         if inner.fed.as_deref() == Some(uri) {
             inner.fed = None;
+            inner.fed_unobserved = false;
         }
     });
 }
@@ -472,7 +598,7 @@ pub fn try_queue_skip(app: &AppHandle) -> bool {
             // Skips happened but the landing is unconfirmed / another jump
             // won the guard — do NOT add a plain skip on top. Suppression
             // rides out its window (the outcome is genuinely uncertain).
-            "diverged" | "busy" => {}
+            "diverged" | "busy" | "queued" => {}
             // Nothing was skipped (unreachable, no playback, target gone):
             // the user still asked for NEXT — deliver the plain one so the
             // press never dead-ends, and CANCEL the armed suppression so
@@ -517,4 +643,95 @@ pub async fn upnext_move(app: AppHandle, from: usize, to: usize) {
             inner.list.insert(to, item);
         }
     });
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+    fn track(uri: &str) -> QueueTrack {
+        QueueTrack {
+            uri: uri.into(),
+            title: uri.into(),
+            artist: "artist".into(),
+            album: String::new(),
+            duration_ms: 100_000,
+            art_url: None,
+        }
+    }
+    #[test]
+    fn accepted_unconfirmed_front_is_not_eligible_for_refeeding() {
+        let mut inner = Inner {
+            list: vec![track("T")],
+            last_track: Some("old".into()),
+            ..Default::default()
+        };
+        remember_front(&mut inner, "T");
+        assert_eq!(inner.fed.as_deref(), Some("T"));
+        assert!(inner.reconcile_pending);
+        assert!(inner.fed_unobserved);
+        assert_eq!(inner.list.len(), 1);
+    }
+    #[test]
+    fn accepted_handoff_does_not_steal_another_pending_front() {
+        let mut inner = Inner {
+            list: vec![track("A"), track("T")],
+            fed: Some("A".into()),
+            ..Default::default()
+        };
+        remember_front(&mut inner, "T");
+        assert_eq!(inner.fed.as_deref(), Some("A"));
+    }
+    #[test]
+    fn delayed_absence_cannot_consume_an_unobserved_handoff() {
+        let mut inner = Inner {
+            list: vec![track("T")],
+            ..Default::default()
+        };
+        remember_front(&mut inner, "T");
+        assert!(!may_consume_fed(&mut inner, false, 0));
+        assert!(!may_consume_fed(&mut inner, false, 0));
+        assert!(!may_consume_fed(&mut inner, true, 0));
+        assert!(may_consume_fed(&mut inner, false, 0));
+    }
+    #[test]
+    fn pending_visibility_survives_restart_and_old_stores_still_load() {
+        let old: Persisted = serde_json::from_str(r#"{"v":1,"fed":"T","list":[]}"#).unwrap();
+        assert!(!old.fed_unobserved);
+        let pending = Persisted {
+            fed_unobserved: true,
+            ..old
+        };
+        let loaded: Persisted =
+            serde_json::from_str(&serde_json::to_string(&pending).unwrap()).unwrap();
+        assert!(loaded.fed_unobserved);
+        assert_eq!(loaded.fed.as_deref(), Some("T"));
+    }
+    #[test]
+    fn jump_exit_preserves_occurrence_evidence_on_noop() {
+        let upnext = UpNext::default();
+        let flag = AtomicBool::new(false);
+        lock(&upnext).last_track = Some("A".into());
+        lock(&upnext).last_raw_pos_ms = 60_000;
+        {
+            let _jump = JumpGuard::start(&upnext, &flag).unwrap();
+            lock(&upnext).last_track = Some("transient".into());
+            lock(&upnext).last_raw_pos_ms = 0;
+        }
+        assert!(!flag.load(Ordering::SeqCst));
+        let inner = lock(&upnext);
+        assert_eq!(inner.last_track.as_deref(), Some("A"));
+        assert_eq!(inner.last_raw_pos_ms, 60_000);
+        assert!(inner.reconcile_pending);
+    }
+    #[test]
+    fn missed_visibility_recovers_after_grace_and_two_fresh_absences() {
+        let mut inner = Inner {
+            fed_unobserved: true,
+            fed_pending_since_ms: 100,
+            ..Default::default()
+        };
+        assert!(!may_consume_fed(&mut inner, false, 29_999));
+        assert!(!may_consume_fed(&mut inner, false, 30_100));
+        assert!(may_consume_fed(&mut inner, false, 35_100));
+    }
 }
