@@ -238,15 +238,15 @@ describe("acoustic spelling fill", () => {
     { t: 1000, fraction: 0 }, { t: 1200, fraction: 4 / 7 },
     { t: 1600, fraction: 4 / 7 }, { t: 2000, fraction: 1 },
   ] };
-  it("holds inside a compound word until the next acoustic segment", () => {
-    expect(wordWipeFraction(word, 1300, 0)).toBeCloseTo(4 / 7);
-    expect(wordWipeFraction(word, 1500, 0)).toBeCloseTo(4 / 7);
-    expect(wordWipeFraction(word, 1800, 0)).toBeCloseTo(5.5 / 7);
+  it("unfolds each segment up to the next acoustic onset", () => {
+    expect(wordWipeFraction(word, 1300, 0)).toBeCloseTo(0.2171428571);
+    expect(wordWipeFraction(word, 1500, 0)).toBeCloseTo(0.4419047619);
+    expect(wordWipeFraction(word, 1800, 0)).toBeCloseTo(0.7342857143);
     expect(wordWipeFraction(word, 2000, 0)).toBe(1);
   });
   it("uses the same lead and resets immediately on backward seek", () => {
-    expect(wordWipeFraction(word, 1640, 160)).toBeCloseTo(5.5 / 7);
-    expect(wordWipeFraction(word, 940, 160)).toBeCloseTo(2 / 7);
+    expect(wordWipeFraction(word, 1640, 160)).toBeCloseTo(0.7342857143);
+    expect(wordWipeFraction(word, 940, 160)).toBeCloseTo(0.0609523810);
     expect(wordWipeFraction(word, 800, 160)).toBe(0);
   });
   it("uses measured duration for legacy English words instead of a 90ms flash", () => {
@@ -297,4 +297,33 @@ it("computes completion from the displayed fill rather than always using word en
   expect(wordFillEnd(word)).toBe(1800);
   expect(wordWipeFraction(word,1800,0)).toBe(1);
   expect(wordFillEnd({...word,points:[...word.points].reverse()})).toBe(2000);
+});
+
+it("unfolds Haunted's held vowel instead of freezing then flashing the next letter", () => {
+  const word = { t: 30747, end: 32889, text: "lips", points: [
+    {t:30747,fraction:0},{t:30767,fraction:.25},
+    {t:30887,fraction:.25},{t:30907,fraction:.5},
+    {t:32749,fraction:.5},{t:32769,fraction:.75},
+    {t:32869,fraction:.75},{t:32889,fraction:1},
+  ] };
+  expect(wordWipeFraction(word, 31500, 0)).toBeLessThan(.5);
+  expect(wordWipeFraction(word, 32500, 0)).toBeGreaterThan(wordWipeFraction(word, 31500, 0));
+  expect(wordWipeFraction(word, 32749, 0)).toBe(.5);
+  expect(wordWipeFraction(word, 30747, 0)).toBe(0);
+  expect(wordWipeFraction(word, 32889, 0)).toBe(1);
+  expect(wordFillEnd(word)).toBe(32889);
+  expect(wordWipeFraction(word, 31280, 220)).toBe(wordWipeFraction(word,31500,0));
+});
+it("adds restrained dramatic lag while staying continuous and on time", () => {
+  const word = {t:1000,end:3000,text:"held",points:[{t:1000,fraction:0},{t:3000,fraction:1}]};
+  expect(wordWipeFraction(word,2000,0)).toBeCloseTo(.38);
+  let previous=0;
+  for(let t=1020;t<=3000;t+=20) {
+    const fill=wordWipeFraction(word,t,0);
+    expect(fill).toBeGreaterThan(previous);
+    expect(fill-previous).toBeLessThan(.014);
+    previous=fill;
+  }
+  expect(previous).toBe(1);
+  expect(wordFillEnd(word)).toBe(3000);
 });

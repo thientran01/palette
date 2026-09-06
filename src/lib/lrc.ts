@@ -293,10 +293,22 @@ export function wordWipeFraction(w: LyricWord, positionMs: number, leadMs: numbe
   const points = validWordPoints(w, end);
   if (points) {
     const p = positionMs + leadMs;
+    let a = points[0];
     for (let i = 1; i < points.length; i++) {
-      const a = points[i - 1], b = points[i];
-      if (p < b.t) return a.fraction + (b.fraction - a.fraction) *
-        Math.max(0, (p - a.t) / Math.max(b.t - a.t, 1));
+      // CTC often emits a letter for one frame, then blanks during its hold.
+      // Fill that letter through the hold, up to the next letter's onset.
+      // Keep the first 100% checkpoint so completion bloom never moves later.
+      while (points[i].fraction < 1 && i + 1 < points.length &&
+        points[i + 1].fraction === points[i].fraction) i++;
+      const b = points[i];
+      if (p < b.t) {
+        const u = Math.max(0, (p - a.t) / Math.max(b.t - a.t, 1));
+        // A gentle lag gives held letters weight without adding clock delay.
+        // The curve keeps moving throughout and meets the next onset exactly.
+        const eased = u - 0.12 * Math.sin(Math.PI * u);
+        return a.fraction + (b.fraction - a.fraction) * eased;
+      }
+      a = b;
     }
     return 1;
   }
