@@ -43,6 +43,8 @@ describe("word rows follow onsets independently of the line marker", () => {
     expect(old.style.values.has("--word-bright")).toBe(true);
     expect(next.style.values.has("--word-bright")).toBe(true);
     h.frame(3000);
+    expect(old.style.values.has("--word-bright")).toBe(true);
+    h.frame(3260);
     expect(old.style.values.has("--word-bright")).toBe(false);
     expect(next.style.values.has("--word-bright")).toBe(true);
     stop();
@@ -121,26 +123,49 @@ it("keeps row bounds across both voices regardless of printed order", () => {
   h.frame(4000);
   expect(css.values.has("--word-bright")).toBe(true);
   h.frame(5000);
+  expect(css.values.has("--word-bright")).toBe(true);
+  h.frame(5260);
   expect(css.values.has("--word-bright")).toBe(false);
   stop();
 });
 
-it("releases the singing bloom and clears its color on seek and disposal", () => {
+it("blooms after filling, fades on the playback clock, and resets on seek", () => {
   const h=harness(1010);const current=row(1,1000,1500);
   const stop=driveWordRows([current],0,0,h.clock,h.frames);
+  expect(current.spans[0].values.get("--word-bloom")).toBe("none");
+  h.frame(1500);
+  expect(current.spans[0].values.get("--wipe")).toBe("100.0%");
   expect(current.spans[0].values.get("--word-bloom")).toContain("var(--word-halo, transparent)");
   expect(current.style.values.has("--word-halo")).toBe(true);
-  h.anchor(1100,false);
+  h.anchor(1600,false);
   const paused=current.spans[0].values.get("--word-bloom");
   expect(h.pending.size).toBe(0);
-  h.frame(1200);
+  h.frame(1650);
   expect(current.spans[0].values.get("--word-bloom")).toBe(paused);
-  h.anchor(1260,true);
+  h.anchor(1700,true);
+  expect(current.spans[0].values.get("--word-bloom")).not.toBe(paused);
+  h.anchor(1010,true);
   expect(current.spans[0].values.get("--word-bloom")).toBe("none");
-  h.anchor(1010,true);
-  h.anchor(500,false);
+  h.frame(1500);h.frame(1760);
   expect(current.style.values.has("--word-halo")).toBe(false);
-  h.anchor(1010,true);
   stop();
-  expect(current.style.values.has("--word-halo")).toBe(false);
+  expect(h.pending.size).toBe(0);
+});
+
+it("waits through acoustic subword holds and applies the existing lead offset", () => {
+  const current=row(0,1000,2000);
+  const detailed={...current,words:[{t:1000,end:2000,text:"hallway",points:[
+    {t:1000,fraction:0},{t:1200,fraction:.5},{t:1900,fraction:.5},{t:2000,fraction:1},
+  ]}]};
+  const h=harness(1100);
+  const stop=driveWordRows([detailed],0,220,h.clock,h.frames);
+  expect(current.spans[0].values.get("--word-bloom")).toBe("none");
+  h.frame(1700);
+  expect(current.spans[0].values.get("--word-bloom")).toBe("none");
+  h.frame(1780);
+  expect(current.spans[0].values.get("--wipe")).toBe("100.0%");
+  expect(current.spans[0].values.get("--word-bloom")).toContain("12.00px");
+  h.frame(2040);
+  expect(current.spans[0].values.get("--word-bloom")).toBe("none");
+  stop();
 });

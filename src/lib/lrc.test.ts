@@ -9,7 +9,7 @@
  * break, and short gaps stay as they were (previous line current).
  */
 import { describe, expect, it } from "vitest";
-import { attachWords, currentLineIndex, parseLrc, wordWipe, wordWipeFraction, type LyricLine } from "./lrc";
+import { attachWords, currentLineIndex, parseLrc, wordWipe, wordWipeFraction, wordFillEnd, type LyricLine } from "./lrc";
 
 /** Lines that render as the five-dot rest row. */
 function breaks(lines: LyricLine[]): LyricLine[] {
@@ -280,4 +280,21 @@ describe("parentheses do not establish simultaneous vocals", () => {
     expect(wordWipeFraction(lines[0].words![1],1000,220)).toBe(0);
     expect(wordWipeFraction(lines[0].words![1],4500,220)).toBeGreaterThan(0);
   });
+});
+
+
+it("computes completion from the displayed fill rather than always using word end", () => {
+  expect(wordFillEnd({t:1000,end:2000,text:"한"})).toBe(1090);
+  expect(wordFillEnd({t:1000,end:2000,text:"one"})).toBe(1090);
+  expect(wordFillEnd({t:1000,end:1050,text:"one"})).toBe(1050);
+  expect(wordFillEnd({t:1000,end:2000,text:"hallway"})).toBe(2000);
+  expect(wordFillEnd({t:1000,text:"one"})).toBe(1000);
+  expect(wordFillEnd({t:1000,text:"hallway"},2000)).toBe(2000);
+  expect(wordFillEnd({t:1000,end:2000,text:"oh",timing:"phrase"})).toBe(2000);
+  const word={t:1000,end:2000,text:"hallway",points:[
+    {t:1000,fraction:0},{t:1800,fraction:1},{t:2000,fraction:1},
+  ]};
+  expect(wordFillEnd(word)).toBe(1800);
+  expect(wordWipeFraction(word,1800,0)).toBe(1);
+  expect(wordFillEnd({...word,points:[...word.points].reverse()})).toBe(2000);
 });
