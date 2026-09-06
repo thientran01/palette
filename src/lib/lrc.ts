@@ -258,19 +258,40 @@ export function wordWipe(
   return { index: i, frac: wordWipeFraction(words[i], positionMs, leadMs, words[i + 1]?.t) };
 }
 
+function validWordPoints(w: LyricWord, end: number) {
+  const points = w.points;
+  return w.timing !== "phrase" && points && points.length >= 2 &&
+    points[0].t === w.t && points[0].fraction === 0 &&
+    points[points.length - 1].t === end && points[points.length - 1].fraction === 1 &&
+    points.every((point, i) => Number.isFinite(point.t) && Number.isFinite(point.fraction) &&
+      point.fraction >= 0 && point.fraction <= 1 &&
+      (i === 0 || (point.t >= points[i - 1].t && point.fraction >= points[i - 1].fraction)))
+    ? points : undefined;
+}
+
+function sustainedWord(w: LyricWord): boolean {
+  return w.timing === "phrase" || (/^[\x00-\x7f]*$/.test(w.text) &&
+    /^[^a-z]*[a-z][a-z'-]{3,}[^a-z]*$/i.test(w.text));
+}
+
+/** Song-clock instant at which this word's displayed fill reaches 100%. */
+export function wordFillEnd(w: LyricWord, nextT?: number): number {
+  const end = w.end ?? nextT;
+  if (end === undefined) return w.t;
+  const points = validWordPoints(w, end);
+  if (points) return points.find(point => point.fraction === 1)!.t;
+  const span = Math.max(end - w.t, 1);
+  return w.t + (sustainedWord(w) ? span : Math.min(WORD_ATTACK_MS, span));
+}
+
 /** Each span owns its progress: simultaneous voices cannot share a cursor. */
 export function wordWipeFraction(w: LyricWord, positionMs: number, leadMs: number, nextT?: number): number {
   if (positionMs + leadMs < w.t) return 0;
   const end = w.end ?? nextT;
   if (end === undefined) return 1;
   const span = Math.max(end - w.t, 1);
-  const points = w.points;
-  if (w.timing !== "phrase" && points && points.length >= 2 &&
-      points[0].t === w.t && points[0].fraction === 0 &&
-      points[points.length - 1].t === end && points[points.length - 1].fraction === 1 &&
-      points.every((point, i) => Number.isFinite(point.t) && Number.isFinite(point.fraction) &&
-        point.fraction >= 0 && point.fraction <= 1 &&
-        (i === 0 || (point.t >= points[i - 1].t && point.fraction >= points[i - 1].fraction)))) {
+  const points = validWordPoints(w, end);
+  if (points) {
     const p = positionMs + leadMs;
     for (let i = 1; i < points.length; i++) {
       const a = points[i - 1], b = points[i];
@@ -281,8 +302,7 @@ export function wordWipeFraction(w: LyricWord, positionMs: number, leadMs: numbe
   }
   // Legacy caches have no inner timing. Longer English words use their
   // measured duration; never manufacture phonetic syllable boundaries.
-  const sustained = w.timing === "phrase" || (/^[\x00-\x7f]*$/.test(w.text) &&
-    /^[^a-z]*[a-z][a-z'-]{3,}[^a-z]*$/i.test(w.text));
+  const sustained = sustainedWord(w);
   const attack = sustained ? span : Math.min(WORD_ATTACK_MS, span);
   const p = positionMs + leadMs;
   const u = Math.min(Math.max((p - w.t) / attack, 0), 1);

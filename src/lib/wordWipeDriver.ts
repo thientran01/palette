@@ -1,4 +1,6 @@
-import { wordWipeFraction, WORD_ATTACK_MS, type LyricWord } from "./lrc";
+import { wordFillEnd, wordWipeFraction, WORD_ATTACK_MS, type LyricWord } from "./lrc";
+
+const BLOOM_MS = 260; // DUR5
 
 type Style = Pick<CSSStyleDeclaration, "setProperty" | "removeProperty">;
 export interface WordRow {
@@ -25,11 +27,14 @@ export function driveWordRows(
   clock: WipeClock, frames: FrameScheduler,
 ): () => void {
   const tracks = rows.filter(r => r.words.length > 0 && r.spans.length === r.words.length)
-    .map(row => ({ row, active: false, last: new Array<number>(row.words.length).fill(-1),
+    .map(row => {
+      const completed = row.words.map((word, i) => wordFillEnd(word, row.words[i + 1]?.t));
+      return { row, completed, active: false, last: new Array<number>(row.words.length).fill(-1),
       halo: new Array<number>(row.words.length).fill(-1),
       start: row.words.reduce((t, w) => Math.min(t, w.t), Infinity),
-      end: row.words.reduce((t, w) => Math.max(t, w.end ?? w.t + WORD_ATTACK_MS, w.t + 1), -Infinity),
-    }));
+      end: row.words.reduce((t, w, i) => Math.max(t, w.end ?? w.t + WORD_ATTACK_MS, completed[i] + BLOOM_MS, w.t + 1), -Infinity),
+      };
+    });
   if (!tracks.length) return () => {};
   let raf = 0;
   let disposed = false;
@@ -58,10 +63,10 @@ export function driveWordRows(
       if (!active) continue;
       for (let i = 0; i < row.spans.length; i++) {
         const frac = wordWipeFraction(row.words[i], pos, leadMs, row.words[i + 1]?.t);
-        // A small onset bloom releases over DUR5 (260ms), using the same
-        // playback clock and RAF. It freezes on pause and rewinds on seek.
-        const elapsed = p - row.words[i].t;
-        const halo = elapsed >= 0 && elapsed < 260 ? (1 - elapsed / 260) ** 2 : 0;
+        // Completion bloom shares the fill's timing, including subword holds.
+        // Keep the same clock/RAF so pause, seeks and skipped frames are exact.
+        const elapsed = p - track.completed[i];
+        const halo = elapsed >= 0 && elapsed < BLOOM_MS ? (1 - elapsed / BLOOM_MS) ** 2 : 0;
         if (halo !== track.halo[i]) {
           track.halo[i] = halo;
           row.spans[i].setProperty("--word-bloom", halo > 0
