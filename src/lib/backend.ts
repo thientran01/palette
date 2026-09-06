@@ -1334,6 +1334,9 @@ const LYRICS_MISS: Lyrics = { synced: null };
 const LYRICS_OFFLINE: Lyrics = { synced: null, offline: true };
 
 export type SyncStatus = { phase: "waiting" | "learning" | "processing" | "saved" | "failed"; detail: string };
+export async function vocalPreviewEnabled(): Promise<boolean> {
+  return IN_TAURI ? invoke<boolean>("vocal_preview_enabled") : false;
+}
 export async function karaokeStatus(np: NowPlaying): Promise<SyncStatus> {
   if (!IN_TAURI) return {phase:"learning",detail:"Keep Palette visible and listen through the end."};
   return invoke<SyncStatus>("karaoke_status", {artist:np.artist,title:np.title,album:np.album,durationMs:np.duration_ms});

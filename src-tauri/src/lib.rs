@@ -18,6 +18,7 @@ mod similar;
 mod spotify;
 mod spotify_jump;
 mod upnext;
+mod vocal_preview;
 
 use media::ArtCache;
 use serde::Serialize;
@@ -1272,6 +1273,7 @@ pub fn run() {
             media_art,
             media_lyrics,
             karaoke::karaoke_status,
+            karaoke::vocal_preview_enabled,
             karaoke::word_lead,
             now_playing,
             set_reactive_enabled,
@@ -1864,6 +1866,7 @@ pub fn run() {
             // Quit mid-song still logs the listen — the tracker's in-flight
             // candidate finalizes on the way out.
             if let tauri::RunEvent::Exit = event {
+                vocal_preview::shutdown();
                 history::flush(app);
             }
         });

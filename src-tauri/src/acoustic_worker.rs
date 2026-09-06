@@ -128,8 +128,13 @@ fn run(rx: mpsc::Receiver<Request>) {
                     *cached = Some((request.dir.clone(), model));
                 }
                 let loaded = started.elapsed();
+                let vocals = if crate::vocal_preview::enabled() {
+                    Some(crate::vocal_preview::separate(&request.pcm)?)
+                } else {
+                    None
+                };
                 let result = cached.as_mut().expect("model loaded").1.align(
-                    &request.pcm,
+                    vocals.as_deref().unwrap_or(&request.pcm),
                     &request.lines,
                     &request.map,
                 );

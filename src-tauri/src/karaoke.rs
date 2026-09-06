@@ -50,6 +50,11 @@ fn update_sync_state(key: &str, phase: &'static str, detail: &'static str, prese
     }
 }
 
+#[tauri::command]
+pub async fn vocal_preview_enabled() -> bool {
+    crate::vocal_preview::enabled()
+}
+
 /// Snapshot covers mounts after an event and track switches during alignment.
 /// In-memory only; no model, cache I/O, or settings work on this command.
 #[tauri::command]
@@ -271,7 +276,13 @@ fn lock_misses() -> std::sync::MutexGuard<'static, HashSet<String>> {
 }
 
 fn karaoke_dir(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_data_dir().ok().map(|d| d.join("karaoke"))
+    app.path().app_data_dir().ok().map(|d| {
+        d.join(if crate::vocal_preview::enabled() {
+            crate::vocal_preview::CACHE_DIR
+        } else {
+            "karaoke"
+        })
+    })
 }
 
 fn lyrics_dir(app: &AppHandle) -> PathBuf {
@@ -290,6 +301,24 @@ pub fn load(
     synced: Option<&str>,
 ) -> Vec<Word> {
     let key = lyrics::key_for_ms(artist, title, album, duration_ms);
+    load_cached(dir, &key, synced, crate::vocal_preview::enabled())
+}
+
+fn load_cached(dir: &Path, key: &str, synced: Option<&str>, preview_enabled: bool) -> Vec<Word> {
+    if preview_enabled {
+        if let Some(parent) = dir.parent() {
+            let preview = read_file(
+                &parent
+                    .join(crate::vocal_preview::CACHE_DIR)
+                    .join(format!("{key}.json")),
+                synced,
+            );
+            if !preview.is_empty() {
+                sync_state(key, "saved", "Experimental vocal timing is ready.");
+                return preview;
+            }
+        }
+    }
     read_file(&dir.join(format!("{key}.json")), synced)
 }
 
@@ -314,7 +343,7 @@ fn read_file(path: &Path, synced: Option<&str>) -> Vec<Word> {
             .any(|w| w.text.chars().any(|c| c.is_ascii_digit()));
     if stale_digits
         || file.v != STORE_V
-        || file.recipe != recipe()
+        || file.recipe != crate::vocal_preview::cache_recipe(path, recipe())
         || file.synced.as_deref() != Some(synced)
     {
         let _ = std::fs::remove_file(path);
@@ -328,7 +357,8 @@ fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::R
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
         detail_v: 2,
-        recipe: recipe().to_string(),
+        recipe: crate::vocal_preview::cache_recipe(&dir.join(format!("{key}.json")), recipe())
+            .to_string(),
         synced: Some(synced.to_string()),
         words: words.to_vec(),
     })
@@ -872,6 +902,14 @@ fn commit_recording(
             ""
         },
     );
+    if crate::vocal_preview::enabled() && acoustic::assets().is_none() {
+        sync_state(
+            &rec.key,
+            "failed",
+            "Vocal preview requires the installed acoustic model. Existing timing is preserved.",
+        );
+        return;
+    }
     let words = if let Some(dir) = acoustic::assets() {
         // Identical quantization to write_dump: replay and production share
         // the same PCM representation, including clipping and scale.
@@ -902,7 +940,11 @@ fn commit_recording(
                     if e.contains("unrepresentable") {
                         "Some lyric text couldn’t be aligned. Replaying alone won’t resolve this text issue."
                     } else {
-                        "Couldn’t align this track’s vocals. Word sync was not saved."
+                        if crate::vocal_preview::enabled() {
+                            "Experimental vocal sync failed. Existing timing is preserved; replay to retry."
+                        } else {
+                            "Couldn’t align this track’s vocals. Word sync was not saved."
+                        }
                     },
                 );
                 log::warn!("karaoke: acoustic alignment failed for {} ({e})", rec.title);
@@ -1337,6 +1379,41 @@ mod tests {
     fn majority_listen_is_enough() {
         assert!(listen_enough(100_000, 0, 180_000));
         assert!(listen_enough(12_000, 0, 20_000));
+    }
+
+    #[test]
+    fn preview_cache_falls_back_without_replacing_original() {
+        let root =
+            std::env::temp_dir().join(format!("palette-preview-cache-{}", std::process::id()));
+        let baseline = root.join("karaoke");
+        let preview = root.join(crate::vocal_preview::CACHE_DIR);
+        let source = "[00:01.00]one";
+        let original = vec![Word {
+            t: 1000,
+            text: "one".into(),
+            ..Word::default()
+        }];
+        write_file(&baseline, "song", source, &original).unwrap();
+        let saved = std::fs::read(baseline.join("song.json")).unwrap();
+        assert_eq!(load_cached(&baseline, "song", Some(source), true), original);
+        let experimental = vec![Word {
+            t: 1200,
+            text: "one".into(),
+            ..Word::default()
+        }];
+        write_file(&preview, "song", source, &experimental).unwrap();
+        assert_eq!(
+            load_cached(&baseline, "song", Some(source), true),
+            experimental
+        );
+        assert_eq!(
+            load_cached(&baseline, "song", Some(source), false),
+            original
+        );
+        std::fs::write(preview.join("song.json"), b"invalid").unwrap();
+        assert_eq!(load_cached(&baseline, "song", Some(source), true), original);
+        assert_eq!(std::fs::read(baseline.join("song.json")).unwrap(), saved);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
