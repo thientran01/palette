@@ -258,3 +258,26 @@ describe("acoustic spelling fill", () => {
     expect(wordWipeFraction({ ...word, timing: "phrase" }, 1500, 0)).toBe(.5);
   });
 });
+
+
+describe("parentheses do not establish simultaneous vocals", () => {
+  it("preserves Orchestra's measured replies instead of starting them with the lead", () => {
+    const source="[00:00.08]Orchestra (Orches-orchestra)\n[00:05.96]Ah (Elegant elegant dangerous)\n[00:10.86]Hah (Slow slow)\n[00:15.07]Ad astra";
+    const words=[
+      {t:573,end:1894,text:"Orchestra ",line_t:80},
+      {t:4578,end:5999,text:"(Orches-orchestra)",line_t:80},
+      {t:5661,end:5821,text:"Ah ",line_t:5960},
+      {t:5821,end:6524,text:"(Elegant ",line_t:5960},
+      {t:6584,end:10216,text:"elegant ",line_t:5960},
+      {t:10216,end:10818,text:"dangerous)",line_t:5960},
+      {t:10881,end:11081,text:"Hah ",line_t:10860},
+      {t:11101,end:11262,text:"(Slow ",line_t:10860},
+      {t:11302,end:11582,text:"slow)",line_t:10860},
+    ];
+    const lines=attachWords(parseLrc(source,177000),words);
+    expect(lines.slice(0,3).every(l=>l.backingPhrase===undefined)).toBe(true);
+    expect(lines.flatMap(l=>l.words??[])).toEqual(words);
+    expect(wordWipeFraction(lines[0].words![1],1000,220)).toBe(0);
+    expect(wordWipeFraction(lines[0].words![1],4500,220)).toBeGreaterThan(0);
+  });
+});
