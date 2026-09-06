@@ -169,3 +169,20 @@ it("waits through acoustic subword holds and applies the existing lead offset", 
   expect(current.spans[0].values.get("--word-bloom")).toBe("none");
   stop();
 });
+
+
+it("prepares the current marker for the next row using one clock and clears it on cleanup", () => {
+  const current=row(0,1000,1400),next=row(1,3000,3400);const h=harness(2650);
+  const stop=driveWordRows([current,next],0,220,h.clock,h.frames);
+  expect(current.style.values.get("--vocal-cue")).toBe("0.500");
+  expect(next.style.values.has("--vocal-cue")).toBe(false);
+  h.anchor(2650,false);
+  h.frame(2750);
+  expect(current.style.values.get("--vocal-cue")).toBe("0.500");
+  expect(h.pending.size).toBe(0);
+  h.anchor(2780,true);
+  expect(current.style.values.get("--vocal-cue")).toBe("1.000");
+  h.anchor(2200,false);
+  expect(current.style.values.get("--vocal-cue")).toBe("0.000");
+  stop();expect(current.style.values.has("--vocal-cue")).toBe(false);
+});

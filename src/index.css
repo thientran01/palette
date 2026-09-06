@@ -342,3 +342,22 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .lyric-row [data-word] { text-shadow: none; }
 }
+
+
+/* A small preparation light on the current-line marker. The shared word
+ * driver supplies vocal timing; there is no CSS loop or metronome. */
+.lyric-vocal-cue {
+  position: absolute;
+  pointer-events: none;
+  left: 50%;
+  top: 50%;
+  width: calc(100% + 3px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: rgb(var(--accent));
+  opacity: var(--vocal-cue, 0);
+  transform: translate(-50%, -50%) scale(calc(0.8 + var(--vocal-cue, 0) * 0.4));
+}
+@media (prefers-reduced-motion: reduce) {
+  .lyric-vocal-cue { display: none; }
+}

@@ -405,7 +405,9 @@ const LyricLineRow = memo(function LyricLineRow({
         className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-full bg-accent [transition:opacity_200ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].marker} ${
           current ? "opacity-100" : "opacity-0"
         }`}
-      />
+      >
+        {current && timed && <span className="lyric-vocal-cue" />}
+      </span>
       <span className="lyric-ink">
       {timed
         ? words.map((w, wi) => (

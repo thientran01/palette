@@ -1,5 +1,7 @@
 import { wordFillEnd, wordWipeFraction, WORD_ATTACK_MS, type LyricWord } from "./lrc";
 
+import { createVocalCue } from "./vocalCue";
+
 const BLOOM_MS = 260; // DUR5
 
 type Style = Pick<CSSStyleDeclaration, "setProperty" | "removeProperty">;
@@ -36,11 +38,21 @@ export function driveWordRows(
       };
     });
   if (!tracks.length) return () => {};
+  const cue = createVocalCue(tracks.flatMap(track => track.row.words));
+  const cueRow = tracks.find(track => track.row.index === currentLine)?.row;
+  let lastCue = "";
   let raf = 0;
   let disposed = false;
   const write = () => {
     const pos = clock.now();
     const p = pos + leadMs;
+    if (cueRow) {
+      const level = cue(p).toFixed(3);
+      if (level !== lastCue) {
+        cueRow.style.setProperty("--vocal-cue", level);
+        lastCue = level;
+      }
+    }
     for (const track of tracks) {
       const { row } = track;
       const active = row.index === currentLine || (p >= track.start && p < track.end);
@@ -100,6 +112,7 @@ export function driveWordRows(
   const unsubscribe = clock.subscribe(kick);
   return () => {
     disposed = true;
+    cueRow?.style.removeProperty("--vocal-cue");
     unsubscribe();
     if (raf) frames.cancel(raf);
     for (const track of tracks) if (track.active) {
