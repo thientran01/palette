@@ -301,8 +301,13 @@ export function wordWipeFraction(w: LyricWord, positionMs: number, leadMs: numbe
       while (points[i].fraction < 1 && i + 1 < points.length &&
         points[i + 1].fraction === points[i].fraction) i++;
       const b = points[i];
-      if (p < b.t) return a.fraction + (b.fraction - a.fraction) *
-        Math.max(0, (p - a.t) / Math.max(b.t - a.t, 1));
+      if (p < b.t) {
+        const u = Math.max(0, (p - a.t) / Math.max(b.t - a.t, 1));
+        // A gentle lag gives held letters weight without adding clock delay.
+        // The curve keeps moving throughout and meets the next onset exactly.
+        const eased = u - 0.12 * Math.sin(Math.PI * u);
+        return a.fraction + (b.fraction - a.fraction) * eased;
+      }
       a = b;
     }
     return 1;

@@ -239,14 +239,14 @@ describe("acoustic spelling fill", () => {
     { t: 1600, fraction: 4 / 7 }, { t: 2000, fraction: 1 },
   ] };
   it("unfolds each segment up to the next acoustic onset", () => {
-    expect(wordWipeFraction(word, 1300, 0)).toBeCloseTo(2 / 7);
-    expect(wordWipeFraction(word, 1500, 0)).toBeCloseTo(10 / 21);
-    expect(wordWipeFraction(word, 1800, 0)).toBeCloseTo(5.5 / 7);
+    expect(wordWipeFraction(word, 1300, 0)).toBeCloseTo(0.2171428571);
+    expect(wordWipeFraction(word, 1500, 0)).toBeCloseTo(0.4419047619);
+    expect(wordWipeFraction(word, 1800, 0)).toBeCloseTo(0.7342857143);
     expect(wordWipeFraction(word, 2000, 0)).toBe(1);
   });
   it("uses the same lead and resets immediately on backward seek", () => {
-    expect(wordWipeFraction(word, 1640, 160)).toBeCloseTo(5.5 / 7);
-    expect(wordWipeFraction(word, 940, 160)).toBeCloseTo(2 / 21);
+    expect(wordWipeFraction(word, 1640, 160)).toBeCloseTo(0.7342857143);
+    expect(wordWipeFraction(word, 940, 160)).toBeCloseTo(0.0609523810);
     expect(wordWipeFraction(word, 800, 160)).toBe(0);
   });
   it("uses measured duration for legacy English words instead of a 90ms flash", () => {
@@ -313,4 +313,17 @@ it("unfolds Haunted's held vowel instead of freezing then flashing the next lett
   expect(wordWipeFraction(word, 32889, 0)).toBe(1);
   expect(wordFillEnd(word)).toBe(32889);
   expect(wordWipeFraction(word, 31280, 220)).toBe(wordWipeFraction(word,31500,0));
+});
+it("adds restrained dramatic lag while staying continuous and on time", () => {
+  const word = {t:1000,end:3000,text:"held",points:[{t:1000,fraction:0},{t:3000,fraction:1}]};
+  expect(wordWipeFraction(word,2000,0)).toBeCloseTo(.38);
+  let previous=0;
+  for(let t=1020;t<=3000;t+=20) {
+    const fill=wordWipeFraction(word,t,0);
+    expect(fill).toBeGreaterThan(previous);
+    expect(fill-previous).toBeLessThan(.014);
+    previous=fill;
+  }
+  expect(previous).toBe(1);
+  expect(wordFillEnd(word)).toBe(3000);
 });
