@@ -1145,7 +1145,7 @@ export function QueuePanel({
       onScroll={onScroll}
       className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain [scrollbar-width:none]"
     >
-      <div className={room ? "px-1 pb-3 pt-1" : "px-2 pb-0.5 pt-0.5"}>
+      <div className={room ? "px-1 pb-3 pt-1" : "px-2"}>
         <div className={room ? "flex items-end gap-3" : "flex items-center gap-1.5"}>
           {room ? (
             <div className="min-w-0 flex-1">
@@ -1223,7 +1223,7 @@ export function QueuePanel({
         }`}
       >
         {rows.length === 0 && !gated && (
-          <p className={`m-0 px-2 py-2 ${s.prose} text-muted`}>
+          <p className={`m-0 px-2 ${room ? "py-2" : "py-1"} ${s.prose} text-muted`}>
             Nothing queued. Add a track from Earlier.
           </p>
         )}
@@ -1253,11 +1253,11 @@ export function QueuePanel({
           });
         })()}
       </div>
-      <div className={room ? "px-1 pb-2 pt-8" : "px-2 pb-1 pt-2"}>
+      <div className={room ? "px-1 pb-2 pt-8" : "px-2 pt-1"}>
         {room ? (
           <p className="text-[22px] font-medium leading-tight text-fg">Earlier</p>
         ) : (
-          <span className={`${s.label} uppercase tracking-widest text-muted`}>Earlier</span>
+          <span className={`block ${s.label} leading-4 uppercase tracking-widest text-muted`}>Earlier</span>
         )}
       </div>
       <div role="list" aria-label="Earlier" className="flex flex-col">
