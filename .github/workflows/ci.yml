@@ -45,7 +45,7 @@ jobs:
       - run: npm test
 
       # Tap-page regressions execute generated JavaScript with the Node above.
-      - run: python -m unittest scripts/test_karaoke_tap.py
+      - run: python -m unittest discover -s scripts -p "test_karaoke_*.py"
 
       # dtolnay/rust-toolchain reads the toolchain from its @ref, so a SHA pin
       # must name the toolchain explicitly (the SHA is not "stable").

@@ -288,11 +288,22 @@ fn word_frames(
         .collect()
 }
 
+#[cfg(test)]
 fn recorded_window(
     pcm_len: usize,
     map: &TimeMap,
     line_t: i64,
     next_t: i64,
+) -> Option<std::ops::Range<usize>> {
+    recorded_window_margin(pcm_len, map, line_t, next_t, 500.0)
+}
+
+fn recorded_window_margin(
+    pcm_len: usize,
+    map: &TimeMap,
+    line_t: i64,
+    next_t: i64,
+    margin_ms: f64,
 ) -> Option<std::ops::Range<usize>> {
     let audio_end = map.intercept_ms + pcm_len as f64 * map.slope_ms;
     if line_t as f64 >= audio_end {
@@ -303,8 +314,14 @@ fn recorded_window(
             .round()
             .clamp(0.0, pcm_len as f64) as usize
     };
-    let begin = sample(line_t as f64 - 500.0);
-    let end = sample((next_t as f64 + 500.0).min(line_t as f64 + 20_000.0));
+    let begin = sample(line_t as f64 - margin_ms);
+    let end = sample((next_t as f64 + margin_ms).min(line_t as f64 + 20_000.0));
+    // Wider offline probes must respect the same bounded model input.
+    let end = if margin_ms > 500.0 {
+        end.min(begin.saturating_add(16_000 * 21))
+    } else {
+        end
+    };
     (end.saturating_sub(begin) >= 400).then_some(begin..end)
 }
 
@@ -361,6 +378,22 @@ impl AcousticAligner {
     }
 
     pub fn align(&mut self, pcm: &[i16], lines: &[TimedLine], map: &TimeMap) -> Result<Vec<Word>> {
+        self.align_probe(pcm, lines, map, 500.0, None)
+    }
+
+    /// Offline evidence seam. Production always uses the 500ms window above.
+    /// Token confidence is acoustic path support, not a calibrated timing probability.
+    pub fn align_probe(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+        margin_ms: f64,
+        mut diagnostics: Option<&mut Vec<serde_json::Value>>,
+    ) -> Result<Vec<Word>> {
+        if !margin_ms.is_finite() || !(0.0..=1500.0).contains(&margin_ms) {
+            return Err("probe margin must be 0..=1500ms".into());
+        }
         if !map.slope_ms.is_finite() || map.slope_ms <= 0.0 || !map.intercept_ms.is_finite() {
             return Err("invalid capture time map".into());
         }
@@ -372,7 +405,8 @@ impl AcousticAligner {
                 continue;
             }
             let next = lines.get(li + 1).map_or(to_time(pcm.len() as f64), |l| l.t);
-            let Some(window) = recorded_window(pcm.len(), map, line.t, next) else {
+            let Some(window) = recorded_window_margin(pcm.len(), map, line.t, next, margin_ms)
+            else {
                 // A partial listen can end before later lyric rows. Keep the
                 // captured prefix for diagnostics; cache_complete in the
                 // worker still rejects an incomplete song for persistence.
@@ -407,6 +441,19 @@ impl AcousticAligner {
             let spans = ctc_spans(logp, CLASSES, &plan.targets)?;
             let ratio = (end - begin) as f64 / shape[1] as f64;
             let positions = word_frames(&plan.ranges, &spans);
+            if let Some(rows) = diagnostics.as_deref_mut() {
+                rows.push(serde_json::json!({
+                    "line_index": li, "line_t": line.t, "next_t": next,
+                    "window_start": to_time(begin as f64), "window_end": to_time(end as f64),
+                    "frame_ms": ratio * map.slope_ms,
+                    "tokens": plan.tokens, "targets": plan.targets.iter().map(|&t| LABELS[t] as char).collect::<String>(),
+                    "spans": spans.iter().map(|s| serde_json::json!({
+                        "start": to_time(begin as f64 + s.start as f64 * ratio),
+                        "end": to_time(begin as f64 + s.end as f64 * ratio),
+                        "support": s.confidence,
+                    })).collect::<Vec<_>>()
+                }));
+            }
             for ((text, range), (start, end)) in
                 plan.tokens.into_iter().zip(&plan.ranges).zip(positions)
             {
@@ -595,6 +642,16 @@ mod tests {
         let last = recorded_window(count, &map, 122_000, 125_000).unwrap();
         assert_eq!(last.end, count);
     }
+    #[test]
+    fn wide_probe_long_gap_respects_input_bound() {
+        let map = TimeMap::from_origin(0, 16_000);
+        let window = recorded_window_margin(640_000, &map, 10_000, 30_000, 1500.0).unwrap();
+        assert_eq!(window.start, 136_000);
+        assert_eq!(window.len(), 336_000);
+        let baseline = recorded_window_margin(640_000, &map, 10_000, 30_000, 500.0).unwrap();
+        assert_eq!(baseline, 152_000..480_000);
+    }
+
     #[test]
     fn malformed_emissions_fail_closed() {
         assert!(ctc_spans(&[], 29, &[1]).is_err());
