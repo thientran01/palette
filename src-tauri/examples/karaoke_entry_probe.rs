@@ -22,7 +22,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("truncated PCM".into());
     }
     let pcm: Vec<i16> = raw
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| i16::from_le_bytes([b[0], b[1]]))
         .collect();
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&args[2])?)?;
