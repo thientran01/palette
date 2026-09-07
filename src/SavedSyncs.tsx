@@ -71,7 +71,7 @@ export function SavedSyncs({np,onClose,current}:{np:NowPlaying;onClose:(restoreF
     <section aria-label="Current song sync status" className="mx-2 mb-3 border-b border-border/10 pb-3 pt-1">
       <div className="flex items-center gap-2 text-sm font-medium"><MorphIcon name={SYNC_GLYPHS[current.phase]} size={17} dur={DUR[5]}/><span>{current.title}</span></div>
       <div className="mt-1 truncate text-xs text-fg/80">{np.title} · {np.artist}</div>
-      <p className="mt-1 text-xs leading-5 text-muted">{current.detail}</p>
+      {current.phase!=="saved"&&<p className="mt-1 text-xs leading-5 text-muted">{current.detail}</p>}
       <ResearchRecording np={np}/>
     </section>
     {jobs.length>0 && <section aria-label="Currently syncing" className="mx-2 mb-2 border-b border-border/10 pb-2"><h3 className="pt-1 text-[10px] font-medium uppercase tracking-wider text-muted">Syncing · {jobs.length}</h3>{jobs.map(job=><SyncingRow key={job.key} job={job}/>)}</section>}
