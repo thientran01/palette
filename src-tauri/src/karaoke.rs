@@ -1,5 +1,7 @@
 //! Local word-karaoke store, capture, and align.
 
+pub(crate) mod research;
+
 use crate::acoustic;
 use crate::align::{self, TimeMap, Word};
 use crate::lyrics;
@@ -201,6 +203,7 @@ pub struct KaraokeReady {
 }
 
 struct Rec {
+    research: Option<u64>,
     library_revision: u64,
     key: String,
     artist: String,
@@ -536,6 +539,10 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         RECORDING.store(false, Ordering::Relaxed);
         let discarded = discard_non_music(np, &mut lock_rec());
         if let Some(rec) = discarded {
+            research::interrupted(
+                &rec,
+                "Playback switched away from the music app. Replay and record again.",
+            );
             log::info!(
                 "karaoke: source changed to {} — discarding capture for {}",
                 np.player,
@@ -565,6 +572,7 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         return;
     }
     let key = lyrics::key_for_ms(&np.artist, &np.title, &np.album, np.duration_ms);
+    let requested = research::requested(&key);
     let old = {
         let mut slot = lock_rec();
         if matches!(slot.as_ref(), Some(rec) if rec.key == key) {
@@ -573,6 +581,9 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
             // fitted map can absorb: drop the recording (NOT a miss; the
             // next clean listen records it).
             if let Some(rec) = slot.as_mut() {
+                if rec.research.is_none() {
+                    rec.research = research::begin(&rec.key);
+                }
                 if let Anchor::Seek(residual, n, pos) = rec.anchor(np) {
                     RECORDING.store(false, Ordering::Relaxed);
                     log::info!(
@@ -587,6 +598,10 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
                         "waiting",
                         "Seeking interrupted learning. Play from the beginning to try again.",
                     );
+                    research::interrupted(
+                        rec,
+                        "Seeking interrupted the recording. Replay and record again.",
+                    );
                     *slot = None;
                 }
             }
@@ -598,9 +613,10 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     if let Some(rec) = old {
         try_commit(app, rec);
     }
-    if sync_states()
-        .iter()
-        .any(|(k, s)| k == &key && s.phase == "processing")
+    if !requested
+        && sync_states()
+            .iter()
+            .any(|(k, s)| k == &key && s.phase == "processing")
     {
         return;
     }
@@ -625,7 +641,7 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     else {
         return;
     };
-    if lock_misses().contains(&(key.clone(), library_revision)) {
+    if !requested && lock_misses().contains(&(key.clone(), library_revision)) {
         return;
     }
     let synced = lyrics::cached_synced(
@@ -635,7 +651,7 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         &np.album,
         np.duration_ms,
     );
-    if has_file(&dir, &key, synced.as_deref()) {
+    if !requested && has_file(&dir, &key, synced.as_deref()) {
         return;
     }
     log::info!(
@@ -645,7 +661,8 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         origin_ms,
         synced.is_some()
     );
-    let rec = Rec {
+    let mut rec = Rec {
+        research: None,
         library_revision,
         key,
         artist: np.artist.clone(),
@@ -665,8 +682,18 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         last_anchor_at: np.position_at_ms,
         seek_strikes: 0,
     };
-    *lock_rec() = Some(rec);
-    RECORDING.store(true, Ordering::Relaxed);
+    let mut slot = lock_rec();
+    // A cancel/stop command may have landed during the cache reads above.
+    if requested {
+        rec.research = research::begin(&rec.key);
+        if rec.research.is_none() {
+            return;
+        }
+    }
+    if slot.is_none() {
+        *slot = Some(rec);
+        RECORDING.store(true, Ordering::Relaxed);
+    }
 }
 
 pub fn on_capture_stop(app: &AppHandle) {
@@ -701,6 +728,7 @@ pub fn push_frames(frames: &[f32], sample_rate: u32) {
             rec.title
         );
         RECORDING.store(false, Ordering::Relaxed);
+        research::interrupted(rec, "The audio format changed. Record again.");
         *slot = None;
         return;
     }
@@ -714,6 +742,10 @@ pub fn push_frames(frames: &[f32], sample_rate: u32) {
                 rec.title
             );
             RECORDING.store(false, Ordering::Relaxed);
+            research::interrupted(
+                rec,
+                "Audio was interrupted. Record again with Palette visible.",
+            );
             *slot = None;
             return;
         }
@@ -722,6 +754,7 @@ pub fn push_frames(frames: &[f32], sample_rate: u32) {
         if !rec.push(s) {
             log::info!("karaoke: {} ran past MAX_SAMPLES — dropping", rec.title);
             RECORDING.store(false, Ordering::Relaxed);
+            research::interrupted(rec, "Recording reached the eight-minute limit.");
             *slot = None;
             return;
         }
@@ -753,6 +786,10 @@ impl Drop for AlignGuard {
 }
 
 fn try_commit(app: &AppHandle, rec: Rec) {
+    if rec.research.is_some() {
+        research::save(app, rec);
+        return;
+    }
     if !rec.can_finalize() {
         sync_state(
             &rec.key,
@@ -1243,6 +1280,7 @@ mod tests {
         let duration_ms = meta["duration_ms"].as_i64().unwrap();
         let key = lyrics::key_for_ms(&artist, &title, &album, duration_ms);
         let rec = Rec {
+            research: None,
             library_revision: 0,
             key: key.clone(),
             artist: artist.clone(),
@@ -1713,8 +1751,9 @@ mod tests {
         assert!(!seek_detected(&two_anchors(), 160_000, 9_600));
     }
 
-    fn rec_with(anchors: Vec<(usize, i64)>, duration_ms: i64) -> Rec {
+    pub(super) fn rec_with(anchors: Vec<(usize, i64)>, duration_ms: i64) -> Rec {
         Rec {
+            research: None,
             library_revision: 0,
             key: "k".into(),
             artist: String::new(),

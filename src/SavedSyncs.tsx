@@ -4,6 +4,7 @@ import { MorphIcon } from "./icons/MorphIcon";
 import { SYNC_GLYPHS } from "./icons/geometry";
 import { DUR } from "./lib/tokens";
 import type { SyncStatus } from "./lib/backend";
+import {ResearchRecording} from "./ResearchRecording";
 import type {NowPlaying} from "./types";
 
 function Glyph({kind}:{kind:"close"|"refresh"|"delete"|"music"|"working"}) {
@@ -71,6 +72,7 @@ export function SavedSyncs({np,onClose,current}:{np:NowPlaying;onClose:(restoreF
       <div className="flex items-center gap-2 text-sm font-medium"><MorphIcon name={SYNC_GLYPHS[current.phase]} size={17} dur={DUR[5]}/><span>{current.title}</span></div>
       <div className="mt-1 truncate text-xs text-fg/80">{np.title} · {np.artist}</div>
       <p className="mt-1 text-xs leading-5 text-muted">{current.detail}</p>
+      <ResearchRecording np={np}/>
     </section>
     {jobs.length>0 && <section aria-label="Currently syncing" className="mx-2 mb-2 border-b border-border/10 pb-2"><h3 className="pt-1 text-[10px] font-medium uppercase tracking-wider text-muted">Syncing · {jobs.length}</h3>{jobs.map(job=><SyncingRow key={job.key} job={job}/>)}</section>}
     {unavailable && <p className="px-2 pb-2 text-xs text-muted">Sync activity is temporarily unavailable.</p>}

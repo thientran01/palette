@@ -1445,3 +1445,18 @@ export async function activeSyncs(): Promise<ActiveSync[]> {
     {key:"preview-listening",title:"Change",artist:"J. Cole",phase:"learning",progress:42},
   ] : [];
 }
+
+
+export type ResearchStatus = {key:string;title:string;phase:""|"armed"|"recording"|"saving"|"saved"|"error";detail:string;elapsed_ms:number;progress:number};
+const emptyResearch: ResearchStatus = {key:"",title:"",phase:"",detail:"",elapsed_ms:0,progress:0};
+let mockResearch = {...emptyResearch};
+export async function researchStatus(): Promise<ResearchStatus> {
+  return IN_TAURI ? invoke<ResearchStatus>("research_status") : {...mockResearch};
+}
+export async function researchAction(action:"start"|"stop"|"cancel"|"open", np:NowPlaying):Promise<void> {
+  if (IN_TAURI) return invoke("research_action",{action,artist:np.artist,title:np.title,album:np.album,durationMs:np.duration_ms});
+  if(action==="start") mockResearch={...emptyResearch,key:"preview",title:np.title,phase:"armed",detail:"Replay from the beginning with Palette visible."};
+  if(action==="cancel") mockResearch={...emptyResearch};
+  if(action==="stop") mockResearch={...mockResearch,phase:"saved",detail:"Preview only — no audio recorded."};
+  if(action==="open") throw new Error("Recording folders are available in the desktop app.");
+}
