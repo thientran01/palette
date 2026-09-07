@@ -317,12 +317,27 @@ fn load_cached(dir: &Path, key: &str, synced: Option<&str>, preview_enabled: boo
                 sync_state(key, "saved", "Experimental vocal timing is ready.");
                 return preview;
             }
+            let previous = read_file_preserving(
+                &parent
+                    .join(crate::vocal_preview::PREVIOUS_CACHE_DIR)
+                    .join(format!("{key}.json")),
+                synced,
+            );
+            if !previous.is_empty() {
+                return previous;
+            }
         }
     }
     read_file(&dir.join(format!("{key}.json")), synced)
 }
 
 fn read_file(path: &Path, synced: Option<&str>) -> Vec<Word> {
+    read_file_inner(path, synced, true)
+}
+fn read_file_preserving(path: &Path, synced: Option<&str>) -> Vec<Word> {
+    read_file_inner(path, synced, false)
+}
+fn read_file_inner(path: &Path, synced: Option<&str>, prune: bool) -> Vec<Word> {
     // No current source means no usable word cache; keep the file for a
     // later successful lyrics fetch instead of deleting it on a transient miss.
     let Some(synced) = synced.filter(|s| !s.trim().is_empty()) else {
@@ -346,7 +361,9 @@ fn read_file(path: &Path, synced: Option<&str>) -> Vec<Word> {
         || file.recipe != crate::vocal_preview::cache_recipe(path, recipe())
         || file.synced.as_deref() != Some(synced)
     {
-        let _ = std::fs::remove_file(path);
+        if prune {
+            let _ = std::fs::remove_file(path);
+        }
         return Vec::new();
     }
     file.words
@@ -1442,6 +1459,20 @@ mod tests {
         );
         std::fs::write(preview.join("song.json"), b"invalid").unwrap();
         assert_eq!(load_cached(&baseline, "song", Some(source), true), original);
+        let previous_dir = root.join(crate::vocal_preview::PREVIOUS_CACHE_DIR);
+        write_file(&previous_dir, "song", source, &experimental).unwrap();
+        let old_bytes = std::fs::read(previous_dir.join("song.json")).unwrap();
+        assert_eq!(
+            load_cached(&baseline, "song", Some(source), true),
+            experimental
+        );
+        assert!(load_cached(&baseline, "song", Some("[00:01.00]changed"), true).is_empty());
+        assert_eq!(
+            std::fs::read(previous_dir.join("song.json")).unwrap(),
+            old_bytes
+        );
+        // Re-create the baseline because its normal stale-source policy prunes it.
+        write_file(&baseline, "song", source, &original).unwrap();
         assert_eq!(std::fs::read(baseline.join("song.json")).unwrap(), saved);
         std::fs::remove_dir_all(root).unwrap();
     }

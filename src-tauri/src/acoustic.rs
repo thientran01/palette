@@ -14,6 +14,9 @@ const LABELS: &[u8] = b"-aienoutsrmkldghybpwcvjzf'qx*";
 const CLASSES: usize = 29;
 const STAR: usize = 28;
 
+#[path = "entry_timing.rs"]
+mod entry_timing;
+
 /// Recipe pins the exported weights, normalization, window and decoder.
 pub const RECIPE: &str = "mms-int8/1";
 pub const MODEL_SHA256: &str = "50128ba8db1150101b9e7d3610cdfda5c8fd2637b918d151ff6aa6fde2b9c2de";
@@ -389,7 +392,30 @@ impl AcousticAligner {
         lines: &[TimedLine],
         map: &TimeMap,
         margin_ms: f64,
+        diagnostics: Option<&mut Vec<serde_json::Value>>,
+    ) -> Result<Vec<Word>> {
+        self.align_inner(pcm, lines, map, margin_ms, diagnostics, false)
+    }
+
+    pub fn align_entries(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+    ) -> Result<Vec<Word>> {
+        let mut words = self.align_inner(pcm, lines, map, 500.0, None, true)?;
+        entry_timing::refine(pcm, map, &mut words);
+        Ok(words)
+    }
+
+    fn align_inner(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+        margin_ms: f64,
         mut diagnostics: Option<&mut Vec<serde_json::Value>>,
+        entries: bool,
     ) -> Result<Vec<Word>> {
         if !margin_ms.is_finite() || !(0.0..=1500.0).contains(&margin_ms) {
             return Err("probe margin must be 0..=1500ms".into());
@@ -412,11 +438,29 @@ impl AcousticAligner {
                 // worker still rejects an incomplete song for persistence.
                 continue;
             };
-            let (begin, end) = (window.start, window.end);
+            let la_entry = entries && entry_timing::repeated_la(&tokens);
+            let (begin, mut end) = (window.start, window.end);
+            if la_entry {
+                end = end.min(
+                    ((next as f64 - map.intercept_ms) / map.slope_ms)
+                        .round()
+                        .max(0.0) as usize,
+                );
+                if end.saturating_sub(begin) < 400 {
+                    continue;
+                }
+            }
             if end - begin > 16_000 * 21 {
                 return Err("acoustic input exceeds 21 second memory bound".into());
             }
-            let plan = plan_tokens(tokens, &self.romanizer)?;
+            let mut plan = plan_tokens(tokens, &self.romanizer)?;
+            if la_entry {
+                plan.targets.remove(0);
+                for range in plan.ranges.iter_mut().flatten() {
+                    range.start -= 1;
+                    range.end -= 1;
+                }
+            }
             if plan.ranges.iter().all(Option::is_none) {
                 continue;
             }

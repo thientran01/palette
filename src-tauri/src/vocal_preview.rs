@@ -13,8 +13,9 @@ pub fn shutdown() {
     lifetime::shutdown();
 }
 
-pub const CACHE_DIR: &str = "karaoke-vocals-preview-v1";
-pub const RECIPE: &str = "mms-int8/demucs-preview-1";
+pub const CACHE_DIR: &str = "karaoke-vocals-preview-v2";
+pub const RECIPE: &str = "mms-int8/demucs-entry-2";
+pub const PREVIOUS_CACHE_DIR: &str = "karaoke-vocals-preview-v1";
 
 pub fn enabled() -> bool {
     cfg!(debug_assertions) && std::env::var("PALETTE_VOCAL_PREVIEW").is_ok_and(|v| v == "1")
@@ -27,7 +28,13 @@ fn cache_is_preview(path: &Path) -> bool {
 }
 
 pub fn cache_recipe<'a>(path: &Path, baseline: &'a str) -> &'a str {
-    if cache_is_preview(path) {
+    if path
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|n| n == PREVIOUS_CACHE_DIR)
+    {
+        "mms-int8/demucs-preview-1"
+    } else if cache_is_preview(path) {
         RECIPE
     } else {
         baseline
