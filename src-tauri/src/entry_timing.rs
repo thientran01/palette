@@ -56,7 +56,9 @@ pub(super) fn refine(pcm: &[i16], map: &TimeMap, words: &mut [Word]) {
             continue;
         }
         let envelope: Vec<f64> = pcm[a..b]
-            .chunks_exact(320)
+            .as_chunks::<320>()
+            .0
+            .iter()
             .map(|c| (c.iter().map(|&s| (s as f64 / 32768.0).powi(2)).sum::<f64>() / 320.0).sqrt())
             .collect();
         let mut ordered = envelope.clone();
