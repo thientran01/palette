@@ -1334,6 +1334,9 @@ const LYRICS_MISS: Lyrics = { synced: null };
 const LYRICS_OFFLINE: Lyrics = { synced: null, offline: true };
 
 export type SyncStatus = { phase: "waiting" | "learning" | "processing" | "saved" | "failed"; detail: string };
+export async function vocalPreviewEnabled(): Promise<boolean> {
+  return IN_TAURI ? invoke<boolean>("vocal_preview_enabled") : false;
+}
 export async function karaokeStatus(np: NowPlaying): Promise<SyncStatus> {
   if (!IN_TAURI) return {phase:"learning",detail:"Keep Palette visible and listen through the end."};
   return invoke<SyncStatus>("karaoke_status", {artist:np.artist,title:np.title,album:np.album,durationMs:np.duration_ms});
@@ -1414,4 +1417,31 @@ function lyricsLatestWins(start: () => Promise<Lyrics>): Promise<Lyrics> {
   return start()
     .catch(() => LYRICS_MISS)
     .then((l) => (gen === lyricsGen ? l : LYRICS_MISS));
+}
+
+export type SavedSync = {key:string;title:string;artist:string;thumb_key:string|null;saved_at:number;refresh:boolean};
+const mockSaved: SavedSync[] = IN_TAURI ? [] : MOCK_TRACKS.map((t,i)=>({key:String(i+1),title:t.title,artist:t.artist,thumb_key:null,saved_at:Date.now()/1000-i*1000,refresh:false}));
+const mockDeleted = new Map<string,{song:SavedSync;revision:number}>();
+let mockSyncRevision=0;
+export async function savedSyncs(): Promise<SavedSync[]> {return IN_TAURI ? invoke<SavedSync[]>("saved_syncs") : [...mockSaved];}
+export async function savedSyncAction(key:string, action:"refresh"|"delete"|"undo", revision?:number):Promise<number>{
+  if(IN_TAURI) return invoke<number>("saved_sync_action",{key,action,revision:revision??null});
+  const i=mockSaved.findIndex(s=>s.key===key);const rev=++mockSyncRevision;
+  if(action==="delete"&&i>=0){mockDeleted.set(key,{song:mockSaved[i],revision:rev});mockSaved.splice(i,1);}
+  else if(action==="refresh"&&i>=0)mockSaved[i]={...mockSaved[i],refresh:true};
+  else if(action==="undo"){const old=mockDeleted.get(key);if(!old||old.revision!==revision)throw new Error("Undo expired");mockSaved.push(old.song);mockDeleted.delete(key);}
+  window.dispatchEvent(new Event("sync-library-changed"));return rev;
+}
+export function onSyncLibraryChanged(cb:()=>void):()=>void {
+  if(!IN_TAURI){window.addEventListener("sync-library-changed",cb);return ()=>window.removeEventListener("sync-library-changed",cb);}
+  const un=listen("sync-library-changed",cb);return ()=>{void un.then(f=>f());};
+}
+
+export type ActiveSync = {key:string;title:string;artist:string;phase:"learning"|"processing";progress:number|null};
+export async function activeSyncs(): Promise<ActiveSync[]> {
+  if (IN_TAURI) return invoke<ActiveSync[]>("active_syncs");
+  return new URLSearchParams(location.search).has("syncQueue") ? [
+    {key:"preview-finishing",title:"Baby Flower",artist:"tripleS",phase:"processing",progress:null},
+    {key:"preview-listening",title:"Change",artist:"J. Cole",phase:"learning",progress:42},
+  ] : [];
 }

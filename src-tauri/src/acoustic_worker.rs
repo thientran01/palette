@@ -128,11 +128,17 @@ fn run(rx: mpsc::Receiver<Request>) {
                     *cached = Some((request.dir.clone(), model));
                 }
                 let loaded = started.elapsed();
-                let result = cached.as_mut().expect("model loaded").1.align(
-                    &request.pcm,
-                    &request.lines,
-                    &request.map,
-                );
+                let vocals = if crate::vocal_preview::enabled() {
+                    Some(crate::vocal_preview::separate(&request.pcm)?)
+                } else {
+                    None
+                };
+                let model = &mut cached.as_mut().expect("model loaded").1;
+                let result = if let Some(vocals) = vocals.as_deref() {
+                    model.align_guided_entries(vocals, &request.lines, &request.map, None)
+                } else {
+                    model.align(&request.pcm, &request.lines, &request.map)
+                };
                 log::info!(
                     "karaoke: model reused={}, load {:.2}s, align {:.2}s",
                     reused,

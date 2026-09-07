@@ -14,6 +14,9 @@ const LABELS: &[u8] = b"-aienoutsrmkldghybpwcvjzf'qx*";
 const CLASSES: usize = 29;
 const STAR: usize = 28;
 
+#[path = "entry_timing.rs"]
+mod entry_timing;
+
 /// Recipe pins the exported weights, normalization, window and decoder.
 pub const RECIPE: &str = "mms-int8/1";
 pub const MODEL_SHA256: &str = "50128ba8db1150101b9e7d3610cdfda5c8fd2637b918d151ff6aa6fde2b9c2de";
@@ -72,6 +75,15 @@ pub struct TokenSpan {
 /// cross a blank, while unlike letters may advance directly. Memory is
 /// bounded before allocation; malformed or impossible input is rejected.
 pub fn ctc_spans(logp: &[f32], classes: usize, targets: &[usize]) -> Result<Vec<TokenSpan>> {
+    ctc_spans_with_prior(logp, classes, targets, None)
+}
+
+fn ctc_spans_with_prior(
+    logp: &[f32],
+    classes: usize,
+    targets: &[usize],
+    prior: Option<EntryPrior>,
+) -> Result<Vec<TokenSpan>> {
     if classes < 2
         || logp.is_empty()
         || !logp.len().is_multiple_of(classes)
@@ -98,16 +110,30 @@ pub fn ctc_spans(logp: &[f32], classes: usize, targets: &[usize]) -> Result<Vec<
     prev[1] = logp[targets[0]];
     for t in 1..frames {
         next.fill(f32::NEG_INFINITY);
+        let entry_cost = prior.map_or(0.0, |p| {
+            ((t as f64 - p.deadline).max(0.0) as f32) * p.penalty_per_frame
+        });
         for s in 0..states {
             let label = if s % 2 == 0 { 0 } else { targets[s / 2] };
             let mut best = prev[s];
             let mut step = 0;
-            if s > 0 && prev[s - 1] > best {
-                best = prev[s - 1];
+            // Charge once when entering the target, never while dwelling on
+            // it. A sustained syllable must not accumulate a lateness cost.
+            let cost = if prior.is_some_and(|p| s == p.target * 2 + 1) {
+                entry_cost
+            } else {
+                0.0
+            };
+            if s > 0 && prev[s - 1] - cost > best {
+                best = prev[s - 1] - cost;
                 step = 1;
             }
-            if s > 1 && s % 2 == 1 && targets[s / 2] != targets[s / 2 - 1] && prev[s - 2] > best {
-                best = prev[s - 2];
+            if s > 1
+                && s % 2 == 1
+                && targets[s / 2] != targets[s / 2 - 1]
+                && prev[s - 2] - cost > best
+            {
+                best = prev[s - 2] - cost;
                 step = 2;
             }
             next[s] = best + logp[t * classes + label];
@@ -151,6 +177,12 @@ pub fn ctc_spans(logp: &[f32], classes: usize, targets: &[usize]) -> Result<Vec<
     Ok(spans)
 }
 
+#[derive(Clone, Copy)]
+struct EntryPrior {
+    target: usize,
+    deadline: f64,
+    penalty_per_frame: f32,
+}
 // ort rc10 can panic when Windows cannot load a checksum-valid DLL's
 // dependencies. Preserve the worker's error/dump/retry path in that case.
 fn guard_runtime<T>(load: impl FnOnce() -> Result<T> + std::panic::UnwindSafe) -> Result<T> {
@@ -288,11 +320,22 @@ fn word_frames(
         .collect()
 }
 
+#[cfg(test)]
 fn recorded_window(
     pcm_len: usize,
     map: &TimeMap,
     line_t: i64,
     next_t: i64,
+) -> Option<std::ops::Range<usize>> {
+    recorded_window_margin(pcm_len, map, line_t, next_t, 500.0)
+}
+
+fn recorded_window_margin(
+    pcm_len: usize,
+    map: &TimeMap,
+    line_t: i64,
+    next_t: i64,
+    margin_ms: f64,
 ) -> Option<std::ops::Range<usize>> {
     let audio_end = map.intercept_ms + pcm_len as f64 * map.slope_ms;
     if line_t as f64 >= audio_end {
@@ -303,9 +346,62 @@ fn recorded_window(
             .round()
             .clamp(0.0, pcm_len as f64) as usize
     };
-    let begin = sample(line_t as f64 - 500.0);
-    let end = sample((next_t as f64 + 500.0).min(line_t as f64 + 20_000.0));
+    let begin = sample(line_t as f64 - margin_ms);
+    let end = sample((next_t as f64 + margin_ms).min(line_t as f64 + 20_000.0));
+    // Wider offline probes must respect the same bounded model input.
+    let end = if margin_ms > 500.0 {
+        end.min(begin.saturating_add(16_000 * 21))
+    } else {
+        end
+    };
     (end.saturating_sub(begin) >= 400).then_some(begin..end)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum EntryMode {
+    None,
+    Refine,
+    Guide,
+}
+
+fn guide_eligible(
+    line: &TimedLine,
+    next: Option<&TimedLine>,
+    tokens: &[String],
+    first: i64,
+    recorded_start: i64,
+) -> bool {
+    let Some(next) = next else {
+        return false;
+    };
+    let span = next.t.saturating_sub(line.t);
+    let initial = tokens.first().map(|t| {
+        t.trim()
+            .trim_matches(|c: char| !c.is_alphabetic())
+            .to_ascii_lowercase()
+    });
+    span > 0
+        && span <= 20_000
+        && recorded_start <= line.t
+        && !line.text.contains(['(', ')', '（', '）'])
+        && !entry_timing::repeated_la(tokens)
+        && !matches!(initial.as_deref(), Some("oh" | "ooh" | "ah"))
+        && first.saturating_sub(line.t) > 1500
+}
+
+fn supported_entry_retry(original: &[TokenSpan], candidate: &[TokenSpan], first: usize) -> bool {
+    // The source is a prior, not permission to consume an unsupported noise
+    // frame and skip a strong held phoneme later. Posterior support is not a
+    // calibrated timing probability; compare like-for-like first targets.
+    // Also retain posterior mass across frames: a strong 20ms blip must not
+    // replace a supported 360ms hold just because its mean score is similar.
+    candidate[first].start < original[first].start
+        && candidate[first].confidence > 0.0
+        && candidate[first].confidence >= original[first].confidence * 0.5
+        && candidate[first].confidence * (candidate[first].end - candidate[first].start) as f32
+            >= original[first].confidence
+                * (original[first].end - original[first].start) as f32
+                * 0.5
 }
 
 pub struct AcousticAligner {
@@ -361,6 +457,60 @@ impl AcousticAligner {
     }
 
     pub fn align(&mut self, pcm: &[i16], lines: &[TimedLine], map: &TimeMap) -> Result<Vec<Word>> {
+        self.align_probe(pcm, lines, map, 500.0, None)
+    }
+
+    /// Offline evidence seam. Production always uses the 500ms window above.
+    /// Token confidence is acoustic path support, not a calibrated timing probability.
+    pub fn align_probe(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+        margin_ms: f64,
+        diagnostics: Option<&mut Vec<serde_json::Value>>,
+    ) -> Result<Vec<Word>> {
+        self.align_inner(pcm, lines, map, margin_ms, diagnostics, EntryMode::None)
+    }
+
+    pub fn align_entries(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+    ) -> Result<Vec<Word>> {
+        let mut words = self.align_inner(pcm, lines, map, 500.0, None, EntryMode::Refine)?;
+        entry_timing::refine(pcm, map, &mut words);
+        Ok(words)
+    }
+
+    /// Source-guidance trial: retries the decoder on the same emissions.
+    /// Existing align/align_entries remain unchanged comparison baselines.
+    pub fn align_guided_entries(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+        diagnostics: Option<&mut Vec<serde_json::Value>>,
+    ) -> Result<Vec<Word>> {
+        let mut words = self.align_inner(pcm, lines, map, 500.0, diagnostics, EntryMode::Guide)?;
+        entry_timing::refine(pcm, map, &mut words);
+        Ok(words)
+    }
+
+    fn align_inner(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+        margin_ms: f64,
+        mut diagnostics: Option<&mut Vec<serde_json::Value>>,
+        mode: EntryMode,
+    ) -> Result<Vec<Word>> {
+        let entries = mode != EntryMode::None;
+        if !margin_ms.is_finite() || !(0.0..=1500.0).contains(&margin_ms) {
+            return Err("probe margin must be 0..=1500ms".into());
+        }
         if !map.slope_ms.is_finite() || map.slope_ms <= 0.0 || !map.intercept_ms.is_finite() {
             return Err("invalid capture time map".into());
         }
@@ -372,17 +522,36 @@ impl AcousticAligner {
                 continue;
             }
             let next = lines.get(li + 1).map_or(to_time(pcm.len() as f64), |l| l.t);
-            let Some(window) = recorded_window(pcm.len(), map, line.t, next) else {
+            let Some(window) = recorded_window_margin(pcm.len(), map, line.t, next, margin_ms)
+            else {
                 // A partial listen can end before later lyric rows. Keep the
                 // captured prefix for diagnostics; cache_complete in the
                 // worker still rejects an incomplete song for persistence.
                 continue;
             };
-            let (begin, end) = (window.start, window.end);
+            let la_entry = entries && entry_timing::repeated_la(&tokens);
+            let (begin, mut end) = (window.start, window.end);
+            if la_entry {
+                end = end.min(
+                    ((next as f64 - map.intercept_ms) / map.slope_ms)
+                        .round()
+                        .max(0.0) as usize,
+                );
+                if end.saturating_sub(begin) < 400 {
+                    continue;
+                }
+            }
             if end - begin > 16_000 * 21 {
                 return Err("acoustic input exceeds 21 second memory bound".into());
             }
-            let plan = plan_tokens(tokens, &self.romanizer)?;
+            let mut plan = plan_tokens(tokens, &self.romanizer)?;
+            if la_entry {
+                plan.targets.remove(0);
+                for range in plan.ranges.iter_mut().flatten() {
+                    range.start -= 1;
+                    range.end -= 1;
+                }
+            }
             if plan.ranges.iter().all(Option::is_none) {
                 continue;
             }
@@ -404,9 +573,58 @@ impl AcousticAligner {
             if shape.len() != 3 || shape[0] != 1 || shape[2] != CLASSES as i64 {
                 return Err("unexpected acoustic output".into());
             }
-            let spans = ctc_spans(logp, CLASSES, &plan.targets)?;
+            let mut spans = ctc_spans(logp, CLASSES, &plan.targets)?;
             let ratio = (end - begin) as f64 / shape[1] as f64;
+            let first = plan
+                .ranges
+                .iter()
+                .flatten()
+                .next()
+                .expect("spoken target")
+                .start;
+            let original_entry = to_time(begin as f64 + spans[first].start as f64 * ratio);
+            let mut guided = false;
+            if mode == EntryMode::Guide
+                && first == 1
+                && guide_eligible(
+                    line,
+                    lines.get(li + 1),
+                    &plan.tokens,
+                    original_entry,
+                    to_time(begin as f64),
+                )
+            {
+                let prior = EntryPrior {
+                    target: first,
+                    deadline: (line.t as f64 + 500.0
+                        - (map.intercept_ms + begin as f64 * map.slope_ms))
+                        / (ratio * map.slope_ms),
+                    penalty_per_frame: (8.0 * ratio * map.slope_ms / 1000.0) as f32,
+                };
+                if let Ok(candidate) =
+                    ctc_spans_with_prior(logp, CLASSES, &plan.targets, Some(prior))
+                {
+                    if supported_entry_retry(&spans, &candidate, first) {
+                        spans = candidate;
+                        guided = true;
+                    }
+                }
+            }
             let positions = word_frames(&plan.ranges, &spans);
+            if let Some(rows) = diagnostics.as_deref_mut() {
+                rows.push(serde_json::json!({
+                    "line_index": li, "line_t": line.t, "next_t": next,
+                    "source_guided": guided, "original_entry": original_entry,
+                    "window_start": to_time(begin as f64), "window_end": to_time(end as f64),
+                    "frame_ms": ratio * map.slope_ms,
+                    "tokens": plan.tokens, "targets": plan.targets.iter().map(|&t| LABELS[t] as char).collect::<String>(),
+                    "spans": spans.iter().map(|s| serde_json::json!({
+                        "start": to_time(begin as f64 + s.start as f64 * ratio),
+                        "end": to_time(begin as f64 + s.end as f64 * ratio),
+                        "support": s.confidence,
+                    })).collect::<Vec<_>>()
+                }));
+            }
             for ((text, range), (start, end)) in
                 plan.tokens.into_iter().zip(&plan.ranges).zip(positions)
             {
@@ -484,6 +702,166 @@ fn spelling_points(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Regression: a leading wildcard can absorb a quiet first word and
+    // match a louder copy near the end. A source prior guides the transition,
+    // while the following word must still land on its acoustic evidence.
+    #[test]
+    fn source_prior_prefers_supported_entrance_and_preserves_following_hold() {
+        let mut scores = vec![vec![-8.0f32; 4]; 120];
+        for row in &mut scores {
+            row[0] = -0.1;
+            row[3] = -0.2;
+        }
+        scores[12][1] = -0.5;
+        scores[94][1] = -0.1;
+        for row in &mut scores[98..112] {
+            row[2] = -0.01;
+        }
+        let flat: Vec<_> = scores.into_iter().flatten().collect();
+        let targets = [3, 1, 2, 3];
+        let old = ctc_spans(&flat, 4, &targets).unwrap();
+        assert_eq!(old[1].start, 94);
+        let guided = ctc_spans_with_prior(
+            &flat,
+            4,
+            &targets,
+            Some(EntryPrior {
+                target: 1,
+                deadline: 20.0,
+                penalty_per_frame: 0.16,
+            }),
+        )
+        .unwrap();
+        assert_eq!(guided[1].start, 12);
+        assert!(supported_entry_retry(&old, &guided, 1));
+        assert_eq!(guided[2], old[2]);
+        assert_eq!(ctc_spans_with_prior(&flat, 4, &targets, None).unwrap(), old);
+    }
+
+    #[test]
+    fn source_prior_is_soft_when_the_early_audio_contradicts_it() {
+        let mut scores = vec![vec![-100.0f32; 4]; 120];
+        for row in &mut scores {
+            row[0] = -0.1;
+            row[3] = -0.2;
+        }
+        scores[94][1] = -0.1;
+        for row in &mut scores[98..112] {
+            row[2] = -0.01;
+        }
+        let flat: Vec<_> = scores.into_iter().flatten().collect();
+        let old = ctc_spans(&flat, 4, &[3, 1, 2, 3]).unwrap();
+        let guided = ctc_spans_with_prior(
+            &flat,
+            4,
+            &[3, 1, 2, 3],
+            Some(EntryPrior {
+                target: 1,
+                deadline: 20.0,
+                penalty_per_frame: 0.16,
+            }),
+        )
+        .unwrap();
+        assert_eq!(guided, old);
+    }
+
+    #[test]
+    fn source_guide_excludes_good_entries_and_ambiguous_voices() {
+        let line = TimedLine {
+            t: 1000,
+            text: "one two".into(),
+        };
+        let next = TimedLine {
+            t: 5000,
+            text: "next".into(),
+        };
+        let eligible = |line: &TimedLine, next: Option<&TimedLine>, first, start| {
+            guide_eligible(line, next, &tokenize(&line.text), first, start)
+        };
+        assert!(eligible(&line, Some(&next), 2501, 500));
+        assert!(!eligible(&line, Some(&next), 2500, 500));
+        assert!(!eligible(&line, Some(&next), 800, 500));
+        assert!(!eligible(&line, None, 4900, 500));
+        assert!(!eligible(&line, Some(&line), 4900, 500));
+        assert!(!eligible(&line, Some(&next), 4900, 1001));
+        assert!(!eligible(
+            &line,
+            Some(&TimedLine {
+                t: 21001,
+                text: String::new()
+            }),
+            20500,
+            500
+        ));
+        for text in [
+            "one (two)",
+            "one （two）",
+            "Oh, one",
+            "Ooh one",
+            "Ah one",
+            "La la la",
+        ] {
+            assert!(
+                !eligible(
+                    &TimedLine {
+                        t: 1000,
+                        text: text.into()
+                    },
+                    Some(&next),
+                    4900,
+                    500
+                ),
+                "{text}"
+            );
+        }
+        let short = TimedLine {
+            t: 3000,
+            text: String::new(),
+        };
+        assert!(!eligible(&line, Some(&short), 2500, 500));
+        assert!(eligible(&line, Some(&short), 2501, 500));
+    }
+
+    #[test]
+    fn source_retry_rejects_noise_that_discards_a_supported_hold() {
+        for early_score in [-6.0, 0.6] {
+            let mut rows = vec![[-0.1_f64, -12.0, -12.0, -0.2]; 1000];
+            rows[45][1] = early_score;
+            for row in &mut rows[825..843] {
+                *row = [-4.0, -0.01, -12.0, -4.0];
+            }
+            for row in &mut rows[850..875] {
+                *row = [-4.0, -12.0, -0.01, -4.0];
+            }
+            let flat: Vec<f32> = rows
+                .into_iter()
+                .flat_map(|row| {
+                    let z = row.iter().map(|v| v.exp()).sum::<f64>().ln();
+                    row.map(|v| (v - z) as f32)
+                })
+                .collect();
+            let targets = [3, 1, 2, 3];
+            let original = ctc_spans(&flat, 4, &targets).unwrap();
+            let candidate = ctc_spans_with_prior(
+                &flat,
+                4,
+                &targets,
+                Some(EntryPrior {
+                    target: 1,
+                    deadline: 50.0,
+                    penalty_per_frame: 0.16,
+                }),
+            )
+            .unwrap();
+            assert_eq!((original[1].start, original[1].end), (825, 843));
+            assert_eq!((candidate[1].start, candidate[1].end), (45, 46));
+            assert!(
+                !supported_entry_retry(&original, &candidate, 1),
+                "early score {early_score}"
+            );
+        }
+    }
+
     #[test]
     fn spelling_detail_preserves_internal_gap_and_source_punctuation() {
         let romanizer = uroman::Uroman::new();
@@ -595,6 +973,16 @@ mod tests {
         let last = recorded_window(count, &map, 122_000, 125_000).unwrap();
         assert_eq!(last.end, count);
     }
+    #[test]
+    fn wide_probe_long_gap_respects_input_bound() {
+        let map = TimeMap::from_origin(0, 16_000);
+        let window = recorded_window_margin(640_000, &map, 10_000, 30_000, 1500.0).unwrap();
+        assert_eq!(window.start, 136_000);
+        assert_eq!(window.len(), 336_000);
+        let baseline = recorded_window_margin(640_000, &map, 10_000, 30_000, 500.0).unwrap();
+        assert_eq!(baseline, 152_000..480_000);
+    }
+
     #[test]
     fn malformed_emissions_fail_closed() {
         assert!(ctc_spans(&[], 29, &[1]).is_err());

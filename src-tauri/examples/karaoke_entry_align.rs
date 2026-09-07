@@ -1,4 +1,4 @@
-//! Reproduce the native acoustic path against evidence without app cache writes.
+//! Native entry-trial probe. Input PCM must already be separated vocals.
 //! karaoke_acoustic <dump-dir> <model.onnx> <onnxruntime.dll> <output.json>
 use pulse_lib::{
     acoustic::AcousticAligner,
@@ -23,7 +23,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
-    let lines = parse_lrc(&std::fs::read_to_string(args[0].join("lyrics.lrc"))?);
+    let mut lines = parse_lrc(&std::fs::read_to_string(args[0].join("lyrics.lrc"))?);
+    if let Ok(value) = std::env::var("PALETTE_ENTRY_LINE_MS") {
+        let stamp: i64 = value.parse()?;
+        let i = lines
+            .iter()
+            .position(|l| l.t == stamp)
+            .ok_or("line absent")?;
+        let next = lines.get(i + 1).ok_or("following line absent")?.t;
+        lines = vec![
+            lines[i].clone(),
+            pulse_lib::align::TimedLine {
+                t: next,
+                text: String::new(),
+            },
+        ];
+    }
     let start = Instant::now();
     let threads = std::env::var("PALETTE_BENCH_THREADS")
         .ok()
@@ -39,11 +54,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?
         .unwrap_or(500.0);
     let mut diagnostics = Vec::new();
-    let words = aligner.align_probe(&pcm, &lines, &map, margin, Some(&mut diagnostics))?;
+    let guide = std::env::var_os("PALETTE_SOURCE_GUIDE").is_some();
+    let words = if guide {
+        aligner.align_guided_entries(&pcm, &lines, &map, Some(&mut diagnostics))?
+    } else {
+        aligner.align_entries(&pcm, &lines, &map)?
+    };
     let seconds = start.elapsed().as_secs_f64() - loaded;
     if std::env::var_os("PALETTE_BENCH_REPEAT").is_some() {
         let again = Instant::now();
-        let repeated = aligner.align_probe(&pcm, &lines, &map, margin, None)?;
+        let repeated = if guide {
+            aligner.align_guided_entries(&pcm, &lines, &map, None)?
+        } else {
+            aligner.align_entries(&pcm, &lines, &map)?
+        };
         assert_eq!(words, repeated, "model reuse changed timings");
         eprintln!(
             "warm align {:.3}s; identical words",
@@ -59,7 +83,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     let result = serde_json::json!({"model":"native-mms-int8", "load_seconds":loaded, "seconds":seconds, "words":words, "margin_ms":margin, "diagnostics":diagnostics, "source_tokens":source_tokens});
-    std::fs::write(&args[3], serde_json::to_vec_pretty(&result)?)?;
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&args[3])?
+        .write_all(&serde_json::to_vec_pretty(&result)?)?;
     println!(
         "{} words; load {:.2}s; align {:.2}s; {}",
         words.len(),
