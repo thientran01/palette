@@ -327,3 +327,40 @@ it("adds restrained dramatic lag while staying continuous and on time", () => {
   expect(previous).toBe(1);
   expect(wordFillEnd(word)).toBe(3000);
 });
+// Captured failure: key 8009c5cda6f127, source 136770..139980,
+// eight tokens first appear at 139718 (only 262ms before the next line).
+// Timing values are from the cache; text is synthetic.
+describe("source timing protects a missed line entrance", () => {
+  const lines: LyricLine[] = [{t:136770,text:"one two three four five six seven eight"},{t:139980,text:"next"}];
+  const late = Array.from({length:8},(_,i)=>({t:139718+i*80,end:139798+i*80,text:`word${i}`,line_t:136770}));
+  it("retains animated words even when the acoustic entrance is late", () => {
+    const result=attachWords(lines,late);
+    expect(result[0].words).toEqual(late);
+    expect(result[0].alignmentFallback).toBeUndefined();
+    expect(result[0].t).toBe(136770);
+    expect(currentLineIndex(result,136770,0)).toBe(0);
+    expect(late[0].t).toBe(139718);
+  });
+  it("removes stale attached words when a replacement misses the line", () => {
+    const attached=[{...lines[0],words:late},lines[1]];
+    const result=attachWords(attached,[{t:139990,end:140100,text:"next",line_t:139980}]);
+    expect(result[0].words).toBeUndefined();
+  });
+  it("rejects malformed timing rather than poisoning the frame driver", () => {
+    expect(attachWords(lines,[{t:NaN,end:139000,text:"one",line_t:136770}])[0].words).toBeUndefined();
+    expect(attachWords(lines,[{t:137000,end:136900,text:"one",line_t:136770}])[0].words).toBeUndefined();
+  });
+  it("preserves early vocal entries and ordinary word timings", () => {
+    const words=[{t:136370,end:137500,text:"one",line_t:136770}];
+    expect(attachWords(lines,words)[0].words).toEqual(words);
+  });
+  it("does not mistake quick delivery followed by a rest for bad timing", () => {
+    const fast=late.map((w,i)=>({...w,t:136770+i*25,end:136795+i*25}));
+    expect(attachWords(lines,fast)[0].words).toEqual(fast);
+  });
+  it("leaves overlapping adlibs and ambiguous source windows alone", () => {
+    expect(attachWords([{...lines[0],text:"one (oh)"},lines[1]],late)[0].words).toEqual(late);
+    expect(attachWords([lines[0]],late)[0].words).toEqual(late);
+    expect(attachWords([lines[0],{t:136770,text:"overlap"}],late)[0].words).toEqual(late);
+  });
+});

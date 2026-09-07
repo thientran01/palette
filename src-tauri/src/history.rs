@@ -522,7 +522,7 @@ fn read_page(path: &Path, index: &[IndexEntry], limit: usize) -> Vec<HistoryEntr
 /// — a music app that mislabels PlaybackType must not lose the listen.
 /// `page()` still filters so already-logged YouTube rows vanish from the
 /// UI without a history wipe.
-fn music_source(player: &str, media_kind: &str) -> bool {
+pub(crate) fn music_source(player: &str, media_kind: &str) -> bool {
     matches!(player, "apple_music" | "spotify") && !matches!(media_kind, "video" | "image")
 }
 

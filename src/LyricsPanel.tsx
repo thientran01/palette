@@ -1,11 +1,11 @@
 /*
- * The karaoke lyrics surface — lifted out of App.tsx (mechanical move,
+ * The karaoke lyrics surface â€” lifted out of App.tsx (mechanical move,
  * 2026-07-11) so the focus window's realm can import it without importing
  * the whole widget. Everything lyric-shaped lives here: the fetch hook
  * (useLyrics + lyricsKeyOf), the scheduled line index (useLyricIndex), the
  * rows, and the panel with its auto-follow / wheel-browse / arrival-cascade
  * machinery. Two type scales: "base" (the 380px expanded view) and "focus"
- * (the fullscreen takeover) — same grammar, bigger clothes.
+ * (the fullscreen takeover) â€” same grammar, bigger clothes.
  */
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
@@ -19,7 +19,7 @@ import {
   type LyricLine,
   type LyricWord,
 } from "./lib/lrc";
-import { commands, onKaraokeReady } from "./lib/backend";
+import { commands, onKaraokeReady, onSyncLibraryChanged } from "./lib/backend";
 import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
@@ -28,7 +28,7 @@ import { driveWordRows, type WordRow } from "./lib/wordWipeDriver";
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
  * next line boundary, recomputed on every kernel anchor event (seek, pause,
  * track change, accepted push). On fire the index is re-derived from the
- * clock — never blind-incremented — so throttled webview timers can only
+ * clock â€” never blind-incremented â€” so throttled webview timers can only
  * delay a transition, never derail it. Transitions land with timer precision
  * instead of on a 250ms sampling grid. */
 export function useLyricIndex(lines: LyricLine[], leadMs: number): number {
@@ -40,10 +40,10 @@ export function useLyricIndex(lines: LyricLine[], leadMs: number): number {
       timer = undefined;
       const pos = posClock.now();
       const i = currentLineIndex(lines, pos, leadMs);
-      setIdx(i); // same value → React bails
-      if (!posClock.isPlaying()) return; // clock frozen — anchor event re-arms
+      setIdx(i); // same value â†’ React bails
+      if (!posClock.isPlaying()) return; // clock frozen â€” anchor event re-arms
       const delay = msUntilNextLine(lines, i, pos, leadMs);
-      if (delay === null) return; // last line — nothing left to schedule
+      if (delay === null) return; // last line â€” nothing left to schedule
       // Cap long waits and re-verify on fire, against timer throttling.
       timer = window.setTimeout(sync, Math.min(delay, 30_000));
     };
@@ -57,14 +57,14 @@ export function useLyricIndex(lines: LyricLine[], leadMs: number): number {
   return idx;
 }
 
-/** Filled-dot count for the CURRENT break row — the same schedule-not-sample
+/** Filled-dot count for the CURRENT break row â€” the same schedule-not-sample
  * pattern as useLyricIndex: one timeout armed for the next fifth-of-the-break
  * breakpoint, re-derived from the clock on fire and on every kernel anchor
  * event (seek, pause, accepted push), so a seek into the middle of a break
  * catches the dots up instantly and a pause freezes them. Inactive rows
  * (not current) schedule nothing. */
 function useBreakDots(line: LyricLine, leadMs: number, active: boolean): number {
-  // Lazy init like useLyricIndex — a row that mounts (or re-activates) mid-
+  // Lazy init like useLyricIndex â€” a row that mounts (or re-activates) mid-
   // break must paint the right count on its first frame, not flash 0 until
   // the post-paint effect corrects it.
   const [filled, setFilled] = useState(() =>
@@ -82,10 +82,10 @@ function useBreakDots(line: LyricLine, leadMs: number, active: boolean): number 
       window.clearTimeout(timer);
       timer = undefined;
       const pos = posClock.now();
-      setFilled(breakDotsFilled(line, pos, leadMs)); // same value → React bails
-      if (!posClock.isPlaying()) return; // clock frozen — anchor event re-arms
+      setFilled(breakDotsFilled(line, pos, leadMs)); // same value â†’ React bails
+      if (!posClock.isPlaying()) return; // clock frozen â€” anchor event re-arms
       const delay = msUntilNextDot(line, pos, leadMs);
-      if (delay === null) return; // all five lit — nothing left to schedule
+      if (delay === null) return; // all five lit â€” nothing left to schedule
       // Cap long waits and re-verify on fire, against timer throttling.
       timer = window.setTimeout(sync, Math.min(delay, 30_000));
     };
@@ -123,24 +123,24 @@ function useWordWipe(
   }, [list, lines, currentLine, leadMs]);
 }
 
-/** Soft edge on the wipe, in px — a hard stop strobes at 60fps. */
+/** Soft edge on the wipe, in px â€” a hard stop strobes at 60fps. */
 const WIPE_FEATHER = "5px";
 const WORD_GRADIENT = `linear-gradient(to right, var(--word-bright, currentColor) calc(var(--wipe, 0%) - 16px), var(--word-sheen, var(--word-bright, currentColor)) calc(var(--wipe, 0%) - ${WIPE_FEATHER}), currentColor calc(var(--wipe, 0%) + ${WIPE_FEATHER}))`;
 
 export type LyricsState =
   // "none" = a definitive served miss (LRCLIB has no lyrics for this track);
   // "offline" = the fetch bailed on a transport failure (offline/DNS/timeout),
-  // NOT recorded as a miss — a distinct, honest caption ("unavailable —
+  // NOT recorded as a miss â€” a distinct, honest caption ("unavailable â€”
   // offline" vs "No synced lyrics"). lyrics.rs sets the `offline` flag.
   // EVERY terminal state stamps the track key it answers for (null = the
   // no-track resting state), so consumers can tell a fresh verdict from the
-  // previous track's stale one — see lyricsVerdictOf.
+  // previous track's stale one â€” see lyricsVerdictOf.
   | { status: "loading" }
   | { status: "none" | "offline"; key: string | null }
   | { status: "synced"; lines: LyricLine[]; key: string };
 
 /** The track identity a lyric fetch is keyed on. Consumers compare a synced
- * state's stamped key against the CURRENT track's key before rendering —
+ * state's stamped key against the CURRENT track's key before rendering â€”
  * useLyrics flips to "loading" one render after a track change, and that
  * one-render gap would otherwise pair the new track's header with the old
  * track's lines (and freeze that ghost into an exit animation). */
@@ -155,6 +155,30 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
   const [state, setState] = useState<LyricsState>({ status: "none", key: null });
   const lastKey = useRef<string | null>(null);
   const key = lyricsKeyOf(np);
+  const fetchSerial = useRef(0);
+  useEffect(() => {
+    let alive = true;
+    const off = onSyncLibraryChanged(() => {
+      if (!np || !key) return;
+      const request = ++fetchSerial.current;
+      const current = () => alive && request === fetchSerial.current && lastKey.current === key;
+      void commands.lyrics(np.artist, np.title, np.album, np.duration_ms).then(l => {
+        if (!current()) return;
+        const parsed = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
+        const lines = l.words?.length ? attachWords(parsed, l.words) : parsed;
+        setState(previous => lines.length
+          ? {status: "synced", lines, key}
+          : previous.status === "synced" && previous.key === key
+            ? previous : {status: l.offline ? "offline" : "none", key});
+      }).catch(() => {
+        if (current()) setState(previous => previous.status === "synced" && previous.key === key
+          ? previous : {status: "offline", key});
+      });
+    });
+    return () => { alive = false; off(); };
+  // A library event reloads the current identity, not its playback position.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
   useEffect(() => {
     if (!key || !np) {
       lastKey.current = null;
@@ -165,8 +189,9 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
     lastKey.current = key;
     setState({ status: "loading" });
     let alive = true;
+    const request = ++fetchSerial.current;
     void commands.lyrics(np.artist, np.title, np.album, np.duration_ms).then((l) => {
-      if (!alive || lastKey.current !== key) return;
+      if (!alive || lastKey.current !== key || request !== fetchSerial.current) return;
       const parsed = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
       const lines = l.words && l.words.length > 0 ? attachWords(parsed, l.words) : parsed;
       setState(
@@ -197,9 +222,9 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
 
 export type LyricsVerdict = "pending" | "synced" | "none" | "offline";
 
-/** What the lyrics state says about the CURRENT track. A stale state — the
+/** What the lyrics state says about the CURRENT track. A stale state â€” the
  * previous track's verdict, still standing during useLyrics' one-render
- * loading gap — reads as "pending", never as an answer: captions and surface
+ * loading gap â€” reads as "pending", never as an answer: captions and surface
  * routing read this, so a stale "No synced lyrics" can't show against a new
  * track. */
 export function lyricsVerdictOf(np: NowPlaying | null, lyrics: LyricsState): LyricsVerdict {
@@ -214,11 +239,11 @@ export function lyricsVerdictOf(np: NowPlaying | null, lyrics: LyricsState): Lyr
 export const HOLD_GRACE_MS = 2500;
 
 /** The verdict-gated hold: true while a track change's fetch interlude should
- * keep the surface router in its current seat — the interlude never moves the
+ * keep the surface router in its current seat â€” the interlude never moves the
  * surface; only verdicts (or this grace expiring) do. The expiry resets AT
  * RENDER TIME on a key change (React's adjust-state-during-render pattern),
  * never in an effect: an effect reset lands one render late, leaking the
- * previous pendency's `expired` into the first render after a track change —
+ * previous pendency's `expired` into the first render after a track change â€”
  * as a bare boolean that defeated the hold on exactly the flash frame (mock
  * recorder, 2026-07-23), and as a persisted per-key stamp it defeated the
  * hold for a REPLAYED key (prev back to a slow-fetch track; AM's session
@@ -237,26 +262,26 @@ export function useSeatHold(np: NowPlaying | null, verdict: LyricsVerdict): bool
     const t = window.setTimeout(() => setExpired(true), HOLD_GRACE_MS);
     return () => window.clearTimeout(t);
   }, [key]);
-  // key === null (no track) holds nothing — there's no seat to protect.
+  // key === null (no track) holds nothing â€” there's no seat to protect.
   return verdict === "pending" && key !== null && !expired;
 }
 
 /** Browsing hands control back three ways, fastest first: the "Now" chip
  * (instant), scrolling back toward the live line into the re-latch band
- * (instant), or wheel idle (this timeout — the fallback, not the only path,
+ * (instant), or wheel idle (this timeout â€” the fallback, not the only path,
  * so it can sit tighter than the old 3500ms). */
 const BROWSE_RESUME_MS = 2000;
 /** Fraction of the viewport height around the live offset that counts as
  * "back at now": a wheel tick that lands inside this band while moving
  * TOWARD the live line re-latches auto-follow immediately. Toward-only, so
  * the first tick of a browse (inside the band but moving away) still opens
- * a browse instead of being swallowed. Also the chip's visibility gate —
+ * a browse instead of being swallowed. Also the chip's visibility gate â€”
  * inside the band the live line is on screen and a chip would be noise. */
 const RELATCH_BAND = 0.5;
 
 /** Arrival cascade (index.css `.lyrics-entering`): rows radiate outward from
  * the current line. The step is per-row stagger spacing (like the settle
- * ladder's beat constants, it lives off the DUR scale deliberately — it's
+ * ladder's beat constants, it lives off the DUR scale deliberately â€” it's
  * spacing, not a duration); distance caps so far rows arrive together
  * instead of trailing forever. */
 const CASCADE_STEP_MS = 30;
@@ -264,18 +289,18 @@ const CASCADE_CAP = 10;
 /** Head start so the art view's exhale clears before rows land. */
 const CASCADE_BASE_MS = 90; // DUR[1]
 /** base + cap*step + row animation (200ms) + slack; also bounds the anchor
- * marker's ignite — keep in sync with index.css's marker rule (600ms hold +
+ * marker's ignite â€” keep in sync with index.css's marker rule (600ms hold +
  * 200ms caption-in = exactly this). The class is removed only AFTER every
- * row animation has finished — ripping it off mid-cascade would snap
+ * row animation has finished â€” ripping it off mid-cascade would snap
  * fill-mode-held rows to full opacity in one frame. */
 const ENTRANCE_DONE_MS = 800;
 
 export type LyricsScale = "base" | "focus";
 
-/** Per-scale clothes + physics — same grammar, two rooms. The focus values
+/** Per-scale clothes + physics â€” same grammar, two rooms. The focus values
  * are the Soundboard design (panel verdict, 2026-07-12): 44px uniform rows
  * (recession by opacity, with uniform layout size), current line anchored slightly
- * deeper (0.46), and The Hang's asymmetric mask grafted on — the deep
+ * deeper (0.46), and The Hang's asymmetric mask grafted on â€” the deep
  * bottom ramp is what makes the room read "a sentence, not a page". */
 const SCALE = {
   base: {
@@ -285,7 +310,7 @@ const SCALE = {
     mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
     chipTop: "top-8",
     chipBottom: "bottom-8",
-    // Break-row dots — #79's original tuning: h-8 matches the base lyric row
+    // Break-row dots â€” #79's original tuning: h-8 matches the base lyric row
     // height, 6px dots on gap-1 (two-thirds the dot) read as one countdown.
     breakRow: "h-8 px-3 py-1",
     breakDot: "h-[6px] w-[6px]",
@@ -295,24 +320,24 @@ const SCALE = {
     row: "px-6 py-3 text-[44px] leading-[1.27] tracking-[-0.01em]",
     marker: "h-9 w-[5px]",
     // 0.46: Thien's Figma pass (2026-07-14) zeroed the ladder's top
-    // padding — in the room shrunken by the horizon's new mb-[10vh],
+    // padding â€” in the room shrunken by the horizon's new mb-[10vh],
     // that lands the current line back on the original 0.46 seat.
     // Forward context leans on tier-1's brightness (the next line reads
     // through the ramp's start).
     anchor: 0.46,
     // Tuned to the focus lyric box (#104's geometry: mt-[11vh] ladder top,
-    // bottom on the art's bottom line at --stack-top + --art — Focus.tsx):
+    // bottom on the art's bottom line at --stack-top + --art â€” Focus.tsx):
     // ~2 strong + 1 faint lines above the current line, ~2 + 1 faint below
-    // — Thien's live rounds settled here ("that line is barely visible
+    // â€” Thien's live rounds settled here ("that line is barely visible
     // anyway, it'd fade cleaner"). The knob if it wants more/less. The
     // min() guards keep the stops from crossing on short viewports
-    // (26%+34% ≤ 60% always orders) — the ramps scale instead of
+    // (26%+34% â‰¤ 60% always orders) â€” the ramps scale instead of
     // inverting there; below ~925px box height the % terms govern and the
     // strong-line count drops toward 1.
     mask: "[mask-image:linear-gradient(transparent,black_min(240px,26%),black_calc(100%-min(320px,34%)),transparent)]",
     chipTop: "top-64",
     chipBottom: "bottom-84",
-    // Break-row dots scaled up for the room — bigger dots on a wider gap so
+    // Break-row dots scaled up for the room â€” bigger dots on a wider gap so
     // the countdown reads at fullscreen distance (the feel knob for the
     // focus break row, 2026-07-13).
     breakRow: "px-6 py-3",
@@ -322,10 +347,10 @@ const SCALE = {
 } as const satisfies Record<LyricsScale, unknown>;
 
 /** Focus-scale recession: opacity tiers by clamped distance from the current
- * line. Tiers (not raw distance) keep the row memo effective — a line
+ * line. Tiers (not raw distance) keep the row memo effective â€” a line
  * advance re-renders only the rows whose tier changed. While the user
  * wheel-browses, every non-current row relaxes to the base muted/80 (you
- * scrolled to READ — the falloff would gray out exactly what you came for)
+ * scrolled to READ â€” the falloff would gray out exactly what you came for)
  * and the tiers re-settle on re-latch. */
 function focusTone(tier: number, browsing: boolean): string {
   if (browsing) return "text-muted/80";
@@ -351,13 +376,13 @@ const LyricLineRow = memo(function LyricLineRow({
   index: number;
   current: boolean;
   seekable: boolean;
-  /** Stable per mount — distance from the line that was current when the
+  /** Stable per mount â€” distance from the line that was current when the
    * panel mounted. Inert until the container carries .lyrics-entering. */
   cascadeDelayMs: number;
   /** The mount anchor: the ONLY row whose marker is held back for the
    * closing ignite beat. Scoping the hold here (not to whatever row is
    * current) means a mid-entrance line advance ignites the new row's marker
-   * instantly — no JS disarm, no engine-dependent delay retargeting. */
+   * instantly â€” no JS disarm, no engine-dependent delay retargeting. */
   anchor: boolean;
   scale: LyricsScale;
   /** Clamped distance from the current line (focus recession); null at base. */
@@ -381,7 +406,7 @@ const LyricLineRow = memo(function LyricLineRow({
             type: "button" as const,
             "data-line": index,
             "aria-label": `Seek to ${text}`,
-            // Out of the tab order — dozens of lines would otherwise sit
+            // Out of the tab order â€” dozens of lines would otherwise sit
             // between the header and transport; keyboard seek lives on
             // the progress slider.
             tabIndex: -1,
@@ -428,16 +453,16 @@ const LyricLineRow = memo(function LyricLineRow({
 });
 
 /** Per-dot stagger for the break-row exit: when the vocal resumes the dots
- * fade out RIGHT-TO-LEFT, rightmost first, one step apart — the waveform
+ * fade out RIGHT-TO-LEFT, rightmost first, one step apart â€” the waveform
  * settle's cadence collapsed to a single axis. Entrance is a plain
  * together-fade (the current state carries no delay). */
-const BREAK_DOT_EXIT_STEP_MS = 55; // DUR-adjacent; 4·55 + 220 fade ≈ waveform settle
+const BREAK_DOT_EXIT_STEP_MS = 55; // DUR-adjacent; 4Â·55 + 220 fade â‰ˆ waveform settle
 
 /** An instrumental-break row: five dots counting down the gap, one igniting
- * per fifth of the break — Apple Music's idle-progress idiom in the living
+ * per fifth of the break â€” Apple Music's idle-progress idiom in the living
  * separator's capsule vocabulary (a content event, and the ONE ambient
  * living instance per view stays the Waveform). Accent on the lit dots is
- * the current-line marker's license — content feedback, not chrome; no
+ * the current-line marker's license â€” content feedback, not chrome; no
  * marker bar (the dots ARE the current indicator). Filled dots keep
  * background-color in the transition so an art-change retint sweeps them
  * like every accent surface.
@@ -446,9 +471,9 @@ const BREAK_DOT_EXIT_STEP_MS = 55; // DUR-adjacent; 4·55 + 220 fade ≈ wavefor
  * dormant it takes no vertical space (grid-rows 0fr, -mt-1 eating the flex
  * gap the zero-height row would still claim), so you never see reserved
  * emptiness ahead of a break; when the break goes current the line opens
- * (0fr→1fr) and the dots fade in. On the vocal returning the dots fade out
+ * (0frâ†’1fr) and the dots fade in. On the vocal returning the dots fade out
  * right-to-left FIRST (the collapse is delayed ~330ms), then the now-empty
- * line closes. Purely decorative — aria-hidden, no seek target (a break has
+ * line closes. Purely decorative â€” aria-hidden, no seek target (a break has
  * no lyric to sing to). Scale-aware via SCALE[scale]. */
 const BreakRow = memo(function BreakRow({
   line,
@@ -465,7 +490,7 @@ const BreakRow = memo(function BreakRow({
   return (
     <div
       aria-hidden
-      // grid-rows 0fr↔1fr is a content-height glide that needs no hardcoded
+      // grid-rows 0frâ†”1fr is a content-height glide that needs no hardcoded
       // height (works at both scales). Open is immediate; the collapse waits
       // (transition-delay) so the dots' right-to-left fade plays out in a
       // still-open row before the empty line closes. -mt-1 while collapsed
@@ -484,7 +509,7 @@ const BreakRow = memo(function BreakRow({
           key={i}
           aria-hidden
           // The exit stagger lives on the HIDDEN state, so it governs the
-          // fade-OUT (current → not-current): rightmost dot leaves first,
+          // fade-OUT (current â†’ not-current): rightmost dot leaves first,
           // each BREAK_DOT_EXIT_STEP_MS later. The current state carries no
           // delay, so the fade-IN is a plain together-fade.
           style={
@@ -496,7 +521,7 @@ const BreakRow = memo(function BreakRow({
           // how "instant" stays smooth (the retint timing, EASE.out). The
           // CURRENT row's unlit dots hold at 75% (bg-muted above the 3:1
           // non-text floor) so you can read which fifth you're in. Hidden
-          // dots keep bg-accent so a completed break (all five lit — the
+          // dots keep bg-accent so a completed break (all five lit â€” the
           // common exit) fades out AS accent instead of snapping muted first.
           className={`rounded-full ${SCALE[scale].breakDot} [transition:background-color_220ms_var(--ease-out-tk),scale_220ms_var(--ease-out-tk),opacity_220ms_var(--ease-out-tk)] ${
             !current
@@ -524,7 +549,7 @@ export function LyricsPanel({
   seekable: boolean;
   leadMs: number;
   /** True when this mount is a real within-expanded arrival (the user was
-   * watching the big-art fallback) — plays the anchor-outward cascade and
+   * watching the big-art fallback) â€” plays the anchor-outward cascade and
    * holds the accent marker back as the closing beat. */
   entrance?: boolean;
   scale?: LyricsScale;
@@ -551,7 +576,7 @@ export function LyricsPanel({
   const [manualOffset, setManualOffset] = useState<number | null>(null);
   const resumeTimer = useRef<number | undefined>(undefined);
 
-  // The anchor line at mount — cascade delays radiate from it, stable across
+  // The anchor line at mount â€” cascade delays radiate from it, stable across
   // re-renders so a mid-entrance line advance can't reshuffle delays. The
   // entrance ends by timeout only (after every row animation has finished);
   // the marker-hold is scoped to the anchor row via data-anchor, so nothing
@@ -573,11 +598,11 @@ export function LyricsPanel({
 
   // Head/tail scroll room so the FIRST and LAST lines can rise to the anchor
   // band instead of jamming against the top/bottom frame with nothing past
-  // them (Thien, 2026-07-12 — focus mode pinned the opening/closing lines to
+  // them (Thien, 2026-07-12 â€” focus mode pinned the opening/closing lines to
   // the edges). Sized to the anchor: padTop lets the first line rest where
   // every other current line does; padBottom lets the last line reach it. The
   // offset clamp still forbids over-scroll, so the ends stop exactly at the
-  // anchor. Focus only — the compact expanded view (≈296px) is too short to
+  // anchor. Focus only â€” the compact expanded view (â‰ˆ296px) is too short to
   // spend ~46% of itself on lead-in; it keeps the tight 16px ends. Re-measured
   // on resize (the fullscreen room can change monitors). */
   const [pad, setPad] = useState<{ top: number; bottom: number }>({ top: 16, bottom: 16 });
@@ -607,7 +632,7 @@ export function LyricsPanel({
   };
 
   // Anchor the current line SCALE.anchor down the viewport via a
-  // compositor-friendly translate. Rounded — fractional offsets put text off
+  // compositor-friendly translate. Rounded â€” fractional offsets put text off
   // the pixel grid.
   const applyAnchor = () => {
     const viewport = viewportRef.current;
@@ -627,8 +652,8 @@ export function LyricsPanel({
 
   // Re-anchor on any list-height change too, not just line advance. A break
   // row opens/closes over 260ms (grid-rows glide); anchoring only at the
-  // advance would measure that mid-animation — scrollHeight short by the
-  // break's height — and never recompute, stranding the break's dots
+  // advance would measure that mid-animation â€” scrollHeight short by the
+  // break's height â€” and never recompute, stranding the break's dots
   // off-screen for its whole duration (worst at the outro, where the break
   // is the last row). The observer keeps autoOffset glued to the settling
   // layout; manualOffset still wins the displayed offset while browsing.
@@ -642,7 +667,7 @@ export function LyricsPanel({
 
   useEffect(() => () => window.clearTimeout(resumeTimer.current), []);
 
-  // Track change swaps `lines` — drop any in-progress browse so the new
+  // Track change swaps `lines` â€” drop any in-progress browse so the new
   // track doesn't render scrolled to the old track's arbitrary offset.
   useEffect(() => {
     setManualOffset(null);
@@ -652,7 +677,7 @@ export function LyricsPanel({
   const browsing = manualOffset !== null;
   const offset = manualOffset ?? autoOffset;
   const band = (viewportRef.current?.clientHeight ?? 0) * RELATCH_BAND;
-  // Where "now" sits relative to the browse — drives the chip's edge/arrow.
+  // Where "now" sits relative to the browse â€” drives the chip's edge/arrow.
   const nowBelow = browsing && autoOffset > (manualOffset as number);
   const showReturn = browsing && Math.abs((manualOffset as number) - autoOffset) > band;
 
@@ -665,7 +690,7 @@ export function LyricsPanel({
     const prev = manualOffset ?? autoOffset;
     const next = Math.round(Math.min(Math.max(prev + e.deltaY, 0), maxOffset()));
     // Magnetic re-latch: arriving inside the band while closing on the live
-    // line IS the resume gesture — no idle wait. (When not browsing, prev is
+    // line IS the resume gesture â€” no idle wait. (When not browsing, prev is
     // autoOffset and the distance can only grow, so this never traps the
     // opening tick.)
     if (Math.abs(next - autoOffset) < Math.abs(prev - autoOffset) && Math.abs(next - autoOffset) <= band) {
@@ -692,12 +717,12 @@ export function LyricsPanel({
           const line = row ? lines[Number(row.getAttribute("data-line"))] : undefined;
           if (!line) return;
           // Land the lead ahead of the line start: the highlight maps position
-          // p to the line whose t ≤ p + lead, so seeking to t itself flips the
+          // p to the line whose t â‰¤ p + lead, so seeking to t itself flips the
           // highlight to the successor whenever the gap to it is under the
           // lead. [t - lead, next.t - lead) is the only interval guaranteed to
-          // highlight the clicked line — and the runway into the vocal is what
+          // highlight the clicked line â€” and the runway into the vocal is what
           // a click-to-sing-along wants anyway. (The 0-clamp voids the
-          // guarantee for lines inside the first lead-width of the track —
+          // guarantee for lines inside the first lead-width of the track â€”
           // there is no earlier position to seek to; a neighboring intro line
           // may highlight instead.)
           commands.seekAbs(Math.max(line.t - leadMs, 0));
@@ -748,7 +773,7 @@ export function LyricsPanel({
           </span>
         )}
       </div>
-      {/* Return-to-now chip — neutral chrome (accent stays on the line
+      {/* Return-to-now chip â€” neutral chrome (accent stays on the line
        * marker), on the edge the live line sits past, outside the re-latch
        * band only (inside it the line is on screen and a wheel-back
        * re-latches anyway). 32px offsets clear the 28px mask fade. Exits
@@ -756,7 +781,7 @@ export function LyricsPanel({
       {showReturn && (
         <button
           type="button"
-          aria-label="Now — back to the current line"
+          aria-label="Now â€” back to the current line"
           onClick={relatch}
           className={`absolute left-1/2 z-10 flex -translate-x-1/2 items-center rounded-full border border-border/10 bg-surface-2/90 p-1.5 leading-none text-muted [transition:color_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] [animation:caption-in_140ms_var(--ease-out-tk)_both] hover:text-fg active:scale-95 ${
             nowBelow ? SCALE[scale].chipBottom : SCALE[scale].chipTop
