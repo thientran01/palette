@@ -23,6 +23,8 @@ export interface LyricLine {
    * renders as the five-dot countdown instead of text. */
   end?: number;
   words?: LyricWord[];
+  /** Display fallback only; saved acoustic timing is never rewritten. */
+  alignmentFallback?: "missing" | "invalid";
   /** Repeated-oh backing phrase spans the source line, not its printed tail. */
   backingPhrase?: { textStart: number; t: number; end: number };
 }
@@ -208,6 +210,15 @@ function backingWords(line: LyricLine, words: LyricWord[]): LyricWord[] {
   });
 }
 
+/** Only unusable spans lose word rendering. Source-entry disagreements are
+ * resolved by the acoustic decoder, never by replacing the animated lyric. */
+function alignmentFallback(words: LyricWord[]): LyricLine["alignmentFallback"] {
+  if (!words.length) return "missing";
+  if (words.some(w => !Number.isFinite(w.t) ||
+    (w.end !== undefined && (!Number.isFinite(w.end) || w.end < w.t)))) return "invalid";
+  return undefined;
+}
+
 export function attachWords(lines: LyricLine[], words: LyricWord[]): LyricLine[] {
   if (words.length === 0) return lines;
   // Explicit line ownership preserves source order even with overlapping voices.
@@ -222,7 +233,9 @@ export function attachWords(lines: LyricLine[], words: LyricWord[]): LyricLine[]
     const mine = source.filter((w) =>
       w.line_t !== undefined ? w.line_t === line.t : w.t >= line.t && w.t < nextT,
     );
-    return mine.length > 0 ? { ...line, words: backingWords(line, mine) } : line;
+    const fallback = alignmentFallback(mine);
+    return fallback ? { ...line, words: undefined, alignmentFallback: fallback }
+      : { ...line, words: backingWords(line, mine), alignmentFallback: undefined };
   });
 }
 

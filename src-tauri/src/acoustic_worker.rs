@@ -135,7 +135,7 @@ fn run(rx: mpsc::Receiver<Request>) {
                 };
                 let model = &mut cached.as_mut().expect("model loaded").1;
                 let result = if let Some(vocals) = vocals.as_deref() {
-                    model.align_entries(vocals, &request.lines, &request.map)
+                    model.align_guided_entries(vocals, &request.lines, &request.map, None)
                 } else {
                     model.align(&request.pcm, &request.lines, &request.map)
                 };
