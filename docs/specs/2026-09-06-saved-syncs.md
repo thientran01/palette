@@ -9,3 +9,9 @@ The native library scans current, previous vocal-trial, and baseline caches with
 Policy is persisted atomically in sync-library.json. Per-song revisions prevent a worker started before Refresh/Delete/Undo from publishing over that action. Failed-listen suppression is revision-scoped. Sync completion and policy mutation serialize only the final save, never model inference. The frontend reloads on library changes and successful alignment, with request generations guarding track changes and late responses.
 
 Validation: native policy and non-destructive cache-list tests cover stale jobs, delete/Undo, refresh preservation and source mismatch. Browser mock interaction checks cover refresh, delete, Undo and Escape. Full frontend tests, Rust unit tests, build and Clippy run before opening the PR. This PR is stacked on the vocal-entry trial; it does not change the alignment algorithm.
+
+## Activity and polish
+
+The top of the library shows currently captured and processing songs. Listening progress is measured from captured audio relative to the remaining song duration at recording start; it does not advance on a wall-clock timer. Finishing is a named stage with no percentage because the alignment worker does not expose fractional progress. Completed or failed workers leave the active section through the alignment guard, including spawn failures. This is an activity view of the existing capture/worker pipeline, not a new deferred-job scheduler.
+
+Activity polling reads memory once per second only while the popover is mounted and the document is visible. Saved cache enumeration remains event-driven. Row controls use 18px authored glyphs with stronger strokes, hover/focus visibility and press feedback. The inset scrollbar adopts the Settings rounded neutral thumb and removes the native arrow track.

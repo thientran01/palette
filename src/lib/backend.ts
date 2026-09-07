@@ -1436,3 +1436,12 @@ export function onSyncLibraryChanged(cb:()=>void):()=>void {
   if(!IN_TAURI){window.addEventListener("sync-library-changed",cb);return ()=>window.removeEventListener("sync-library-changed",cb);}
   const un=listen("sync-library-changed",cb);return ()=>{void un.then(f=>f());};
 }
+
+export type ActiveSync = {key:string;title:string;artist:string;phase:"learning"|"processing";progress:number|null};
+export async function activeSyncs(): Promise<ActiveSync[]> {
+  if (IN_TAURI) return invoke<ActiveSync[]>("active_syncs");
+  return new URLSearchParams(location.search).has("syncQueue") ? [
+    {key:"preview-finishing",title:"Baby Flower",artist:"tripleS",phase:"processing",progress:null},
+    {key:"preview-listening",title:"Change",artist:"J. Cole",phase:"learning",progress:42},
+  ] : [];
+}

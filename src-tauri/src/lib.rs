@@ -1274,6 +1274,7 @@ pub fn run() {
             media_art,
             media_lyrics,
             sync_library::saved_syncs,
+            karaoke::active_syncs,
             sync_library::saved_sync_action,
             karaoke::karaoke_status,
             karaoke::vocal_preview_enabled,

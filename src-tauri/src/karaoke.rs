@@ -97,6 +97,49 @@ pub async fn karaoke_status(
     })
 }
 
+/// Visible-library snapshot; no disk reads or audio copies.
+#[derive(Clone, Serialize)]
+pub struct ActiveSync {
+    key: String,
+    title: String,
+    artist: String,
+    phase: &'static str,
+    progress: Option<u8>,
+}
+static ACTIVE_JOB: Mutex<Option<ActiveSync>> = Mutex::new(None);
+fn active_job() -> std::sync::MutexGuard<'static, Option<ActiveSync>> {
+    ACTIVE_JOB
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+fn recording_progress(samples: usize, duration_ms: i64, origin_ms: i64) -> u8 {
+    if duration_ms <= origin_ms {
+        return 0;
+    }
+    let total_ms = (duration_ms - origin_ms) as f64;
+    ((samples as f64 / TARGET_HZ as f64 * 1000.0 / total_ms * 100.0).clamp(0.0, 100.0)) as u8
+}
+#[tauri::command]
+pub async fn active_syncs() -> Vec<ActiveSync> {
+    let mut rows: Vec<_> = active_job().clone().into_iter().collect();
+    if let Some(rec) = lock_rec().as_ref() {
+        if !rows.iter().any(|row| row.key == rec.key) {
+            rows.push(ActiveSync {
+                key: rec.key.clone(),
+                title: rec.title.clone(),
+                artist: rec.artist.clone(),
+                phase: "learning",
+                progress: Some(recording_progress(
+                    rec.samples.len(),
+                    rec.duration_ms,
+                    rec.origin_ms,
+                )),
+            });
+        }
+    }
+    rows
+}
+
 const CACHE_MAX_FILES: usize = 500;
 const TARGET_HZ: u32 = 16_000;
 const MAX_SAMPLES: usize = 16_000 * 60 * 8;
@@ -703,6 +746,7 @@ struct AlignGuard;
 
 impl Drop for AlignGuard {
     fn drop(&mut self) {
+        *active_job() = None;
         ALIGNING.store(false, Ordering::SeqCst);
     }
 }
@@ -787,6 +831,13 @@ fn try_commit(app: &AppHandle, rec: Rec) {
     let handle = app.clone();
     // Move the guard into the closure: a failed spawn drops the closure
     // and releases ALIGNING too, even though the thread body never ran.
+    *active_job() = Some(ActiveSync {
+        key: rec.key.clone(),
+        title: rec.title.clone(),
+        artist: rec.artist.clone(),
+        phase: "processing",
+        progress: None,
+    });
     let guard = AlignGuard;
     let result = std::thread::Builder::new()
         .name("karaoke-align".into())
@@ -1739,6 +1790,15 @@ mod tests {
 #[cfg(test)]
 mod sync_status_tests {
     use super::*;
+    // Progress follows captured audio, not wall time or a guessed model ETA.
+    #[test]
+    fn capture_progress_accounts_for_origin_and_caps_at_completion() {
+        assert_eq!(recording_progress(0, 180_000, 6_000), 0);
+        assert_eq!(recording_progress(87 * 16_000, 180_000, 6_000), 50);
+        assert_eq!(recording_progress(200 * 16_000, 180_000, 6_000), 100);
+        assert_eq!(recording_progress(16_000, 0, 0), 0);
+    }
+
     #[test]
     fn numeric_cache_revision_keeps_unrelated_songs() {
         let dir = std::env::temp_dir().join(format!("palette-digit-cache-{}", std::process::id()));
