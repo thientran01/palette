@@ -15,3 +15,9 @@ Validation: native policy and non-destructive cache-list tests cover stale jobs,
 The top of the library shows currently captured and processing songs. Listening progress is measured from captured audio relative to the remaining song duration at recording start; it does not advance on a wall-clock timer. Finishing is a named stage with no percentage because the alignment worker does not expose fractional progress. Completed or failed workers leave the active section through the alignment guard, including spawn failures. This is an activity view of the existing capture/worker pipeline, not a new deferred-job scheduler.
 
 Activity polling reads memory once per second only while the popover is mounted and the document is visible. Saved cache enumeration remains event-driven. Row controls use 18px authored glyphs with stronger strokes, hover/focus visibility and press feedback. The inset scrollbar adopts the Settings rounded neutral thumb and removes the native arrow track.
+
+## Unified sync control
+
+The trigger's hover/focus label now names its action, Lyric syncs. The full state explanation lives inside the library under the current song, with its title and artist. Opening the library suppresses the label; the label is bound to the trigger rather than the entire popover wrapper. Expanded styling makes the active button recognizable.
+
+All five states use an authored ribbon family with stable left/signal/right correspondence. Every state retains three visible two-cubic paths, so transitions reshape the same strokes without adding or removing parts. The same glyphs appear in the trigger, current-song explanation and active jobs. The existing 260ms in-out morph and reduced-motion behavior remain shared with Palette's icon system; there is no idle animation.
