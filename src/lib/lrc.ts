@@ -23,6 +23,8 @@ export interface LyricLine {
    * renders as the five-dot countdown instead of text. */
   end?: number;
   words?: LyricWord[];
+  /** Display fallback only; saved acoustic timing is never rewritten. */
+  alignmentFallback?: "missing" | "invalid" | "late-entry";
   /** Repeated-oh backing phrase spans the source line, not its printed tail. */
   backingPhrase?: { textStart: number; t: number; end: number };
 }
@@ -208,6 +210,20 @@ function backingWords(line: LyricLine, words: LyricWord[]): LyricWord[] {
   });
 }
 
+/** A source-window disagreement is a guardrail, not model confidence.
+ * Only severe late entrances are rejected. Early vocals, short calls, long
+ * instrumental gaps and overlapping/parenthesized voices stay acoustic. */
+function alignmentFallback(line: LyricLine, nextT: number, words: LyricWord[]): LyricLine["alignmentFallback"] {
+  if (!words.length) return "missing";
+  if (words.some(w => !Number.isFinite(w.t) ||
+    (w.end !== undefined && (!Number.isFinite(w.end) || w.end < w.t)))) return "invalid";
+  const window = nextT - line.t;
+  if (!Number.isFinite(line.t) || !Number.isFinite(window) || window <= 0 || window > 20_000 ||
+    /[()（）]/u.test(line.text) || line.backingPhrase) return undefined;
+  const first = Math.min(...words.map(w => w.t));
+  return first - line.t > Math.max(1500, window * 0.75) ? "late-entry" : undefined;
+}
+
 export function attachWords(lines: LyricLine[], words: LyricWord[]): LyricLine[] {
   if (words.length === 0) return lines;
   // Explicit line ownership preserves source order even with overlapping voices.
@@ -222,7 +238,9 @@ export function attachWords(lines: LyricLine[], words: LyricWord[]): LyricLine[]
     const mine = source.filter((w) =>
       w.line_t !== undefined ? w.line_t === line.t : w.t >= line.t && w.t < nextT,
     );
-    return mine.length > 0 ? { ...line, words: backingWords(line, mine) } : line;
+    const fallback = alignmentFallback(line, nextT, mine);
+    return fallback ? { ...line, words: undefined, alignmentFallback: fallback }
+      : { ...line, words: backingWords(line, mine), alignmentFallback: undefined };
   });
 }
 
