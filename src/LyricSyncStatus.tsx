@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { MorphIcon } from "./icons/MorphIcon";
 import type { MorphName } from "./icons/geometry";
@@ -6,6 +6,8 @@ import { vocalPreviewEnabled, karaokeStatus, onCursorLeft, type SyncStatus } fro
 import { DUR, EASE } from "./lib/tokens";
 import type { NowPlaying } from "./types";
 import { resolveSyncStatus, savedSyncStatus } from "./lib/lyricSyncState";
+
+import { SavedSyncs } from "./SavedSyncs";
 
 const glyphs: Record<SyncStatus["phase"], MorphName> = {
   waiting:"syncWaiting", learning:"syncLearning", processing:"syncProcessing", saved:"syncSaved", failed:"syncFailed",
@@ -21,6 +23,9 @@ export function LyricSyncStatus({np, saved}: {np:NowPlaying; saved:boolean}) {
   const key = JSON.stringify([np.artist,np.title,np.album,np.duration_ms]);
   const [snapshot,setSnapshot]=useState<{key:string; status:SyncStatus} | null>(null);
   const [open,setOpen]=useState(false);
+  const [library,setLibrary]=useState(false);
+  const trigger=useRef<HTMLButtonElement>(null);
+  const closeLibrary=useCallback((restoreFocus=true)=>{setLibrary(false);if(restoreFocus)trigger.current?.focus();},[]);
   const timer=useRef<number | undefined>(undefined);
   const id=useId();
   const reduced=useReducedMotion();
@@ -50,11 +55,11 @@ export function LyricSyncStatus({np, saved}: {np:NowPlaying; saved:boolean}) {
   },[key,saved,preview]);
   useEffect(()=>{clear();setOpen(false);},[key]);
   useEffect(()=>{
-    if(!open) return;
+    if(!open || library) return;
     const escape=(e:KeyboardEvent)=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();clear();setOpen(false);}};
     document.addEventListener("keydown",escape,true);
     return ()=>document.removeEventListener("keydown",escape,true);
-  },[open]);
+  },[open,library]);
   useEffect(()=>onCursorLeft(()=>{clear();setOpen(false);}),[]);
   useEffect(()=>clear,[]);
   const status=resolveSyncStatus(saved,preview,snapshot?.key===key ? snapshot.status : null);
@@ -73,13 +78,14 @@ export function LyricSyncStatus({np, saved}: {np:NowPlaying; saved:boolean}) {
   return <div className="relative shrink-0"
     onMouseEnter={()=>{clear();timer.current=window.setTimeout(()=>setOpen(true),DUR[4]);}}
     onMouseLeave={()=>{clear();timer.current=window.setTimeout(()=>setOpen(false),DUR[2]);}}>
-    <button type="button" aria-label={`Lyric sync: ${title}`} aria-describedby={open?id:undefined}
+    <button ref={trigger} type="button" aria-haspopup="dialog" aria-expanded={library} aria-label={`Lyric sync: ${title}`} aria-describedby={open?id:undefined}
       className="grid h-7 w-7 place-items-center rounded-md text-fg [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/10 active:scale-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg/50"
       onFocus={()=>{clear();setOpen(true);}} onBlur={()=>{clear();setOpen(false);}}
-      onClick={()=>{clear();setOpen(true);}} onKeyDown={e=>{if(e.key==="Escape"){clear();setOpen(false);e.stopPropagation();}}}>
+      onClick={()=>{clear();setOpen(false);setLibrary(v=>!v);}} onKeyDown={e=>{if(e.key==="Escape"){clear();setOpen(false);if(library)closeLibrary();e.stopPropagation();}}}>
       <MorphIcon name={glyphs[status.phase]} size={13} dur={DUR[5]} />
     </button>
-    <AnimatePresence>{open && <motion.div id={id} role="tooltip"
+    {library && <SavedSyncs np={np} onClose={closeLibrary}/>}
+    <AnimatePresence>{open && !library && <motion.div id={id} role="tooltip"
       initial={{opacity:0,y:-2}} animate={{opacity:1,y:0}} exit={{opacity:0}}
       transition={{duration:reduced?0:DUR[2]/1000,ease:[...EASE.out]}}
       className="absolute right-0 top-full z-50 mt-1.5 w-56 max-w-[calc(100vw-40px)] rounded-md border border-border/10 bg-surface-2 px-2.5 py-2 text-xs leading-4 text-fg shadow-lg shadow-black/40">

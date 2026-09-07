@@ -17,6 +17,7 @@ mod settings;
 mod similar;
 mod spotify;
 mod spotify_jump;
+mod sync_library;
 mod upnext;
 mod vocal_preview;
 
@@ -1272,6 +1273,8 @@ pub fn run() {
             media_seek_abs,
             media_art,
             media_lyrics,
+            sync_library::saved_syncs,
+            sync_library::saved_sync_action,
             karaoke::karaoke_status,
             karaoke::vocal_preview_enabled,
             karaoke::word_lead,

@@ -55,6 +55,15 @@ pub async fn vocal_preview_enabled() -> bool {
     crate::vocal_preview::enabled()
 }
 
+pub(crate) fn library_action_applied(key: &str) {
+    lock_misses().retain(|(song, _)| song != key);
+    sync_state(
+        key,
+        "waiting",
+        "Saved timing updated. Refreshes learn on the next full listen.",
+    );
+}
+
 /// Snapshot covers mounts after an event and track switches during alignment.
 /// In-memory only; no model, cache I/O, or settings work on this command.
 #[tauri::command]
@@ -149,6 +158,7 @@ pub struct KaraokeReady {
 }
 
 struct Rec {
+    library_revision: u64,
     key: String,
     artist: String,
     title: String,
@@ -258,8 +268,8 @@ fn rec_slot() -> &'static Mutex<Option<Rec>> {
     S.get_or_init(|| Mutex::new(None))
 }
 
-fn misses() -> &'static Mutex<HashSet<String>> {
-    static S: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+fn misses() -> &'static Mutex<HashSet<(String, u64)>> {
+    static S: OnceLock<Mutex<HashSet<(String, u64)>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
@@ -269,7 +279,7 @@ fn lock_rec() -> std::sync::MutexGuard<'static, Option<Rec>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn lock_misses() -> std::sync::MutexGuard<'static, HashSet<String>> {
+fn lock_misses() -> std::sync::MutexGuard<'static, HashSet<(String, u64)>> {
     misses()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -305,6 +315,12 @@ pub fn load(
 }
 
 fn load_cached(dir: &Path, key: &str, synced: Option<&str>, preview_enabled: bool) -> Vec<Word> {
+    if dir
+        .parent()
+        .is_some_and(|root| crate::sync_library::flags(root, key).0)
+    {
+        return Vec::new();
+    }
     if preview_enabled {
         if let Some(parent) = dir.parent() {
             let preview = read_file(
@@ -334,7 +350,7 @@ fn load_cached(dir: &Path, key: &str, synced: Option<&str>, preview_enabled: boo
 fn read_file(path: &Path, synced: Option<&str>) -> Vec<Word> {
     read_file_inner(path, synced, true)
 }
-fn read_file_preserving(path: &Path, synced: Option<&str>) -> Vec<Word> {
+pub(crate) fn read_file_preserving(path: &Path, synced: Option<&str>) -> Vec<Word> {
     read_file_inner(path, synced, false)
 }
 fn read_file_inner(path: &Path, synced: Option<&str>, prune: bool) -> Vec<Word> {
@@ -407,6 +423,12 @@ fn evict_old(cache_dir: &Path) {
 }
 
 fn has_file(dir: &Path, key: &str, synced: Option<&str>) -> bool {
+    if dir.parent().is_some_and(|root| {
+        let (deleted, refresh) = crate::sync_library::flags(root, key);
+        deleted || refresh
+    }) {
+        return false;
+    }
     let path = dir.join(format!("{key}.json"));
     if read_file(&path, synced).is_empty() {
         return false;
@@ -538,9 +560,6 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     {
         return;
     }
-    if lock_misses().contains(&key) {
-        return;
-    }
     // The raw pair is the player's last push (Spotify ~every 5s, Apple
     // Music floored to whole seconds): project it to now so the origin is
     // the position the first captured sample actually belongs to. The
@@ -558,6 +577,13 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     let Some(dir) = karaoke_dir(app) else {
         return;
     };
+    let Ok(library_revision) = crate::sync_library::generation(dir.parent().unwrap_or(&dir), &key)
+    else {
+        return;
+    };
+    if lock_misses().contains(&(key.clone(), library_revision)) {
+        return;
+    }
     let synced = lyrics::cached_synced(
         &lyrics_dir(app),
         &np.artist,
@@ -576,6 +602,7 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         synced.is_some()
     );
     let rec = Rec {
+        library_revision,
         key,
         artist: np.artist.clone(),
         title: np.title.clone(),
@@ -722,7 +749,7 @@ fn try_commit(app: &AppHandle, rec: Rec) {
             "failed",
             "No usable local audio was captured. Play on this computer to learn timing.",
         );
-        lock_misses().insert(rec.key);
+        lock_misses().insert((rec.key, rec.library_revision));
         log::info!("karaoke: silence on {} — leaving line karaoke", rec.title);
         return;
     }
@@ -1031,11 +1058,24 @@ fn commit_recording(
             "failed",
             "Not enough vocals matched the lyrics. Keeping line sync for this track.",
         );
-        lock_misses().insert(rec.key);
+        lock_misses().insert((rec.key, rec.library_revision));
         log::info!("karaoke: align missed {} — leaving line karaoke", rec.title);
         return;
     }
-    if let Err(e) = write_file(karaoke_dir, &rec.key, &synced, &words) {
+    let root = karaoke_dir.parent().unwrap_or(karaoke_dir);
+    let _library_guard = crate::sync_library::lock();
+    if !crate::sync_library::current_locked(root, &rec.key, rec.library_revision) {
+        sync_state(
+            &rec.key,
+            "waiting",
+            "Saved timing was changed while this listen was processing. Replay to learn again.",
+        );
+        return;
+    }
+    if let Err(e) = write_file(karaoke_dir, &rec.key, &synced, &words)
+        .map_err(|e| e.to_string())
+        .and_then(|()| crate::sync_library::complete_locked(root, &rec.key))
+    {
         sync_state(
             &rec.key,
             "failed",
@@ -1151,6 +1191,7 @@ mod tests {
         let duration_ms = meta["duration_ms"].as_i64().unwrap();
         let key = lyrics::key_for_ms(&artist, &title, &album, duration_ms);
         let rec = Rec {
+            library_revision: 0,
             key: key.clone(),
             artist: artist.clone(),
             title: title.clone(),
@@ -1582,6 +1623,7 @@ mod tests {
 
     fn rec_with(anchors: Vec<(usize, i64)>, duration_ms: i64) -> Rec {
         Rec {
+            library_revision: 0,
             key: "k".into(),
             artist: String::new(),
             title: "t".into(),
