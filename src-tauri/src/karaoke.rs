@@ -55,6 +55,15 @@ pub async fn vocal_preview_enabled() -> bool {
     crate::vocal_preview::enabled()
 }
 
+pub(crate) fn library_action_applied(key: &str) {
+    lock_misses().retain(|(song, _)| song != key);
+    sync_state(
+        key,
+        "waiting",
+        "Saved timing updated. Refreshes learn on the next full listen.",
+    );
+}
+
 /// Snapshot covers mounts after an event and track switches during alignment.
 /// In-memory only; no model, cache I/O, or settings work on this command.
 #[tauri::command]
@@ -86,6 +95,49 @@ pub async fn karaoke_status(
         phase: "waiting",
         detail: "Play from the beginning with Palette visible to learn word timing.",
     })
+}
+
+/// Visible-library snapshot; no disk reads or audio copies.
+#[derive(Clone, Serialize)]
+pub struct ActiveSync {
+    key: String,
+    title: String,
+    artist: String,
+    phase: &'static str,
+    progress: Option<u8>,
+}
+static ACTIVE_JOB: Mutex<Option<ActiveSync>> = Mutex::new(None);
+fn active_job() -> std::sync::MutexGuard<'static, Option<ActiveSync>> {
+    ACTIVE_JOB
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+fn recording_progress(samples: usize, duration_ms: i64, origin_ms: i64) -> u8 {
+    if duration_ms <= origin_ms {
+        return 0;
+    }
+    let total_ms = (duration_ms - origin_ms) as f64;
+    ((samples as f64 / TARGET_HZ as f64 * 1000.0 / total_ms * 100.0).clamp(0.0, 100.0)) as u8
+}
+#[tauri::command]
+pub async fn active_syncs() -> Vec<ActiveSync> {
+    let mut rows: Vec<_> = active_job().clone().into_iter().collect();
+    if let Some(rec) = lock_rec().as_ref() {
+        if !rows.iter().any(|row| row.key == rec.key) {
+            rows.push(ActiveSync {
+                key: rec.key.clone(),
+                title: rec.title.clone(),
+                artist: rec.artist.clone(),
+                phase: "learning",
+                progress: Some(recording_progress(
+                    rec.samples.len(),
+                    rec.duration_ms,
+                    rec.origin_ms,
+                )),
+            });
+        }
+    }
+    rows
 }
 
 const CACHE_MAX_FILES: usize = 500;
@@ -149,6 +201,7 @@ pub struct KaraokeReady {
 }
 
 struct Rec {
+    library_revision: u64,
     key: String,
     artist: String,
     title: String,
@@ -258,8 +311,8 @@ fn rec_slot() -> &'static Mutex<Option<Rec>> {
     S.get_or_init(|| Mutex::new(None))
 }
 
-fn misses() -> &'static Mutex<HashSet<String>> {
-    static S: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+fn misses() -> &'static Mutex<HashSet<(String, u64)>> {
+    static S: OnceLock<Mutex<HashSet<(String, u64)>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
@@ -269,7 +322,7 @@ fn lock_rec() -> std::sync::MutexGuard<'static, Option<Rec>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn lock_misses() -> std::sync::MutexGuard<'static, HashSet<String>> {
+fn lock_misses() -> std::sync::MutexGuard<'static, HashSet<(String, u64)>> {
     misses()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -305,6 +358,12 @@ pub fn load(
 }
 
 fn load_cached(dir: &Path, key: &str, synced: Option<&str>, preview_enabled: bool) -> Vec<Word> {
+    if dir
+        .parent()
+        .is_some_and(|root| crate::sync_library::flags(root, key).0)
+    {
+        return Vec::new();
+    }
     if preview_enabled {
         if let Some(parent) = dir.parent() {
             let preview = read_file(
@@ -317,12 +376,28 @@ fn load_cached(dir: &Path, key: &str, synced: Option<&str>, preview_enabled: boo
                 sync_state(key, "saved", "Experimental vocal timing is ready.");
                 return preview;
             }
+            for dir in [
+                crate::vocal_preview::PREVIOUS_CACHE_DIR,
+                crate::vocal_preview::OLDER_CACHE_DIR,
+            ] {
+                let previous =
+                    read_file_preserving(&parent.join(dir).join(format!("{key}.json")), synced);
+                if !previous.is_empty() {
+                    return previous;
+                }
+            }
         }
     }
     read_file(&dir.join(format!("{key}.json")), synced)
 }
 
 fn read_file(path: &Path, synced: Option<&str>) -> Vec<Word> {
+    read_file_inner(path, synced, true)
+}
+pub(crate) fn read_file_preserving(path: &Path, synced: Option<&str>) -> Vec<Word> {
+    read_file_inner(path, synced, false)
+}
+fn read_file_inner(path: &Path, synced: Option<&str>, prune: bool) -> Vec<Word> {
     // No current source means no usable word cache; keep the file for a
     // later successful lyrics fetch instead of deleting it on a transient miss.
     let Some(synced) = synced.filter(|s| !s.trim().is_empty()) else {
@@ -346,7 +421,9 @@ fn read_file(path: &Path, synced: Option<&str>) -> Vec<Word> {
         || file.recipe != crate::vocal_preview::cache_recipe(path, recipe())
         || file.synced.as_deref() != Some(synced)
     {
-        let _ = std::fs::remove_file(path);
+        if prune {
+            let _ = std::fs::remove_file(path);
+        }
         return Vec::new();
     }
     file.words
@@ -390,6 +467,12 @@ fn evict_old(cache_dir: &Path) {
 }
 
 fn has_file(dir: &Path, key: &str, synced: Option<&str>) -> bool {
+    if dir.parent().is_some_and(|root| {
+        let (deleted, refresh) = crate::sync_library::flags(root, key);
+        deleted || refresh
+    }) {
+        return false;
+    }
     let path = dir.join(format!("{key}.json"));
     if read_file(&path, synced).is_empty() {
         return false;
@@ -439,8 +522,30 @@ fn line_coverage(lines: &[align::TimedLine], words: &[Word]) -> u32 {
     (hit * 100).checked_div(total).unwrap_or(0)
 }
 
+// A source handoff invalidates the audio/clock association, even when paused.
+fn discard_non_music(np: &NowPlaying, slot: &mut Option<Rec>) -> Option<Rec> {
+    if crate::history::music_source(&np.player, &np.media_kind) {
+        None
+    } else {
+        slot.take()
+    }
+}
+
 pub fn observe(app: &AppHandle, np: &NowPlaying) {
-    if np.player == "none" || np.status != "playing" {
+    if !crate::history::music_source(&np.player, &np.media_kind) {
+        RECORDING.store(false, Ordering::Relaxed);
+        let discarded = discard_non_music(np, &mut lock_rec());
+        if let Some(rec) = discarded {
+            log::info!(
+                "karaoke: source changed to {} — discarding capture for {}",
+                np.player,
+                rec.title
+            );
+            sync_state(&rec.key, "waiting", "Playback switched away from the music app. Replay from the beginning to learn timing.");
+        }
+        return;
+    }
+    if np.status != "playing" {
         return;
     }
     if np.title.is_empty() && np.artist.is_empty() {
@@ -499,9 +604,6 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     {
         return;
     }
-    if lock_misses().contains(&key) {
-        return;
-    }
     // The raw pair is the player's last push (Spotify ~every 5s, Apple
     // Music floored to whole seconds): project it to now so the origin is
     // the position the first captured sample actually belongs to. The
@@ -519,6 +621,13 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     let Some(dir) = karaoke_dir(app) else {
         return;
     };
+    let Ok(library_revision) = crate::sync_library::generation(dir.parent().unwrap_or(&dir), &key)
+    else {
+        return;
+    };
+    if lock_misses().contains(&(key.clone(), library_revision)) {
+        return;
+    }
     let synced = lyrics::cached_synced(
         &lyrics_dir(app),
         &np.artist,
@@ -529,7 +638,15 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     if has_file(&dir, &key, synced.as_deref()) {
         return;
     }
+    log::info!(
+        "karaoke: recording {} from {} at {}ms; timed lyrics cached={}",
+        np.title,
+        np.player,
+        origin_ms,
+        synced.is_some()
+    );
     let rec = Rec {
+        library_revision,
         key,
         artist: np.artist.clone(),
         title: np.title.clone(),
@@ -630,6 +747,7 @@ struct AlignGuard;
 
 impl Drop for AlignGuard {
     fn drop(&mut self) {
+        *active_job() = None;
         ALIGNING.store(false, Ordering::SeqCst);
     }
 }
@@ -676,7 +794,7 @@ fn try_commit(app: &AppHandle, rec: Rec) {
             "failed",
             "No usable local audio was captured. Play on this computer to learn timing.",
         );
-        lock_misses().insert(rec.key);
+        lock_misses().insert((rec.key, rec.library_revision));
         log::info!("karaoke: silence on {} — leaving line karaoke", rec.title);
         return;
     }
@@ -714,6 +832,13 @@ fn try_commit(app: &AppHandle, rec: Rec) {
     let handle = app.clone();
     // Move the guard into the closure: a failed spawn drops the closure
     // and releases ALIGNING too, even though the thread body never ran.
+    *active_job() = Some(ActiveSync {
+        key: rec.key.clone(),
+        title: rec.title.clone(),
+        artist: rec.artist.clone(),
+        phase: "processing",
+        progress: None,
+    });
     let guard = AlignGuard;
     let result = std::thread::Builder::new()
         .name("karaoke-align".into())
@@ -877,6 +1002,7 @@ fn commit_recording(
             "failed",
             "Timed lyrics weren’t available for this recording.",
         );
+        log::warn!("karaoke: cannot align {} — timed lyrics missing", rec.title);
         return;
     };
     if has_file(karaoke_dir, &rec.key, Some(&synced)) {
@@ -984,11 +1110,24 @@ fn commit_recording(
             "failed",
             "Not enough vocals matched the lyrics. Keeping line sync for this track.",
         );
-        lock_misses().insert(rec.key);
+        lock_misses().insert((rec.key, rec.library_revision));
         log::info!("karaoke: align missed {} — leaving line karaoke", rec.title);
         return;
     }
-    if let Err(e) = write_file(karaoke_dir, &rec.key, &synced, &words) {
+    let root = karaoke_dir.parent().unwrap_or(karaoke_dir);
+    let _library_guard = crate::sync_library::lock();
+    if !crate::sync_library::current_locked(root, &rec.key, rec.library_revision) {
+        sync_state(
+            &rec.key,
+            "waiting",
+            "Saved timing was changed while this listen was processing. Replay to learn again.",
+        );
+        return;
+    }
+    if let Err(e) = write_file(karaoke_dir, &rec.key, &synced, &words)
+        .map_err(|e| e.to_string())
+        .and_then(|()| crate::sync_library::complete_locked(root, &rec.key))
+    {
         sync_state(
             &rec.key,
             "failed",
@@ -1104,6 +1243,7 @@ mod tests {
         let duration_ms = meta["duration_ms"].as_i64().unwrap();
         let key = lyrics::key_for_ms(&artist, &title, &album, duration_ms);
         let rec = Rec {
+            library_revision: 0,
             key: key.clone(),
             artist: artist.clone(),
             title: title.clone(),
@@ -1382,6 +1522,46 @@ mod tests {
     }
 
     #[test]
+    fn source_guidance_cache_keeps_both_previous_generations_readable() {
+        let root =
+            std::env::temp_dir().join(format!("palette-source-cache-{}", std::process::id()));
+        let baseline = root.join("karaoke");
+        let source = "[00:01.00]one";
+        let dirs = [
+            crate::vocal_preview::CACHE_DIR,
+            crate::vocal_preview::PREVIOUS_CACHE_DIR,
+            crate::vocal_preview::OLDER_CACHE_DIR,
+            "karaoke",
+        ];
+        for (i, dir) in dirs.iter().enumerate() {
+            write_file(
+                &root.join(dir),
+                "song",
+                source,
+                &[Word {
+                    t: 1000 + i as i64 * 100,
+                    text: "one".into(),
+                    ..Word::default()
+                }],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            load_cached(&baseline, "song", Some(source), false)[0].t,
+            1300
+        );
+        for (i, dir) in dirs.iter().enumerate() {
+            assert_eq!(
+                load_cached(&baseline, "song", Some(source), true)[0].t,
+                1000 + i as i64 * 100
+            );
+            std::fs::remove_file(root.join(dir).join("song.json")).unwrap();
+        }
+        assert!(load_cached(&baseline, "song", Some(source), true).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn preview_cache_falls_back_without_replacing_original() {
         let root =
             std::env::temp_dir().join(format!("palette-preview-cache-{}", std::process::id()));
@@ -1412,6 +1592,20 @@ mod tests {
         );
         std::fs::write(preview.join("song.json"), b"invalid").unwrap();
         assert_eq!(load_cached(&baseline, "song", Some(source), true), original);
+        let previous_dir = root.join(crate::vocal_preview::PREVIOUS_CACHE_DIR);
+        write_file(&previous_dir, "song", source, &experimental).unwrap();
+        let old_bytes = std::fs::read(previous_dir.join("song.json")).unwrap();
+        assert_eq!(
+            load_cached(&baseline, "song", Some(source), true),
+            experimental
+        );
+        assert!(load_cached(&baseline, "song", Some("[00:01.00]changed"), true).is_empty());
+        assert_eq!(
+            std::fs::read(previous_dir.join("song.json")).unwrap(),
+            old_bytes
+        );
+        // Re-create the baseline because its normal stale-source policy prunes it.
+        write_file(&baseline, "song", source, &original).unwrap();
         assert_eq!(std::fs::read(baseline.join("song.json")).unwrap(), saved);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1521,6 +1715,7 @@ mod tests {
 
     fn rec_with(anchors: Vec<(usize, i64)>, duration_ms: i64) -> Rec {
         Rec {
+            library_revision: 0,
             key: "k".into(),
             artist: String::new(),
             title: "t".into(),
@@ -1539,6 +1734,39 @@ mod tests {
             anchors,
             last_anchor_at: 0,
             seek_strikes: 0,
+        }
+    }
+
+    #[test]
+    fn browser_handoff_discards_recording_even_when_paused() {
+        let mut slot = Some(rec_with(vec![], 180_000));
+        let browser = NowPlaying {
+            player: "other".into(),
+            media_kind: "music".into(),
+            title: "Quiet vocals · onset experiment".into(),
+            status: "paused".into(),
+            ..Default::default()
+        };
+        assert!(discard_non_music(&browser, &mut slot).is_some());
+        assert!(slot.is_none());
+        assert!(discard_non_music(&browser, &mut slot).is_none());
+    }
+
+    #[test]
+    fn music_source_guard_preserves_paused_music_but_rejects_video() {
+        for player in ["spotify", "apple_music"] {
+            let mut slot = Some(rec_with(vec![], 180_000));
+            let mut np = NowPlaying {
+                player: player.into(),
+                media_kind: "unknown".into(),
+                status: "paused".into(),
+                ..Default::default()
+            };
+            assert!(discard_non_music(&np, &mut slot).is_none());
+            assert!(slot.is_some());
+            np.media_kind = "video".into();
+            assert!(discard_non_music(&np, &mut slot).is_some());
+            assert!(slot.is_none());
         }
     }
 
@@ -1603,6 +1831,15 @@ mod tests {
 #[cfg(test)]
 mod sync_status_tests {
     use super::*;
+    // Progress follows captured audio, not wall time or a guessed model ETA.
+    #[test]
+    fn capture_progress_accounts_for_origin_and_caps_at_completion() {
+        assert_eq!(recording_progress(0, 180_000, 6_000), 0);
+        assert_eq!(recording_progress(87 * 16_000, 180_000, 6_000), 50);
+        assert_eq!(recording_progress(200 * 16_000, 180_000, 6_000), 100);
+        assert_eq!(recording_progress(16_000, 0, 0), 0);
+    }
+
     #[test]
     fn numeric_cache_revision_keeps_unrelated_songs() {
         let dir = std::env::temp_dir().join(format!("palette-digit-cache-{}", std::process::id()));

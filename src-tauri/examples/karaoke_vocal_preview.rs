@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &args[1].join("onnxruntime.dll"),
     )?;
     let lines = parse_lrc(&std::fs::read_to_string(args[0].join("lyrics.lrc"))?);
-    let words = model.align(&vocals, &lines, &map)?;
+    let words = model.align_entries(&vocals, &lines, &map)?;
     let result = serde_json::json!({"recipe":vocal_preview::RECIPE,"separation_seconds":separated,"total_seconds":started.elapsed().as_secs_f64(),"words":words});
     let mut output = std::fs::OpenOptions::new()
         .write(true)
