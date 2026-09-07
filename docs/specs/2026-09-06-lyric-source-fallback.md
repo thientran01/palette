@@ -1,30 +1,33 @@
-# Source-timed fallback for missed entrances
+# Source-guided lyric entrances
 
-Approved direction: retain accurate acoustic word timing, but use the original line timestamp when the alignment misses the line. This is a display guard and applies to existing saved caches without another listen.
+## Approved behavior
 
-## Evidence and scope
+Source line timestamps guide acoustic alignment; they never replace valid word/syllable animation with a plain highlight. This supersedes the earlier plain-highlight fallback after direct user feedback. Invalid or missing word spans retain ordinary line display.
 
-A read-only scan of 11 current vocal-trial caches (660 nonempty matched line windows) found 18 first-word delays over 1.5 seconds and half the source interval, plus five entire word spans outside their source window. These are timing disagreements, not independently verified vocal onsets. An eight-token row at 136770ms starts at 139718ms, only 262ms before the next source row. Baby Flower's held-note row at 163660ms starts at 171808ms. The user reported missed lines and has previously confirmed this Baby Flower entrance is much earlier.
+## Implementation
 
-Use a stricter initial threshold than the exploratory scan: onset must be more than both 1500ms and 75% of the source interval late. Source windows must be positive, finite and at most 20 seconds. Do not reject early entrances or quick delivery merely because a line finishes well before the next timestamp. Exclude parentheses/backing phrases to preserve simultaneous voices. Do not guess a final-line boundary.
+The separated-vocal development trial decodes normally, then retries lines whose first spoken target starts more than 1500ms after the source timestamp. Require a following source row, a positive interval at most 20 seconds, and recording coverage at the source entrance. Exclude parenthesized voices, repeated-la rows, and initial oh/ooh/ah rows covered by the previously approved entry refinement. Normal mixed-audio alignment remains unchanged.
 
-## Behavior
+Reuse the same emissions. Charge eight log-score units per second of delay beyond source plus 500ms, once when entering the first spoken target. Do not charge held frames. The audio still determines all later word/spelling spans; no uniform word redistribution or timestamp shifting is performed. Accept only an earlier path whose first-target average posterior and total posterior across its frames each retain at least half the original target's support, with positive support. This relative guard prevents the source prior from selecting a weak early noise frame over a strongly supported late phoneme. Posterior support is not a calibrated timing probability.
 
-1. Attach words to their existing source line identity.
-2. Reject nonfinite/reversed word spans. Clear stale attached words if a replacement contains no words for this line.
-3. For severe late entrances, omit word spans and render the existing source-timed line highlight. Keep the original source text, timestamp, scroll clock and neighboring rows unchanged.
-4. Expose a reason on the rendered line for the read-only audit; do not rewrite saved timings or invent intra-line timing.
+The initial 75%-of-line gate missed a retained Baby Flower recording: 3.343s late in a 10.37s source interval. The retry therefore uses the absolute 1500ms discrepancy. These parameters are provisional development-trial guardrails, not universal thresholds established by a large labelled dataset.
 
-This does not repair word boundaries within otherwise plausible lines, and a source timestamp can itself be inaccurate. Duration compression alone is deferred: no such case appeared in the initial scan, and fast delivery followed by a rest is legitimate.
+## Persistence and scope
 
-## Validation
+Use cache directory karaoke-vocals-preview-v3 and recipe mms-int8/demucs-source-3. Read valid v2, then v1, then ordinary caches while learning v3. Never delete older preview files on source mismatch. Saved-sync listing, deletion and refresh cover all three preview versions. The feature stays within the existing opt-in, debug-only vocal trial; no new model or separation pass is required by the retry.
 
-Regression tests first reproduce the late burst, stale replacement and malformed-span failures. Preserve early vocals, fast delivery, overlapping adlibs and ambiguous windows. Run the production parser/fallback against local caches with scripts/audit-source-fallback.mjs; only timing metadata may be published, not local lyrics or audio. Inspect the affected cohort before publishing. Ship as a separate PR above the current library branch.
+Baby Flower's approved local four-word reference remains a manual correction. Preserve it separately from automatic comparison output; it must not be described as an automatic alignment result. General durable user corrections are outside this change.
+
+## Verification
+
+Red-first regressions cover preservation of frontend animated spans, a supported earlier CTC entrance, and rejection of an early noise frame that discards a supported hold. Additional checks cover strong contrary audio, good/early entries, short and ambiguous windows, vocalization exclusions, capture coverage and cache fallback.
+
+Native recording comparison uses karaoke_entry_align with PALETTE_SOURCE_GUIDE=1; unconfigured runs retain the existing entry baseline. Outputs are exclusively created. The research report compares token ownership and complete word payloads, and prints timing metadata only. Model assets/audio/lyrics/caches stay local. Source disagreements and listening-ground-truth errors are reported separately.
 
 ### Results
 
-The three failing regression cases passed after implementation; the full suite passed 65 tests across nine files (59 before this change), and the production build passed. A comparison fixture using the actual LyricsPanel renderer confirmed the late saved alignment stays dim at the source entrance while the fallback highlights the full line on time.
+Frontend: 65 passing tests. Rust: 145 passing, four local-asset tests ignored (140 passing before this change; five added). Clippy across all targets and the production frontend build passed. Independent review identified weak and strong isolated-noise counterexamples; both failed in the native regression before the support guard and pass after it. The existing independent CTC oracle continues to pass.
 
-The cache audit suppressed word spans on 24 of 4,284 lines across 79 source-matching cache records: eight of 685 current vocal-preview lines, zero of 723 older preview lines, and 16 of 2,876 regular cache lines. Cache variants are counted independently, not as unique songs. Sixteen missing-word rows were counted separately because they already use whole-line display. These counts measure the scope of the guard, not verified listening accuracy.
+Five retained separated recordings contain 207 lines and 1,622 words. Sienna, Free and Happy retain identical complete word/subword payloads (109 lines, 936 words). Baby Flower changes one line's first-word entrance, 167003 to 163901ms (3.102s earlier); the other three boundaries remain unchanged. This matches the approved first entrance but does not solve the remaining held-note boundaries. Bamsopoong changes two repeated-na lines: entrances 59469 to 57944ms and 113664 to 112241ms; interior boundaries also move. Those two changes are source/acoustic-supported candidates, not user-confirmed accuracy improvements. The final mean-plus-mass guard was rerun natively on all three changed rows and retained the candidate payloads. No further vocal separation was needed for these retries.
 
-Audit limitation: cache files do not provide verified track duration to the parser. The audit uses duration zero, so duration-dependent outro boundaries are omitted and final-line fallback counts may be understated compared with the running app. No affected example was found in the current cohort during review.
+The local development app was rebuilt and reopened with the trial enabled. Baby Flower's approved four-word timing was carried into the local v3 cache with explicit manual-reference provenance; it remains separate from the automatic experimental output. Model files, recordings, lyric text and local cache contents were not committed.

@@ -333,9 +333,10 @@ it("adds restrained dramatic lag while staying continuous and on time", () => {
 describe("source timing protects a missed line entrance", () => {
   const lines: LyricLine[] = [{t:136770,text:"one two three four five six seven eight"},{t:139980,text:"next"}];
   const late = Array.from({length:8},(_,i)=>({t:139718+i*80,end:139798+i*80,text:`word${i}`,line_t:136770}));
-  it("uses ordinary source-line highlighting instead of a late burst", () => {
+  it("retains animated words even when the acoustic entrance is late", () => {
     const result=attachWords(lines,late);
-    expect(result[0].words).toBeUndefined();
+    expect(result[0].words).toEqual(late);
+    expect(result[0].alignmentFallback).toBeUndefined();
     expect(result[0].t).toBe(136770);
     expect(currentLineIndex(result,136770,0)).toBe(0);
     expect(late[0].t).toBe(139718);

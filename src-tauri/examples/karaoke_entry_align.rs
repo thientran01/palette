@@ -53,12 +53,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|s| s.parse::<f64>())
         .transpose()?
         .unwrap_or(500.0);
-    let diagnostics: Vec<serde_json::Value> = Vec::new();
-    let words = aligner.align_entries(&pcm, &lines, &map)?;
+    let mut diagnostics = Vec::new();
+    let guide = std::env::var_os("PALETTE_SOURCE_GUIDE").is_some();
+    let words = if guide {
+        aligner.align_guided_entries(&pcm, &lines, &map, Some(&mut diagnostics))?
+    } else {
+        aligner.align_entries(&pcm, &lines, &map)?
+    };
     let seconds = start.elapsed().as_secs_f64() - loaded;
     if std::env::var_os("PALETTE_BENCH_REPEAT").is_some() {
         let again = Instant::now();
-        let repeated = aligner.align_entries(&pcm, &lines, &map)?;
+        let repeated = if guide {
+            aligner.align_guided_entries(&pcm, &lines, &map, None)?
+        } else {
+            aligner.align_entries(&pcm, &lines, &map)?
+        };
         assert_eq!(words, repeated, "model reuse changed timings");
         eprintln!(
             "warm align {:.3}s; identical words",

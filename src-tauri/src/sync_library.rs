@@ -111,8 +111,9 @@ fn list(root: &Path) -> Result<Vec<SavedSync>, String> {
     let mut found: BTreeMap<String, u64> = BTreeMap::new();
     for dir in [
         "karaoke",
-        "karaoke-vocals-preview-v1",
-        "karaoke-vocals-preview-v2",
+        crate::vocal_preview::OLDER_CACHE_DIR,
+        crate::vocal_preview::PREVIOUS_CACHE_DIR,
+        crate::vocal_preview::CACHE_DIR,
     ] {
         let Ok(files) = std::fs::read_dir(root.join(dir)) else {
             continue;
@@ -199,7 +200,7 @@ mod tests {
     fn list_validates_without_pruning_and_delete_is_reversible() {
         let root =
             std::env::temp_dir().join(format!("palette-library-list-{}", std::process::id()));
-        let dir = root.join("karaoke-vocals-preview-v2");
+        let dir = root.join(crate::vocal_preview::CACHE_DIR);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(root.join("lyrics")).unwrap();
         let key = "abc";
@@ -209,7 +210,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"synced":source})).unwrap(),
         )
         .unwrap();
-        let cache = serde_json::json!({"v":5,"detail_v":2,"recipe":"mms-int8/demucs-entry-2","synced":source,"words":[{"t":1000,"end":2000,"text":"hello"}]});
+        let cache = serde_json::json!({"v":5,"detail_v":2,"recipe":crate::vocal_preview::RECIPE,"synced":source,"words":[{"t":1000,"end":2000,"text":"hello"}]});
         let bytes = serde_json::to_vec(&cache).unwrap();
         std::fs::write(dir.join("abc.json"), &bytes).unwrap();
         assert_eq!(list(&root).unwrap().len(), 1);

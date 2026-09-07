@@ -376,14 +376,15 @@ fn load_cached(dir: &Path, key: &str, synced: Option<&str>, preview_enabled: boo
                 sync_state(key, "saved", "Experimental vocal timing is ready.");
                 return preview;
             }
-            let previous = read_file_preserving(
-                &parent
-                    .join(crate::vocal_preview::PREVIOUS_CACHE_DIR)
-                    .join(format!("{key}.json")),
-                synced,
-            );
-            if !previous.is_empty() {
-                return previous;
+            for dir in [
+                crate::vocal_preview::PREVIOUS_CACHE_DIR,
+                crate::vocal_preview::OLDER_CACHE_DIR,
+            ] {
+                let previous =
+                    read_file_preserving(&parent.join(dir).join(format!("{key}.json")), synced);
+                if !previous.is_empty() {
+                    return previous;
+                }
             }
         }
     }
@@ -1518,6 +1519,46 @@ mod tests {
     fn majority_listen_is_enough() {
         assert!(listen_enough(100_000, 0, 180_000));
         assert!(listen_enough(12_000, 0, 20_000));
+    }
+
+    #[test]
+    fn source_guidance_cache_keeps_both_previous_generations_readable() {
+        let root =
+            std::env::temp_dir().join(format!("palette-source-cache-{}", std::process::id()));
+        let baseline = root.join("karaoke");
+        let source = "[00:01.00]one";
+        let dirs = [
+            crate::vocal_preview::CACHE_DIR,
+            crate::vocal_preview::PREVIOUS_CACHE_DIR,
+            crate::vocal_preview::OLDER_CACHE_DIR,
+            "karaoke",
+        ];
+        for (i, dir) in dirs.iter().enumerate() {
+            write_file(
+                &root.join(dir),
+                "song",
+                source,
+                &[Word {
+                    t: 1000 + i as i64 * 100,
+                    text: "one".into(),
+                    ..Word::default()
+                }],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            load_cached(&baseline, "song", Some(source), false)[0].t,
+            1300
+        );
+        for (i, dir) in dirs.iter().enumerate() {
+            assert_eq!(
+                load_cached(&baseline, "song", Some(source), true)[0].t,
+                1000 + i as i64 * 100
+            );
+            std::fs::remove_file(root.join(dir).join("song.json")).unwrap();
+        }
+        assert!(load_cached(&baseline, "song", Some(source), true).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
