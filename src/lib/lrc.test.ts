@@ -251,7 +251,8 @@ describe("acoustic spelling fill", () => {
   });
   it("uses measured duration for legacy English words instead of a 90ms flash", () => {
     expect(wordWipeFraction({ t: 1000, end: 2000, text: "comeback" }, 1500, 0)).toBe(.5);
-    expect(wordWipeFraction({ t: 1000, end: 2000, text: "한" }, 1090, 0)).toBe(1);
+    expect(wordWipeFraction({ t: 1000, end: 2000, text: "한" }, 1090, 0)).toBeCloseTo(0.09);
+    expect(wordWipeFraction({ t: 1000, end: 2000, text: "한" }, 1500, 0)).toBe(.5);
   });
   it("ignores malformed detail and phrase remapping overrides acoustic detail", () => {
     expect(wordWipeFraction({ ...word, points: [...word.points].reverse() }, 1500, 0)).toBe(.5);
@@ -283,20 +284,29 @@ describe("parentheses do not establish simultaneous vocals", () => {
 });
 
 
-it("computes completion from the displayed fill rather than always using word end", () => {
-  expect(wordFillEnd({t:1000,end:2000,text:"한"})).toBe(1090);
-  expect(wordFillEnd({t:1000,end:2000,text:"one"})).toBe(1090);
-  expect(wordFillEnd({t:1000,end:1050,text:"one"})).toBe(1050);
-  expect(wordFillEnd({t:1000,end:2000,text:"hallway"})).toBe(2000);
-  expect(wordFillEnd({t:1000,text:"one"})).toBe(1000);
-  expect(wordFillEnd({t:1000,text:"hallway"},2000)).toBe(2000);
-  expect(wordFillEnd({t:1000,end:2000,text:"oh",timing:"phrase"})).toBe(2000);
-  const word={t:1000,end:2000,text:"hallway",points:[
-    {t:1000,fraction:0},{t:1800,fraction:1},{t:2000,fraction:1},
-  ]};
-  expect(wordFillEnd(word)).toBe(1800);
-  expect(wordWipeFraction(word,1800,0)).toBe(1);
-  expect(wordFillEnd({...word,points:[...word.points].reverse()})).toBe(2000);
+describe("Hangul used to flash in 90 ms while English crawled the measured span", () => {
+  it("computes completion from the displayed fill rather than always using word end", () => {
+    expect(wordFillEnd({t:1000,end:2000,text:"한"})).toBe(2000);
+    expect(wordFillEnd({t:1000,end:2000,text:"one"})).toBe(1090);
+    expect(wordFillEnd({t:1000,end:1050,text:"one"})).toBe(1050);
+    expect(wordFillEnd({t:1000,end:2000,text:"hallway"})).toBe(2000);
+    expect(wordFillEnd({t:1000,text:"one"})).toBe(1000);
+    expect(wordFillEnd({t:1000,text:"hallway"},2000)).toBe(2000);
+    expect(wordFillEnd({t:1000,end:2000,text:"oh",timing:"phrase"})).toBe(2000);
+    const word={t:1000,end:2000,text:"hallway",points:[
+      {t:1000,fraction:0},{t:1800,fraction:1},{t:2000,fraction:1},
+    ]};
+    expect(wordFillEnd(word)).toBe(1800);
+    expect(wordWipeFraction(word,1800,0)).toBe(1);
+    expect(wordFillEnd({...word,points:[...word.points].reverse()})).toBe(2000);
+    expect(wordFillEnd({t:1000,text:"한"})).toBe(1000);
+    expect(wordFillEnd({t:1000,end:2000,text:"あ"})).toBe(2000);
+    expect(wordWipeFraction({t:1000,end:2000,text:"あ"},1500,0)).toBe(.5);
+    expect(wordFillEnd({t:1000,end:2000,text:"漢"})).toBe(2000);
+    expect(wordWipeFraction({t:1000,end:2000,text:"漢"},1500,0)).toBe(.5);
+    expect(wordFillEnd({t:1000,end:2000,text:"한a"})).toBe(1090);
+    expect(wordFillEnd({t:1000,end:2000,text:"한 "})).toBe(2000);
+  });
 });
 
 it("unfolds Haunted's held vowel instead of freezing then flashing the next letter", () => {
