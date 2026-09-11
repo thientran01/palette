@@ -8,6 +8,14 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-09-10
+
+Korean karaoke fills for as long as the syllable is sung.
+
+### Changed
+
+- Hangul, kana, and CJK lyric tokens crawl their measured span instead of flashing full in 90 ms. Short English words (`one`, `I`, `oh`) still punch in.
+
 ## [1.0.1] - 2026-09-03
 
 A patch for installed 1.0 copies: the focus queue is a setlist again, and launch/playback got lighter.
@@ -267,7 +275,8 @@ First public release.
 - Synced lyrics (LRCLIB with disk cache), album-art adaptive accents, an audio-reactive "living separator", corner docking, morphing icons, and a monotonic position clock owning playback time.
 - Ships as a per-user NSIS installer — single-instance, opt-in start-at-login — with a GitHub Releases auto-update pipeline and an in-app updater.
 
-[Unreleased]: https://github.com/thientran01/palette/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/thientran01/palette/compare/v1.0.5...HEAD
+[1.0.5]: https://github.com/thientran01/palette/compare/v1.0.4...v1.0.5
 [1.0.1]: https://github.com/thientran01/palette/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/thientran01/palette/compare/v0.7.5...v1.0.0
 [0.7.5]: https://github.com/thientran01/palette/compare/v0.7.4...v0.7.5
