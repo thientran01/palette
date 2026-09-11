@@ -256,8 +256,7 @@ export function currentWordIndex(words: LyricWord[], positionMs: number, leadMs:
   return ans;
 }
 
-/** Short tokens and Hangul blocks retain the onset attack (DUR[1]).
- * Longer English spellings use acoustic checkpoints or measured duration. */
+/** Onset flash for short Latin that does not own its measured span. */
 export const WORD_ATTACK_MS = 90;
 
 export function wordWipe(
@@ -271,7 +270,19 @@ export function wordWipe(
   return { index: i, frac: wordWipeFraction(words[i], positionMs, leadMs, words[i + 1]?.t) };
 }
 
-function validWordPoints(w: LyricWord, end: number) {
+type WordPoint = { t: number; fraction: number };
+
+type WordFill = {
+  start: number;
+  end: number;
+} & (
+  | { kind: "instant" }
+  | { kind: "attack" }
+  | { kind: "span" }
+  | { kind: "points"; points: readonly WordPoint[] }
+);
+
+function validWordPoints(w: LyricWord, end: number): WordPoint[] | undefined {
   const points = w.points;
   return w.timing !== "phrase" && points && points.length >= 2 &&
     points[0].t === w.t && points[0].fraction === 0 &&
@@ -282,54 +293,88 @@ function validWordPoints(w: LyricWord, end: number) {
     ? points : undefined;
 }
 
-function sustainedWord(w: LyricWord): boolean {
-  return w.timing === "phrase" || (/^[\x00-\x7f]*$/.test(w.text) &&
-    /^[^a-z]*[a-z][a-z'-]{3,}[^a-z]*$/i.test(w.text));
+// Must match src-tauri/src/align.rs is_syllable_char.
+const SYLLABLE_CHAR_RANGES: readonly (readonly [number, number])[] = [
+  [0xAC00, 0xD7A3],
+  [0x1100, 0x11FF],
+  [0x3130, 0x318F],
+  [0x4E00, 0x9FFF],
+  [0x3400, 0x4DBF],
+  [0x3040, 0x30FF],
+];
+
+function isSyllableScriptBlock(text: string): boolean {
+  const t = text.trim();
+  if (t.length === 0) return false;
+  for (const c of t) {
+    const cp = c.codePointAt(0);
+    if (cp === undefined) return false;
+    if (!SYLLABLE_CHAR_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi)) return false;
+  }
+  return true;
+}
+
+function isLatinLong(text: string): boolean {
+  return /^[\x00-\x7f]*$/.test(text) &&
+    /^[^a-z]*[a-z][a-z'-]{3,}[^a-z]*$/i.test(text);
+}
+
+function resolveFill(w: LyricWord, nextT?: number): WordFill {
+  const measured = w.end ?? nextT;
+  if (measured === undefined) return { kind: "instant", start: w.t, end: w.t };
+  const points = validWordPoints(w, measured);
+  if (points) {
+    const end = points.find(point => point.fraction === 1)!.t;
+    return { kind: "points", start: w.t, end, points };
+  }
+  const span = Math.max(measured - w.t, 1);
+  if (w.timing === "phrase" || isSyllableScriptBlock(w.text) || isLatinLong(w.text)) {
+    return { kind: "span", start: w.t, end: w.t + span };
+  }
+  return { kind: "attack", start: w.t, end: w.t + Math.min(WORD_ATTACK_MS, span) };
+}
+
+function sampleFill(fill: WordFill, clock: number): number {
+  if (clock < fill.start) return 0;
+  if (clock >= fill.end) return 1;
+  switch (fill.kind) {
+    case "instant":
+      return 1;
+    case "attack": {
+      const u = (clock - fill.start) / (fill.end - fill.start);
+      return 1 - (1 - u) ** 3;
+    }
+    case "span":
+      return (clock - fill.start) / (fill.end - fill.start);
+    case "points": {
+      let a = fill.points[0];
+      for (let i = 1; i < fill.points.length; i++) {
+        // CTC often emits a letter for one frame, then blanks during its hold.
+        // Fill that letter through the hold, up to the next letter's onset.
+        // Keep the first 100% checkpoint so completion bloom never moves later.
+        while (fill.points[i].fraction < 1 && i + 1 < fill.points.length &&
+          fill.points[i + 1].fraction === fill.points[i].fraction) i++;
+        const b = fill.points[i];
+        if (clock < b.t) {
+          const u = Math.max(0, (clock - a.t) / Math.max(b.t - a.t, 1));
+          // A gentle lag gives held letters weight without adding clock delay.
+          // The curve keeps moving throughout and meets the next onset exactly.
+          const eased = u - 0.12 * Math.sin(Math.PI * u);
+          return a.fraction + (b.fraction - a.fraction) * eased;
+        }
+        a = b;
+      }
+      return 1;
+    }
+  }
 }
 
 /** Song-clock instant at which this word's displayed fill reaches 100%. */
 export function wordFillEnd(w: LyricWord, nextT?: number): number {
-  const end = w.end ?? nextT;
-  if (end === undefined) return w.t;
-  const points = validWordPoints(w, end);
-  if (points) return points.find(point => point.fraction === 1)!.t;
-  const span = Math.max(end - w.t, 1);
-  return w.t + (sustainedWord(w) ? span : Math.min(WORD_ATTACK_MS, span));
+  return resolveFill(w, nextT).end;
 }
 
 /** Each span owns its progress: simultaneous voices cannot share a cursor. */
 export function wordWipeFraction(w: LyricWord, positionMs: number, leadMs: number, nextT?: number): number {
-  if (positionMs + leadMs < w.t) return 0;
-  const end = w.end ?? nextT;
-  if (end === undefined) return 1;
-  const span = Math.max(end - w.t, 1);
-  const points = validWordPoints(w, end);
-  if (points) {
-    const p = positionMs + leadMs;
-    let a = points[0];
-    for (let i = 1; i < points.length; i++) {
-      // CTC often emits a letter for one frame, then blanks during its hold.
-      // Fill that letter through the hold, up to the next letter's onset.
-      // Keep the first 100% checkpoint so completion bloom never moves later.
-      while (points[i].fraction < 1 && i + 1 < points.length &&
-        points[i + 1].fraction === points[i].fraction) i++;
-      const b = points[i];
-      if (p < b.t) {
-        const u = Math.max(0, (p - a.t) / Math.max(b.t - a.t, 1));
-        // A gentle lag gives held letters weight without adding clock delay.
-        // The curve keeps moving throughout and meets the next onset exactly.
-        const eased = u - 0.12 * Math.sin(Math.PI * u);
-        return a.fraction + (b.fraction - a.fraction) * eased;
-      }
-      a = b;
-    }
-    return 1;
-  }
-  // Legacy caches have no inner timing. Longer English words use their
-  // measured duration; never manufacture phonetic syllable boundaries.
-  const sustained = sustainedWord(w);
-  const attack = sustained ? span : Math.min(WORD_ATTACK_MS, span);
-  const p = positionMs + leadMs;
-  const u = Math.min(Math.max((p - w.t) / attack, 0), 1);
-  return sustained ? u : 1 - (1 - u) ** 3;
+  return sampleFill(resolveFill(w, nextT), positionMs + leadMs);
 }
