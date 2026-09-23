@@ -1,36 +1,29 @@
 # Palette
 
-A Raycast/Linear-grade mini music player for Windows. Apple Music's own miniplayer minimizes on every click and feels dead — so Palette is an always-on-top widget that never minimizes and controls whatever's playing.
+An always-on-top mini music player for Windows. Apple Music's own miniplayer minimizes every time you click away, so I built one that doesn't.
 
-It reads and controls any player that speaks the Windows system media API (GSMTC) — Apple Music, Spotify, browsers — with synced lyrics, album-art adaptive theming, audio-reactive visuals, and ±10s seek.
+Palette controls any player that talks to the Windows system media API (GSMTC). That includes Apple Music, Spotify, and browsers. It shows synced lyrics with word-level karaoke, picks up accent colors from the album art, and has a small visualizer that moves with the song.
 
 ## Features
 
-- **Universal now-playing read/control** over GSMTC — Apple Music, Spotify, and browser players, no per-app integration
-- **Morphing modes** — a pill that expands to a card and then to a full expanded view, each a continuous layout morph
-- **Synced lyrics** from [LRCLIB](https://lrclib.net) with whole-line karaoke highlight, click-a-line-to-seek, and an instrumental-break countdown
-- **Album-art adaptive accent theming** — the cover's palette drives progress fills and accents while chrome stays neutral
-- **The audio-reactive "living separator"** — process-scoped WASAPI loopback + FFT drives capsules that bloom to the song (scoped to the playing app, so it rides the music, not your whole device mix)
-- **±10s seek** where the player supports it (Spotify natively; see player support below)
-- **Free placement with edge snapping** — drag it anywhere on screen and it stays; drop it near an edge and that axis tidies to a 12px margin, leaving the other alone
-- **Fullscreen focus-mode takeover** — a room-scale now-playing view with lyrics or the visualizer
-- **Search** (`Ctrl+Alt+S`) — search and play, queue, or resurface tracks from history
-- **Managed up-next queue + play history** — a Palette-kept queue and a log of Apple Music and Spotify listens
-- **"More like this"** discovery from the current track
-- **Hide on fullscreen** — a courtesy conceal that ducks the widget out of games and fullscreen video, then restores it exactly
-- **Global hotkeys** for transport, seek, show/hide, and search
-- **Self-updating installer** — installed copies check for updates at launch and update themselves
+- **Works with any player.** Now-playing info and transport controls for Apple Music, Spotify, and browsers over GSMTC, with no per-app setup.
+- **Three sizes.** A pill that expands to a card, then to a full lyrics view, then to a fullscreen focus mode.
+- **Synced lyrics** from [LRCLIB](https://lrclib.net). Click a line to seek, with a countdown through instrumental breaks.
+- **Word karaoke.** After you listen to a song once, Palette aligns its lyrics to the audio on your machine and highlights each word as it's sung. Saved syncs are listed in the lyric view, where you can refresh or delete them.
+- **Album-art accents.** Progress fills and the visualizer take their color from the cover. The rest of the UI stays neutral.
+- **A visualizer that follows the song.** It listens to the playing app only, so Discord or game audio doesn't move it.
+- **±10s seek** where the player supports it (see [player support](#player-support)).
+- **Free placement.** Drag it anywhere. Drop it near a screen edge and it lines up with that edge.
+- **Search** (`Ctrl+Alt+S`) to play, queue, or dig up tracks from your history.
+- **Up-next queue, play history, and "more like this"** discovery (Spotify, optional).
+- **Hide on fullscreen.** Palette gets out of the way of games and fullscreen video, then comes back where it was.
+- **Rebindable global hotkeys** and self-updating installs.
 
 ## Install
 
-Grab `Palette_x.y.z_x64-setup.exe` from the [latest release](https://github.com/thientran01/palette/releases/latest) and run it. Per-user install, no admin required. Palette lives in the system tray; the widget docks to a corner of your screen and stays on top.
+Download `Palette_x.y.z_x64-setup.exe` from the [latest release](https://github.com/thientran01/palette/releases/latest) and run it. It installs per-user and doesn't need admin. Palette runs from the system tray, and the widget stays on top wherever you put it.
 
-The installer is unsigned, so on first run Windows SmartScreen shows a **"Windows protected your PC"** dialog. To run it:
-
-1. Click **More info**.
-2. Click **Run anyway**.
-
-That's a one-time prompt — SmartScreen won't warn again once the app is installed.
+The installer is unsigned, so the first run shows a Windows SmartScreen **"Windows protected your PC"** dialog. Click **More info**, then **Run anyway**. You only see it once.
 
 ## Hotkeys
 
@@ -40,67 +33,75 @@ That's a one-time prompt — SmartScreen won't warn again once the app is instal
 | `Ctrl+Alt+←` / `Ctrl+Alt+→` | Seek −10s / +10s |
 | `Ctrl+Alt+N` / `Ctrl+Alt+P` | Next / previous track |
 | `Ctrl+Alt+M` | Show / hide the widget |
-| `Ctrl+Alt+S` | Summon search |
+| `Ctrl+Alt+S` | Search |
+| `Ctrl+Alt+[` / `Ctrl+Alt+]` | Nudge karaoke words earlier / later |
 
-Transport commands route to whatever Windows considers the current media session — which it re-points to whichever app played most recently.
+You can rebind all of these in **Preferences → Hotkeys**. Transport commands go to whichever media session Windows treats as current, usually the app that played most recently.
 
 ## Tray menu
 
-Show / Hide · Reset position · Preferences… · Shortcuts / Help · Start at login · Hide on fullscreen · Connect Spotify · Check for updates · Open logs · Quit
+Show / Hide · Reset position · Preferences… · Shortcuts / Help · Start at login · Hide on fullscreen · Connect Spotify · Check for updates · Open logs · Quit Palette
 
 ## Player support
 
-What each player actually honors over GSMTC is **measured, not assumed** — the results live in [docs/smtc-support-matrix.md](docs/smtc-support-matrix.md). The headlines:
+Everything below was measured, not assumed. The full results are in [docs/smtc-support-matrix.md](docs/smtc-support-matrix.md).
 
-- **Spotify** supports seek natively over SMTC — ±10s lands in ~50ms, both directions.
-- **Apple Music** has no working programmatic seek path (SMTC seek is silently ignored, keyboard accelerators are swallowed, UIA value writes revert). Palette ships AM with a display-only progress bar and the seek buttons gated off. Position and lyric sync still work.
-- **Apple Music lossless can hold the output device in WASAPI *exclusive* mode**, which bypasses the shared mix — nothing on the system can capture that stream, so the audio-reactive separator stays flat. Workaround: Windows Sound → your output device → Advanced → untick "Allow apps to take exclusive control of this device" (drops AM to shared mode, no longer bit-perfect). Detail in [docs/smtc-support-matrix.md](docs/smtc-support-matrix.md), finding 12.
+- **Spotify** supports seek over GSMTC. A ±10s jump lands in about 50ms.
+- **Apple Music** ignores every programmatic seek method I found, so its seek buttons are turned off and the progress bar is display-only. Position, lyrics, and karaoke still work.
+- **Apple Music lossless** can take the output device in WASAPI exclusive mode. Nothing on the system can capture that audio, so the visualizer stays flat and karaoke can't learn the song. To fix it, open Windows Sound settings, go to your output device's Advanced tab, and untick "Allow apps to take exclusive control of this device". Playback is no longer bit-perfect after that (finding 12 in the matrix).
 
-## Spotify & Last.fm (optional)
+## Spotify and Last.fm (optional)
 
-The core widget works for **everyone, with zero setup** — now-playing, play/pause, next/previous, seek where the player supports it, synced lyrics, and the audio-reactive visuals all run straight off GSMTC.
+The core player needs no accounts: now-playing, transport, seek, lyrics, karaoke, and the visualizer all run off GSMTC.
 
-A few power features are Spotify-powered and opt-in. Connect Spotify from the tray to unlock:
+Connecting Spotify from the tray adds Search's play and queue actions, the managed up-next queue, play-now from history, and "more like this". Two caveats:
 
-- Search's play-now and queue actions,
-- the managed up-next queue,
-- "more like this" discovery,
-- play-now from history.
-
-Two honest caveats:
-
-- The Spotify app is in **Development Mode**, so connecting is currently limited to accounts the developer has allow-listed.
-- **"More like this"** additionally needs your own [Last.fm API key](https://www.last.fm/api/account/create).
-
-Everything above is an optional power tier layered on top — the base player never needs any of it.
+- The Spotify app is in Development Mode, so only accounts I've allow-listed can connect.
+- "More like this" also needs your own [Last.fm API key](https://www.last.fm/api/account/create), entered in **Preferences → Connectors**.
 
 ## Privacy
 
-Palette keeps everything local. There is no analytics, no telemetry, and no account.
+Palette has no analytics, no telemetry, and no account.
 
-- **What's stored on your machine** (`%APPDATA%\com.thien.pulse`): your preferences, your play history (`history.jsonl` — Apple Music and Spotify listens; browser/YouTube sessions are not logged), the on-disk lyrics and thumbnail caches, and — only if you connect Spotify — your Spotify tokens. The tokens are plain JSON protected by your Windows user-profile permissions, not OS-level encryption. Logs and the WebView2 cache live under `%LOCALAPPDATA%\com.thien.pulse`; the log (`pulse.log`) records app diagnostics including fullscreen-presence transitions (when the widget concealed and restored — which app was fullscreen is recorded only in debug builds, never in release logs).
-- **What leaves your machine**: lyric lookups to [LRCLIB](https://lrclib.net), and — only for the opt-in tier — requests to the Spotify Web API and Last.fm. Nothing else.
-- **Clearing data**: **Preferences → Data → Clear play history** wipes the history log and its thumbnails. Uninstalling removes the app and always deletes your Spotify tokens; play history, preferences, and caches survive an uninstall→reinstall unless you tick the uninstaller's "Delete the application data" checkbox.
+**Stored on your machine** in `%APPDATA%\com.thien.pulse`:
+
+- preferences
+- play history (`history.jsonl`, Apple Music and Spotify listens only)
+- lyrics, thumbnail, and karaoke word-timing caches
+- Spotify tokens, only if you connect. They're plain JSON protected by your Windows profile permissions, not OS encryption.
+- research recordings, only if you start one from the lyric sync panel. Palette keeps the latest five.
+
+Logs (`pulse.log`) and the WebView2 cache live in `%LOCALAPPDATA%\com.thien.pulse`. Release logs record when the widget hid for fullscreen, but not which app caused it.
+
+Karaoke alignment runs locally. Song audio is held in memory while you listen, and only the word timings are saved.
+
+**Sent over the network:** lyric lookups to [LRCLIB](https://lrclib.net), plus Spotify Web API and Last.fm requests if you opted into those. Nothing else.
+
+**Clearing data:** **Preferences → Data → Clear play history** deletes history and its thumbnails. Uninstalling always deletes Spotify tokens. Everything else survives a reinstall unless you tick "Delete the application data" in the uninstaller.
 
 ## Build from source
 
-Requires Node 20+, Rust (MSVC toolchain), and the VS Build Tools.
+You need Node 20+, Rust with the MSVC toolchain, and the Visual Studio Build Tools. Palette is Windows-only.
 
 ```sh
 npm install
 npm run tauri dev     # run the app
+npm test              # frontend tests
+cargo test --manifest-path src-tauri/Cargo.toml
 npm run tauri build   # installer → src-tauri/target/release/bundle/nsis/
 ```
 
-One heads-up: `npm run tauri build` compiles fine, then **errors at the bundling step without a signing key** — the config has `createUpdaterArtifacts` on, so the bundler wants `TAURI_SIGNING_PRIVATE_KEY` in the environment. Two ways through:
+`npm run tauri build` compiles and then fails at the bundling step unless `TAURI_SIGNING_PRIVATE_KEY` is set, because the config creates signed updater artifacts. You can fix that two ways:
 
-- Generate your own updater keypair with `npx tauri signer generate` and export the private key as `TAURI_SIGNING_PRIVATE_KEY` before building, or
-- flip `createUpdaterArtifacts` to `false` in `src-tauri/tauri.conf.json` locally for an unsigned personal build (you just won't get self-update artifacts).
+- Generate your own keypair with `npx tauri signer generate` and export the private key as `TAURI_SIGNING_PRIVATE_KEY`.
+- Set `createUpdaterArtifacts` to `false` in `src-tauri/tauri.conf.json` for a personal build without self-update.
+
+Word karaoke works without extra setup using a timing-based aligner. The more accurate local acoustic model is a separate developer install (`scripts/install_karaoke_model.py`), and model weights aren't included in the repo or the installer.
 
 ## Stack
 
-Tauri v2 (Rust) · React 19 + TypeScript + Vite · Tailwind v4 · WASAPI loopback + FFT for the audio-reactive layer · LRCLIB for synced lyrics.
+Tauri v2 (Rust), React 19, TypeScript, Vite, and Tailwind v4. WASAPI loopback and an FFT drive the visualizer, LRCLIB supplies lyrics, and a local forced aligner times the words.
 
-## Screenshots
+## License
 
-<!-- TODO: hero screenshot (expanded lyrics view) + a short GIF of the pill↔card↔expanded ladder — added with the screenshots task -->
+[MIT](LICENSE)
