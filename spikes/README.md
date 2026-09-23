@@ -80,3 +80,26 @@ cargo run -- https://youtube.com       # any other site
 ```
 
 Deleting `%APPDATA%\palette-web-surface-spike\` is the full reset (profile + seat).
+
+## `youtube-ring/` → hosted YouTube in a 12px drag ring
+
+v2 of the hosted-web probe (sibling of `web-surface/`, not a replacement).
+Frameless tao window, 12px native hit-test ring around a wry WebView2 inset
+on `youtube.com`, ring-only close overlay, x/y seat, edge snap 24px/axis,
+always-on-top. Shell + hairline + × idle at opacity 0; reveal on ring-hot
+/ `:focus-visible` (EASE.inOut, 200ms). Chrome lives on four 12px
+strip HWNDs plus a 20×20 L-clipped × — never a 664×384 overlay.
+Detaches from the launcher so
+closing the parent does not kill the surface — v1's named fail. Not the
+DWM mirror. Not wired into Palette.
+
+```sh
+cd spikes/youtube-ring
+cargo run                 # Windows: detaches a 664×384 ring hosting YouTube
+cargo run -- --attached   # in-process (dies with the terminal)
+cargo run -- --probe      # hit-test / title-bar leftovers → probe.log
+```
+
+Linux `cargo build` / `cargo test` are the stub + snap math. `cargo run`
+exits 1 and names the Windows command — it does not fake a WebView2 pass.
+Deleting `%APPDATA%\palette-youtube-ring-spike\` is the full reset.
