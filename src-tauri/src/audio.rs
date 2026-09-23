@@ -360,11 +360,9 @@ const STALL_CAP: Duration = Duration::from_secs(60);
 /// first beat of a playing track. Demote that AUMID to the Device fallback,
 /// stickily (re-resolving would pick the same silent PID and strand the bars at
 /// zero again), until the playing app changes — the whole-mix fallback captures
-/// the endpoint IF the audio is in the shared mix at all. It is NOT for
-/// exclusive-mode playback (Apple Music bit-perfect lossless): that bypasses the
-/// shared mix and is uncapturable by any loopback — see docs/smtc-support-matrix.md
-/// finding 12. A capture that has delivered signal is never demoted: its later
-/// silence is the target really rendering nothing.
+/// the endpoint IF the audio is in the shared mix at all. A capture that has
+/// delivered signal is never demoted: its later silence is the target really
+/// rendering nothing.
 const DEMOTE_AFTER_MS: u64 = 10_000;
 /// A demote is sticky but NOT permanent (it used to clear only on an AUMID
 /// change — so a single transient activation blip, or >10s of digital silence
