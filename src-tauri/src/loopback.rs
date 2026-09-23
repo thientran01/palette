@@ -28,17 +28,8 @@
 //! WITH SIGNAL" is. `last_data_ms` stamps on real energy alone (SILENCE_EPS), so
 //! a silent-only stream reads as no-data and the owner can demote it to the
 //! whole-mix device fallback (which taps the endpoint mix, when the audio is in
-//! the shared mix at all).
-//!
-//! NOTE this is DISTINCT from the case that first sent us here. Apple Music's
-//! flat waveform was confirmed live to be WASAPI EXCLUSIVE-mode playback
-//! (bit-perfect lossless): it delivers NO packets at all — so the plain
-//! `!has_data()` demote already covers it, this silent-PACKET gate is not what
-//! rescues it — AND its audio bypasses the shared mix entirely, so NO loopback
-//! (process OR device) can capture it. That case has no capture-side fix; see
-//! docs/smtc-support-matrix.md finding 12. The silent-packet path here is the
-//! separate, defensive case. The live_probe's session dump + per-session
-//! capture is how we tell these apart (bypasses-shared-mix vs. wrong-pid).
+//! the shared mix at all). The live_probe's session dump + per-session capture
+//! tells a wrong-pid join apart from audio that bypasses the shared mix.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

@@ -102,7 +102,7 @@ The 1.0-readiness release: the feature arc since 0.7.2 plus a full audit pass �
 ### Fixed
 
 - In-song silence no longer collapses and re-blooms the separator bars — a settle grace holds them while the track is still playing.
-- The separator demotes a silent process capture to the device fallback instead of stranding the bars at zero. Apple Music lossless in WASAPI *exclusive* mode remains uncapturable by anything — documented, with the user-side workaround, in [docs/smtc-support-matrix.md](docs/smtc-support-matrix.md).
+- The separator demotes a silent process capture to the device fallback instead of stranding the bars at zero.
 - A rare freeze where a Windows media read on the wrong thread could wedge every in-app control while hotkeys kept working.
 - Seeking a short distance — such as clicking a nearby lyric line — no longer flashes the position and lyric highlight backward before catching up.
 - Clearing play history now empties the open queue and history feed immediately, not just on the next launch.

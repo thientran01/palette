@@ -51,8 +51,7 @@ Worst class: a line followed by a long gap has its tokens spread to the next
 stamp (9.7s on "이 모든 날 제대로 봐").
 
 Decisions already made: the prior stays INTERNAL (Thien, this session) — word
-wipes remain gated on a recorded listen; a silent recording (exclusive-mode
-Apple Music) stays line-only. 2026-07-06 bar still applies: perfect or
+wipes remain gated on a recorded listen; a silent recording stays line-only. 2026-07-06 bar still applies: perfect or
 nothing, so nothing here changes the frontend gating.
 
 ## Design (approved)
