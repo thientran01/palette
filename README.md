@@ -24,12 +24,11 @@ Rebind them in **Preferences → Hotkeys**.
 ## Good to know
 
 - Apple Music can't be seeked by other apps, so seek is off for it. Spotify seeks fine. Details: [docs/smtc-support-matrix.md](docs/smtc-support-matrix.md).
-- If Apple Music lossless takes exclusive control of your audio device, the visualizer and karaoke go quiet. Untick "Allow apps to take exclusive control" in your output device's Windows sound settings.
 - Search's play/queue, the up-next queue, and "more like this" need Spotify (connect from the tray). "More like this" also needs a [Last.fm API key](https://www.last.fm/api/account/create). The Spotify app is in development mode, so only allow-listed accounts can connect.
 
 ## Privacy
 
-No analytics, no telemetry, no account. Settings, play history, and lyric/karaoke caches stay in `%APPDATA%\com.thien.pulse`. Karaoke timing is computed on your machine, and song audio is never saved or uploaded. The only network requests go to LRCLIB for lyrics, plus Spotify and Last.fm if you connect them. Clear history in **Preferences → Data**.
+No analytics, no telemetry, no account. Settings, play history, and lyric/karaoke caches stay in `%APPDATA%\com.thien.pulse`. Karaoke timing is computed on your machine, and song audio is never uploaded (it's only saved if you start a research recording yourself). The only network requests go to LRCLIB for lyrics, plus Spotify and Last.fm if you connect them. Clear history in **Preferences → Data**.
 
 ## Build from source
 
