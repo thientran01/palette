@@ -8,6 +8,12 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-10-03
+
+### Fixed
+
+- Spotify always takes priority over Apple Music and browser/video sessions, even when paused. Watching or clicking YouTube no longer switches Palette away from an available music app; its display and playback controls use the same priority.
+
 ## [1.0.5] - 2026-09-10
 
 Korean karaoke fills for as long as the syllable is sung.
