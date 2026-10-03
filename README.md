@@ -2,7 +2,7 @@
 
 An always-on-top mini music player for Windows. Apple Music's miniplayer minimizes every time you click away, so I built one that doesn't.
 
-It controls whatever is playing (Apple Music, Spotify, browsers) through the Windows media API, with synced lyrics, word-by-word karaoke, album-art accent colors, and a small visualizer that moves with the song.
+It controls music through the Windows media API, with synced lyrics, word-by-word karaoke, album-art accent colors, and a small visualizer that moves with the song. Spotify always takes priority, followed by Apple Music, even when paused. Browser players are used only when neither music app has a media session.
 
 ## Install
 

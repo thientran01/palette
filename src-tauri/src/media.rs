@@ -1,4 +1,4 @@
-//! GSMTC media core: watches the current Windows media session (change events
+//! GSMTC media core: watches the preferred music session (change events
 //! plus a heartbeat poll) and exposes transport commands. Capability quirks
 //! per player are documented in docs/smtc-support-matrix.md — notably Apple
 //! Music ignores seek and packs "artist — album" into the artist field.
@@ -379,34 +379,73 @@ fn manager() -> Option<Manager> {
     }
 }
 
+/// One selector for snapshots, artwork, history, event handlers and transport.
+/// Spotify > Apple Music > Windows' current session, regardless of playback
+/// status or focus. Do not use MediaPlaybackType to identify music: browsers
+/// label YouTube videos as Music too (see the support matrix).
 pub fn current_session() -> Option<Session> {
     let mgr = manager()?;
     set_stage(Stage::GetSession);
-    let current = mgr.GetCurrentSession();
+    let sessions = mgr.GetSessions().ok();
+    set_stage(Stage::SessionId);
+    let candidates: Vec<_> = sessions
+        .into_iter()
+        .flatten()
+        .filter_map(|session| {
+            let id = session.SourceAppUserModelId().ok()?.to_string();
+            Some((id, session))
+        })
+        .collect();
     set_stage(Stage::Idle);
-    match current {
-        Ok(s) => Some(s),
-        // windows-rs maps a null return ("no current session" — a normal
-        // state, e.g. Apple Music stopped) to an Err carrying S_OK. Any real
-        // failure code means the cached manager's connection died (service
-        // restart, sleep/resume) — drop it so the next call re-requests,
-        // otherwise the app would stay dark until restart.
-        Err(e) => {
-            if !e.code().is_ok() {
-                *MANAGER
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    choose_session(&candidates, || {
+        set_stage(Stage::GetSession);
+        let current = mgr.GetCurrentSession();
+        set_stage(Stage::Idle);
+        match current {
+            Ok(s) => Some(s),
+            // windows-rs maps a null return ("no current session" — a normal
+            // state, e.g. Apple Music stopped) to an Err carrying S_OK. Any real
+            // failure code means the cached manager's connection died (service
+            // restart, sleep/resume) — drop it so the next call re-requests,
+            // otherwise the app would stay dark until restart.
+            Err(e) => {
+                if !e.code().is_ok() {
+                    *MANAGER
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                }
+                None
             }
-            None
         }
-    }
+    })
+}
+
+/// No playback/metadata reads here: a paused music session still wins. The
+/// app-id tie-break keeps enumeration order from changing the selected app.
+fn choose_session<T: Clone>(
+    sessions: &[(String, T)],
+    current: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    sessions
+        .iter()
+        .filter_map(|(id, session)| {
+            let rank = match player_kind(id) {
+                "spotify" => 0,
+                "apple_music" => 1,
+                _ => return None,
+            };
+            Some(((rank, id), session))
+        })
+        .min_by_key(|(key, _)| *key)
+        .map(|(_, session)| session.clone())
+        .or_else(current)
 }
 
 /// Wake signals sent from WinRT event handlers to the media loop.
 pub enum Wake {
     /// Session content changed (metadata/thumbnail/playback) — snapshot now.
     Event,
-    /// The OS swapped the current session — re-subscribe, then snapshot.
+    /// The session list or OS-current session changed — re-select and subscribe.
     SessionChanged,
 }
 
@@ -416,6 +455,8 @@ pub enum Wake {
 /// channel, so going event-driven adds no new concurrency into snapshot().
 pub struct SessionWatch {
     manager: Manager,
+    /// CurrentSessionChanged and SessionsChanged registrations.
+    manager_tokens: [i64; 2],
     tx: Sender<Wake>,
     /// (session, app_id, [media_props_token, playback_info_token])
     watched: Option<(Session, String, [i64; 2])>,
@@ -426,27 +467,40 @@ impl SessionWatch {
     pub fn new(tx: Sender<Wake>) -> Option<Self> {
         let manager = manager()?;
         let session_tx = tx.clone();
-        manager
+        let current_token = manager
             .CurrentSessionChanged(&TypedEventHandler::new(move |_, _| {
                 let _ = session_tx.send(Wake::SessionChanged);
                 Ok(())
             }))
             .ok()?;
+        // A music app can appear/disappear without changing OS-current (e.g.
+        // Spotify opens paused while YouTube is current). Wake immediately.
+        let sessions_tx = tx.clone();
+        let sessions_token = match manager.SessionsChanged(&TypedEventHandler::new(move |_, _| {
+            let _ = sessions_tx.send(Wake::SessionChanged);
+            Ok(())
+        })) {
+            Ok(token) => token,
+            Err(_) => {
+                let _ = manager.RemoveCurrentSessionChanged(current_token);
+                return None;
+            }
+        };
         Some(Self {
             manager,
+            manager_tokens: [current_token, sessions_token],
             tx,
             watched: None,
         })
     }
 
-    /// Attach change handlers to the CURRENT session if it isn't the watched
+    /// Attach change handlers to the SELECTED session if it isn't the watched
     /// one. `force` re-attaches even when the app id matches — a player can
     /// re-register a fresh session under the same id (Apple Music does, on
     /// every stop/start), leaving handlers on the dead one. Missed events are
     /// never fatal: the heartbeat poll still covers everything within 500ms.
     pub fn resubscribe(&mut self, force: bool) {
-        set_stage(Stage::GetSession);
-        let current = self.manager.GetCurrentSession().ok();
+        let current = current_session();
         set_stage(Stage::SessionId);
         let current_id = current
             .as_ref()
@@ -503,11 +557,23 @@ impl SessionWatch {
     /// The app_id whose change handlers are currently attached. plan_beat's
     /// position-only reuse is licensed by this: "metadata cannot change
     /// without MediaPropertiesChanged waking us" only holds while the
-    /// CURRENT session's handlers are live — degraded to pure polling (no
+    /// SELECTED session's handlers are live — degraded to pure polling (no
     /// SessionWatch) or inside a failed-attach window, the heartbeat's full
     /// marshal is back to being the only thing that catches a track change.
     pub fn watching(&self) -> Option<&str> {
         self.watched.as_ref().map(|(_, id, _)| id.as_str())
+    }
+}
+
+impl Drop for SessionWatch {
+    fn drop(&mut self) {
+        let [current, sessions] = self.manager_tokens;
+        let _ = self.manager.RemoveCurrentSessionChanged(current);
+        let _ = self.manager.RemoveSessionsChanged(sessions);
+        if let Some((session, _, [props, play])) = self.watched.take() {
+            let _ = session.RemoveMediaPropertiesChanged(props);
+            let _ = session.RemovePlaybackInfoChanged(play);
+        }
     }
 }
 
@@ -996,9 +1062,9 @@ fn playback_status(session: &Session) -> &'static str {
     playback_info(session).0
 }
 
-/// The CURRENT session's player bucket ("apple_music"|"spotify"|"other"|
-/// "none") — the queue-aware skip's cheap gate (one session read, no
-/// metadata marshal).
+/// The SELECTED session's player bucket ("apple_music"|"spotify"|"other"|
+/// "none") — the queue-aware skip's gate (session IDs only, no metadata
+/// marshal).
 pub fn current_player() -> &'static str {
     match current_session() {
         Some(s) => s
@@ -1181,6 +1247,110 @@ pub fn seek_rel_ms(delta_ms: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Captured 2026-10-03: Windows selected Claude's Federer YouTube video
+    // while Spotify.exe had a live music session. Clicks/playback must never
+    // outrank an available music app, including when that app is paused.
+    #[test]
+    fn session_priority_spotify_beats_video_regardless_of_order_or_status() {
+        for status in ["playing", "paused", "stopped", "unknown"] {
+            let mut sessions = vec![
+                ("Claude_pzs8sxrjxfjjc!Claude".into(), "video"),
+                ("Spotify.exe".into(), status),
+            ];
+            for _ in 0..2 {
+                assert_eq!(choose_session(&sessions, || Some("video")), Some(status));
+                sessions.reverse();
+            }
+        }
+    }
+
+    #[test]
+    fn session_priority_apple_music_beats_video_even_when_paused() {
+        let sessions = vec![
+            ("chrome.exe".into(), "playing video"),
+            ("AppleInc.AppleMusic_win!App".into(), "paused music"),
+        ];
+        assert_eq!(
+            choose_session(&sessions, || Some("playing video")),
+            Some("paused music")
+        );
+    }
+
+    #[test]
+    fn session_priority_spotify_beats_apple_music_without_consulting_windows() {
+        let sessions = vec![
+            ("AppleInc.AppleMusic_win!App".into(), "playing Apple Music"),
+            ("SPOTIFY.EXE".into(), "paused Spotify"),
+        ];
+        assert_eq!(
+            choose_session(&sessions, || panic!("music needs no OS-current lookup")),
+            Some("paused Spotify")
+        );
+    }
+
+    #[test]
+    fn session_priority_falls_back_to_windows_only_without_music() {
+        let sessions = vec![("chrome.exe".into(), "video")];
+        assert_eq!(choose_session(&sessions, || Some("video")), Some("video"));
+        assert_eq!(choose_session(&sessions, || None), None);
+        assert_eq!(choose_session::<&str>(&[], || Some("video")), Some("video"));
+        assert_eq!(choose_session::<&str>(&[], || None), None);
+    }
+
+    #[test]
+    fn session_priority_is_stable_for_multiple_sessions_from_the_same_player() {
+        let mut sessions = vec![
+            ("Spotify.Z".into(), "second"),
+            ("Spotify.A".into(), "first"),
+        ];
+        assert_eq!(choose_session(&sessions, || Some("video")), Some("first"));
+        sessions.reverse();
+        assert_eq!(choose_session(&sessions, || Some("video")), Some("first"));
+    }
+
+    /// Manual integration regression for the reported Spotify + tennis-video
+    /// incident. Run with Spotify open while Windows has selected another app.
+    #[test]
+    #[ignore = "requires a live Spotify GSMTC session"]
+    fn live_spotify_stays_selected_when_windows_points_elsewhere() {
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_MULTITHREADED,
+            );
+        }
+        let mgr = manager().expect("GSMTC manager");
+        let spotify = mgr
+            .GetSessions()
+            .expect("live sessions")
+            .into_iter()
+            .find(|s| {
+                s.SourceAppUserModelId()
+                    .map(|id| player_kind(&id.to_string()) == "spotify")
+                    .unwrap_or(false)
+            })
+            .expect("open Spotify before running this test");
+        let expected = spotify.SourceAppUserModelId().unwrap().to_string();
+        let os_current = mgr
+            .GetCurrentSession()
+            .ok()
+            .and_then(|s| s.SourceAppUserModelId().ok())
+            .map(|id| id.to_string());
+        let selected = current_session()
+            .expect("Palette's selected session")
+            .SourceAppUserModelId()
+            .unwrap()
+            .to_string();
+        println!("Windows current: {os_current:?}; Palette selected: {selected}");
+        assert_eq!(selected, expected);
+        assert_eq!(current_player(), "spotify");
+        assert_eq!(tick_key().unwrap().0, expected);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut watch = SessionWatch::new(tx).expect("session watcher");
+        watch.resubscribe(true);
+        assert_eq!(watch.watching(), Some(expected.as_str()));
+    }
 
     fn read(fp: u64) -> Option<ArtRead> {
         Some(ArtRead {

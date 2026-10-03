@@ -1,6 +1,6 @@
 # Palette
 
-Always-on-top mini music player for Windows (Tauri v2 + React). It controls whatever is playing through GSMTC. Windows-only, so Rust won't compile elsewhere. Module doc comments and `docs/specs/` explain the reasoning behind each design.
+Always-on-top mini music player for Windows (Tauri v2 + React). It controls media through GSMTC, prioritizing Spotify then Apple Music regardless of playback state; other apps are the fallback. Windows-only, so Rust won't compile elsewhere. Module doc comments and `docs/specs/` explain the reasoning behind each design.
 
 Before opening a PR, run what CI runs: `npm run build`, `npm test`, and `cargo test` / `fmt --check` / `clippy -D warnings` in `src-tauri`. To check UI in a browser, run `npm run dev` (flags are in `src/lib/backend.ts`; see `.cursor/skills/verify-pulse`).
 
