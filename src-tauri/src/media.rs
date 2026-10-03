@@ -386,7 +386,13 @@ fn manager() -> Option<Manager> {
 pub fn current_session() -> Option<Session> {
     let mgr = manager()?;
     set_stage(Stage::GetSession);
-    let sessions = mgr.GetSessions().ok();
+    // IVectorView's IntoIterator unwraps First(), which can fail during a
+    // service disconnect. Request the iterator fallibly so recovery reaches
+    // the same Windows-current fallback as any other enumeration failure.
+    let sessions = mgr
+        .GetSessions()
+        .ok()
+        .and_then(|sessions| sessions.First().ok());
     set_stage(Stage::SessionId);
     let candidates: Vec<_> = sessions
         .into_iter()
