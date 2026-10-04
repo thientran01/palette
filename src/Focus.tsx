@@ -481,9 +481,6 @@ export default function Focus() {
         {/* Queue toggle hides with no session (the widget's rule — there is
             no queue surface to open over the resting pulse). */}
         {!nothing && (
-          <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
-        )}
-        {!nothing && (
           <button
             type="button"
             aria-label={queueOpen ? "Close queue" : "Open queue"}
@@ -515,6 +512,17 @@ export default function Focus() {
         {announceText}
       </span>
 
+      {/* Original lyric-column corner: right edge at 90vw, 4px above its
+          11vh top. Keep it outside the content swap so queue keeps this seat.
+          Session owns the mount so lyric fetches cannot dismiss an open library.
+          Reveal locally; hovering the whole room must not expose the icon. */}
+      {!nothing && (
+        <div className="group/sync-trigger absolute right-[10%] top-[calc(11vh-32px)] z-30">
+          <div className="pointer-events-none opacity-0 transition-opacity duration-2 ease-out-tk group-hover/sync-trigger:pointer-events-auto group-hover/sync-trigger:opacity-100 has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-100">
+            <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
+          </div>
+        </div>
+      )}
       {nothing ? (
         <div className="grid h-full w-full place-items-center">
           <span className="resting-pulse block h-2 w-2 rounded-full bg-muted" aria-hidden />
