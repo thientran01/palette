@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import type { MorphName } from "./icons/geometry";
 import { MorphIcon } from "./icons/MorphIcon";
-import { PlayerMenu } from "./PlayerMenu";
+import { LyricSyncStatus } from "./LyricSyncStatus";
 import { useKaraokePreference } from "./lib/karaokePreference";
 import { useBracketPulse } from "./icons/useBracketPulse";
 import {
@@ -1241,9 +1241,9 @@ function ExpandedView({
         className="pointer-events-none absolute right-[37px] top-2 z-20 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-100"
         onMouseDown={e => e.stopPropagation()}
       >
-        <PlayerMenu np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
+        <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
       </div>
-      {/* The view toggle remains an immediate action beside the menu. */}
+      {/* Both lyric controls keep their positions when the queue opens. */}
       <ViewToggle
         glyph={
           queueOpen

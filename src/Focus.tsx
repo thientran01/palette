@@ -41,7 +41,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { MorphIcon } from "./icons/MorphIcon";
-import { PlayerMenu } from "./PlayerMenu";
+import { LyricSyncStatus } from "./LyricSyncStatus";
 import { useKaraokePreference } from "./lib/karaokePreference";
 import {
   commands,
@@ -481,7 +481,7 @@ export default function Focus() {
         {/* Queue toggle hides with no session (the widget's rule — there is
             no queue surface to open over the resting pulse). */}
         {!nothing && (
-          <PlayerMenu np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
+          <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
         )}
         {!nothing && (
           <button
