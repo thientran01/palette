@@ -146,6 +146,7 @@ pub async fn close_prefs(app: AppHandle) {
 pub struct PrefsSeed {
     version: String,
     reactive_separator: bool,
+    karaoke_lyrics: bool,
     launch_mode: String,
     start_at_login: bool,
     hide_on_fullscreen: bool,
@@ -161,6 +162,7 @@ pub async fn prefs_seed(app: AppHandle) -> PrefsSeed {
     PrefsSeed {
         version: app.package_info().version.to_string(),
         reactive_separator: settings::get_bool(&app, "reactive_separator", true),
+        karaoke_lyrics: settings::get_bool(&app, "karaoke_lyrics", true),
         launch_mode: settings::get_string(&app, "launch_mode")
             .unwrap_or_else(|| "card".to_string()),
         start_at_login: app.autolaunch().is_enabled().unwrap_or(false),
@@ -180,8 +182,9 @@ pub async fn prefs_seed(app: AppHandle) -> PrefsSeed {
 /// "hotkeys", autostart): those have their own typed setters that keep the
 /// tray mirror and geometry in sync, and the generic seam must never be a
 /// back door around them.
-const SETTABLE_KEYS: [&str; 4] = [
+const SETTABLE_KEYS: [&str; 5] = [
     "reactive_separator",
+    "karaoke_lyrics",
     "launch_mode",
     "lastfm_api_key",
     "seenIntro",

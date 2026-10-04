@@ -105,8 +105,10 @@ function useBreakDots(line: LyricLine, leadMs: number, active: boolean): number 
 function useWordWipe(
   list: React.RefObject<HTMLDivElement | null>,
   lines: LyricLine[], currentLine: number, leadMs: number,
+  enabled: boolean,
 ): void {
   useLayoutEffect(() => {
+    if (!enabled) return;
     const root = list.current;
     if (!root) return;
     const rows: WordRow[] = [];
@@ -120,7 +122,7 @@ function useWordWipe(
     return driveWordRows(rows, currentLine, leadMs, posClock, {
       request: cb => requestAnimationFrame(cb), cancel: id => cancelAnimationFrame(id),
     });
-  }, [list, lines, currentLine, leadMs]);
+  }, [list, lines, currentLine, leadMs, enabled]);
 }
 
 /** Soft edge on the wipe, in px â€” a hard stop strobes at 60fps. */
@@ -544,6 +546,7 @@ export function LyricsPanel({
   leadMs,
   entrance = false,
   scale = "base",
+  karaoke = true,
 }: {
   lines: LyricLine[];
   seekable: boolean;
@@ -553,6 +556,8 @@ export function LyricsPanel({
    * holds the accent marker back as the closing beat. */
   entrance?: boolean;
   scale?: LyricsScale;
+  /** Disables word wipes only; line highlighting and following stay active. */
+  karaoke?: boolean;
 }) {
   const idx = useLyricIndex(lines, leadMs);
   // Words fire ahead of their aligned onset by the nudgeable word lead
@@ -568,7 +573,7 @@ export function LyricsPanel({
   }, [wordLead.nudges, wordLead.leadMs]);
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs);
+  useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs, karaoke);
   const [autoOffset, setAutoOffset] = useState(0);
   // Wheel-scrolling pauses auto-follow; it resumes via the "Now" chip,
   // scrolling back into the re-latch band, or a short idle (see RELATCH_BAND
@@ -754,7 +759,7 @@ export function LyricsPanel({
               browsing={browsing}
               anchor={anchor}
               cascadeDelayMs={cascadeDelayMs}
-              words={line.words}
+              words={karaoke ? line.words : undefined}
             />
           );
         })}
@@ -767,7 +772,7 @@ export function LyricsPanel({
         aria-live="polite"
         className={`pointer-events-none absolute inset-x-0 z-10 flex justify-center ${showReturn && !nowBelow ? SCALE[scale].chipBottom : SCALE[scale].chipTop}`}
       >
-        {leadCaption && (
+        {karaoke && leadCaption && (
           <span className="rounded-full border border-border/10 bg-surface-2/90 px-2.5 py-1 text-[11px] leading-none text-muted [animation:caption-in_140ms_var(--ease-out-tk)_both]">
             {leadCaption}
           </span>
