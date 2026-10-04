@@ -698,6 +698,7 @@ export interface HotkeyInfo {
 export interface PrefsSeed {
   version: string;
   reactive_separator: boolean;
+  karaoke_lyrics: boolean;
   launch_mode: string;
   start_at_login: boolean;
   hide_on_fullscreen: boolean;
@@ -754,12 +755,25 @@ export function onHotkeysChanged(cb: (h: HotkeyInfo[]) => void): () => void {
   };
 }
 
+type SettingChange = { key: string; value: unknown };
+const mockSettingsListeners = new Set<(change: SettingChange) => void>();
+
+/** Await registration before reading a snapshot that could become stale. */
+export async function listenSettingsChanged(cb: (change: SettingChange) => void): Promise<() => void> {
+  if (IN_TAURI) return listen<SettingChange>("settings-changed", e => cb(e.payload));
+  mockSettingsListeners.add(cb);
+  const storage = (e: StorageEvent) => {
+    if (e.key === "pulse.karaokeLyrics") cb({key: "karaoke_lyrics", value: e.newValue !== "false"});
+  };
+  window.addEventListener("storage", storage);
+  return () => { mockSettingsListeners.delete(cb); window.removeEventListener("storage", storage); };
+}
+
 /** A setting changed from another surface (tray ⇄ prefs mirror). */
 export function onSettingsChanged(
   cb: (change: { key: string; value: unknown }) => void,
 ): () => void {
-  if (!IN_TAURI) return () => {}; // mock: single surface, nothing to mirror
-  const un = listen<{ key: string; value: unknown }>("settings-changed", (e) => cb(e.payload));
+  const un = listenSettingsChanged(cb);
   return () => {
     un.then((f) => f());
   };
@@ -1200,6 +1214,7 @@ export const commands = {
       return {
         version: mockSettings.version,
         reactive_separator: mockSettings.reactive_separator,
+        karaoke_lyrics: localStorage.getItem("pulse.karaokeLyrics") !== "false",
         launch_mode: mockSettings.launch_mode,
         start_at_login: mockSettings.start_at_login,
         hide_on_fullscreen: mockSettings.hide_on_fullscreen,
@@ -1210,6 +1225,13 @@ export const commands = {
       };
     }
     return invoke<PrefsSeed>("prefs_seed");
+  },
+  async setKaraokeLyrics(enabled: boolean): Promise<void> {
+    if (IN_TAURI) await invoke("set_setting", {key: "karaoke_lyrics", value: enabled});
+    else {
+      localStorage.setItem("pulse.karaokeLyrics", String(enabled));
+      mockSettingsListeners.forEach(cb => cb({key: "karaoke_lyrics", value: enabled}));
+    }
   },
   /** Persist an inert setting (reactive separator, launch mode, Last.fm key,
    * seenIntro). Side-effect settings use their own commands. */

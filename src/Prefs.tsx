@@ -37,6 +37,7 @@ import {
   type HotkeyInfo,
 } from "./lib/backend";
 import { chordCaps, tokenCap } from "./lib/chords";
+import { useKaraokePreference, setKaraokePreference } from "./lib/karaokePreference";
 
 const SECTIONS = ["connectors", "hotkeys", "playback", "general", "about", "data"] as const;
 type Section = (typeof SECTIONS)[number];
@@ -175,15 +176,16 @@ function Row({
 }
 
 /** Cream-fill toggle (doctrine: ON = --fg, never accent). */
-function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) {
+function Toggle({ on, onClick, label, disabled = false }: { on: boolean; onClick: () => void; label: string; disabled?: boolean }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={on}
       aria-label={label}
+      disabled={disabled}
       onClick={onClick}
-      className={`relative h-[22px] w-[38px] shrink-0 rounded-full [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk)] ${
+      className={`relative h-[22px] w-[38px] shrink-0 rounded-full disabled:opacity-50 [transition:background-color_var(--transition-duration-2)_var(--ease-out-tk)] ${
         on ? "bg-fg" : "bg-fg/15"
       }`}
     >
@@ -378,6 +380,8 @@ function CloseX({ onClick }: { onClick: () => void }) {
 // ---- the window ----------------------------------------------------------
 
 export default function Prefs() {
+  const karaoke = useKaraokePreference();
+  const [syncBusy, setSyncBusy] = useState(false);
   const [section, setSection] = useState<Section>(() => {
     const s = new URLSearchParams(window.location.search).get("section");
     return s && (SECTIONS as readonly string[]).includes(s) ? (s as Section) : "connectors";
@@ -621,6 +625,13 @@ export default function Prefs() {
     const next = !reactive;
     setReactive(next);
     commands.setSetting("reactive_separator", next);
+  };
+  const toggleKaraoke = async () => {
+    if (syncBusy) return;
+    setSyncBusy(true);
+    try { await setKaraokePreference(!karaoke); }
+    catch { toast("Couldn’t update karaoke lyrics. Try again."); }
+    finally { setSyncBusy(false); }
   };
   const pickLaunch = (v: string) => {
     setLaunch(v);
@@ -885,6 +896,9 @@ export default function Prefs() {
       playback: (
         <>
           <SectionHeader title="Playback" desc="How Palette behaves while music plays." />
+          <Row label="Karaoke lyrics" desc="Highlight words as they’re sung. Turn off for regular line-by-line lyrics.">
+            <Toggle on={karaoke} onClick={() => void toggleKaraoke()} label="Karaoke lyrics" disabled={syncBusy} />
+          </Row>
           <Row
             label="Audio-reactive separator"
             desc="The waveform that pulses to the music. The only thing that moves on its own."
@@ -997,6 +1011,8 @@ export default function Prefs() {
       hotkeys,
       capture,
       reactive,
+      karaoke,
+      syncBusy,
       launch,
       startLogin,
       hideFs,
