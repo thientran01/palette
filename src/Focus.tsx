@@ -515,10 +515,11 @@ export default function Focus() {
       {/* Original lyric-column corner: right edge at 90vw, 4px above its
           11vh top. Keep it outside the content swap so queue keeps this seat.
           Session owns the mount so lyric fetches cannot dismiss an open library.
-          Reveal locally; hovering the whole room must not expose the icon. */}
+          Reveal over the lyrics/queue content as well as the trigger so the
+          original seat is discoverable without exposing it over the whole room. */}
       {!nothing && (
         <div className="group/sync-trigger absolute right-[10%] top-[calc(11vh-32px)] z-30">
-          <div className="pointer-events-none opacity-0 transition-opacity duration-2 ease-out-tk group-hover/sync-trigger:pointer-events-auto group-hover/sync-trigger:opacity-100 has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-100">
+          <div className="pointer-events-none opacity-0 transition-opacity duration-2 ease-out-tk group-hover/sync-trigger:pointer-events-auto group-hover/sync-trigger:opacity-100 group-has-[[data-focus-content]:hover]/focus:pointer-events-auto group-has-[[data-focus-content]:hover]/focus:opacity-100 group-has-[[data-focus-content]_:focus-visible]/focus:pointer-events-auto group-has-[[data-focus-content]_:focus-visible]/focus:opacity-100 has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-100">
             <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
           </div>
         </div>
@@ -574,7 +575,7 @@ export default function Focus() {
                       height ends the box at --stack-top + --art, so the
                       bottom fade dissolves exactly at the art's bottom line
                       (Thien, 2026-07-14). */}
-                  <div className="flex h-[calc(var(--stack-top)_+_var(--art)_-_11vh)] min-h-0 min-w-0 flex-1 flex-col mt-[11vh]">
+                  <div data-focus-content className="flex h-[calc(var(--stack-top)_+_var(--art)_-_11vh)] min-h-0 min-w-0 flex-1 flex-col mt-[11vh]">
                     {/* Unmounted while the queue owns the column (not just
                         covered): the queue box is art-width, narrower than
                         this column, so live lyric lines would peek out past
@@ -671,6 +672,7 @@ export default function Focus() {
           <div className="pointer-events-none absolute inset-0 z-20 flex items-stretch gap-[7%] px-[10%]">
             <div className="w-(--art) shrink-0" />
             <div
+              data-focus-content
               inert={!queueOpen}
               className={`pointer-events-auto mt-[11vh] flex h-[calc(var(--stack-top)_+_var(--art)_-_11vh)] min-w-0 max-w-[40rem] flex-1 flex-col bg-surface ${
                 queueOpen
