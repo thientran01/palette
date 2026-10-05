@@ -190,12 +190,10 @@ fn save_to(root: &Path, rec: &Rec, preview_enabled: bool) -> Result<&'static str
     // Snapshot the timings being investigated without altering cache/status state.
     let mut words = Vec::new();
     let mut timing_source = None;
-    for cache in [
-        crate::vocal_preview::CACHE_DIR,
-        crate::vocal_preview::PREVIOUS_CACHE_DIR,
-        crate::vocal_preview::OLDER_CACHE_DIR,
-        "karaoke",
-    ] {
+    for cache in std::iter::once(crate::vocal_preview::CACHE_DIR)
+        .chain(crate::vocal_preview::EARLIER_CACHE_DIRS)
+        .chain(["karaoke"])
+    {
         if cache != "karaoke" && !preview_enabled {
             continue;
         }

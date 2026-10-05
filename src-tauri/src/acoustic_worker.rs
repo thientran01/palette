@@ -3,6 +3,7 @@
 use crate::{
     acoustic::AcousticAligner,
     align::{TimeMap, TimedLine, Word},
+    separation::{Stereo, VocalSeparator},
 };
 use std::{
     path::PathBuf,
@@ -14,6 +15,8 @@ type Result<T> = std::result::Result<T, String>;
 const IDLE: Duration = Duration::from_secs(5 * 60);
 struct Request {
     pcm: Vec<i16>,
+    /// Full-rate stereo kept by the vocal trial; separation input only.
+    stereo: Option<Stereo>,
     lines: Vec<TimedLine>,
     map: TimeMap,
     dir: PathBuf,
@@ -54,6 +57,7 @@ fn connection() -> std::sync::MutexGuard<'static, Connection<mpsc::SyncSender<Re
 
 pub fn align(
     pcm: Vec<i16>,
+    stereo: Option<Stereo>,
     lines: Vec<TimedLine>,
     map: TimeMap,
     dir: PathBuf,
@@ -70,6 +74,7 @@ pub fn align(
     if sender
         .send(Request {
             pcm,
+            stereo,
             lines,
             map,
             dir,
@@ -109,52 +114,83 @@ fn cached_loop<J, M>(
         }
     }
 }
+
+struct Models {
+    dir: PathBuf,
+    aligner: AcousticAligner,
+    separator: Option<VocalSeparator>,
+}
+
 fn run(rx: mpsc::Receiver<Request>) {
-    cached_loop(
-        rx,
-        IDLE,
-        |request, cached: &mut Option<(PathBuf, AcousticAligner)>| {
-            let started = Instant::now();
-            let reused = cached
-                .as_ref()
-                .is_some_and(|(path, _)| path == &request.dir);
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if !reused {
-                    *cached = None;
-                    let model = AcousticAligner::load(
-                        &request.dir.join("mms-fa-int8.onnx"),
-                        &request.dir.join("onnxruntime.dll"),
-                    )?;
-                    *cached = Some((request.dir.clone(), model));
-                }
-                let loaded = started.elapsed();
-                let vocals = if crate::vocal_preview::enabled() {
-                    Some(crate::vocal_preview::separate(&request.pcm)?)
-                } else {
-                    None
-                };
-                let model = &mut cached.as_mut().expect("model loaded").1;
-                let result = if let Some(vocals) = vocals.as_deref() {
-                    model.align_guided_entries(vocals, &request.lines, &request.map, None)
-                } else {
-                    model.align(&request.pcm, &request.lines, &request.map)
-                };
-                log::info!(
-                    "karaoke: model reused={}, load {:.2}s, align {:.2}s",
-                    reused,
-                    loaded.as_secs_f64(),
-                    started.elapsed().saturating_sub(loaded).as_secs_f64()
-                );
-                result
-            }))
-            .unwrap_or_else(|_| Err("acoustic worker panicked".into()));
-            // Never reuse a failed or possibly poisoned runtime session.
-            if result.is_err() {
+    cached_loop(rx, IDLE, |request, cached: &mut Option<Models>| {
+        let started = Instant::now();
+        let reused = cached
+            .as_ref()
+            .is_some_and(|models| models.dir == request.dir);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !reused {
                 *cached = None;
+                let model = AcousticAligner::load(
+                    &request.dir.join("mms-fa-int8.onnx"),
+                    &request.dir.join("onnxruntime.dll"),
+                )?;
+                *cached = Some(Models {
+                    dir: request.dir.clone(),
+                    aligner: model,
+                    separator: None,
+                });
             }
-            let _ = request.reply.send(result);
-        },
-    );
+            let models = cached.as_mut().expect("model loaded");
+            // The aligner initialized the ONNX Runtime the separator uses.
+            if crate::vocal_preview::enabled() && models.separator.is_none() {
+                models.separator = Some(VocalSeparator::load(
+                    &request.dir.join(crate::separation::MODEL_FILE),
+                )?);
+            }
+            let loaded = started.elapsed();
+            let vocals = match models.separator.as_mut() {
+                Some(separator) => {
+                    let vocals = separator.vocals_16k(
+                        request.stereo.as_ref(),
+                        &request.pcm,
+                        crate::karaoke::TARGET_HZ,
+                    )?;
+                    log::info!(
+                        "karaoke: separated {:.1}s of {} audio in {:.2}s",
+                        request.pcm.len() as f64 / crate::karaoke::TARGET_HZ as f64,
+                        if request.stereo.is_some() {
+                            "stereo"
+                        } else {
+                            "mono"
+                        },
+                        started.elapsed().saturating_sub(loaded).as_secs_f64()
+                    );
+                    Some(vocals)
+                }
+                None => None,
+            };
+            let model = &mut models.aligner;
+            let aligning = Instant::now();
+            let result = if let Some(vocals) = vocals.as_deref() {
+                model.align_guided_entries(vocals, &request.lines, &request.map, None)
+            } else {
+                model.align(&request.pcm, &request.lines, &request.map)
+            };
+            log::info!(
+                "karaoke: model reused={}, load {:.2}s, align {:.2}s",
+                reused,
+                loaded.as_secs_f64(),
+                aligning.elapsed().as_secs_f64()
+            );
+            result
+        }))
+        .unwrap_or_else(|_| Err("acoustic worker panicked".into()));
+        // Never reuse a failed or possibly poisoned runtime session.
+        if result.is_err() {
+            *cached = None;
+        }
+        let _ = request.reply.send(result);
+    });
 }
 
 #[cfg(test)]
@@ -230,10 +266,10 @@ fn local_worker_preserves_cold_and_warm_results() {
         serde_json::from_slice(&std::fs::read(baseline).unwrap()).unwrap();
     let expected: Vec<Word> = serde_json::from_value(expected["words"].clone()).unwrap();
     let start = Instant::now();
-    let first = align(pcm.clone(), lines.clone(), map.clone(), dir.clone()).unwrap();
+    let first = align(pcm.clone(), None, lines.clone(), map.clone(), dir.clone()).unwrap();
     let cold = start.elapsed();
     let start = Instant::now();
-    let second = align(pcm, lines, map, dir).unwrap();
+    let second = align(pcm, None, lines, map, dir).unwrap();
     assert_eq!(first.len(), expected.len());
     for (i, (a, b)) in first.iter().zip(&expected).enumerate() {
         assert_eq!(

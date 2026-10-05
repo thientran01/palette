@@ -13,6 +13,7 @@ mod media;
 mod prefs;
 mod presence;
 mod search;
+pub mod separation;
 mod settings;
 mod similar;
 mod spotify;
@@ -1880,7 +1881,6 @@ pub fn run() {
             // Quit mid-song still logs the listen — the tracker's in-flight
             // candidate finalizes on the way out.
             if let tauri::RunEvent::Exit = event {
-                vocal_preview::shutdown();
                 history::flush(app);
             }
         });
