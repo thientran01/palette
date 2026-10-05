@@ -9,7 +9,7 @@
 //! just continues naturally (graceful). Skips made inside the Spotify app
 //! pull Spotify's own queue and bypass this list. A fed-but-unplayed front
 //! item can't be pulled back out of Spotify's queue — removing it locally
-//! accepts that one-track leak.
+//! accepts that one-track leak, and the queue tells the user it will still play.
 //!
 //! The feeder rides the media loop's observations (visible snapshots AND the
 //! hidden ~5s history probe, so concealed listening keeps the chain alive).
@@ -48,6 +48,9 @@ struct Persisted {
     fed_unobserved: bool,
     #[serde(default)]
     fed_pending_since_ms: i64,
+    /// Row of the fed copy. Older stores lack it; fed_index falls back.
+    #[serde(default)]
+    fed_at: usize,
     list: Vec<QueueTrack>,
 }
 
@@ -116,6 +119,9 @@ struct Inner {
     list: Vec<QueueTrack>,
     /// uri of the fed-but-not-yet-played front item.
     fed: Option<String>,
+    /// Which row is the fed copy. A uri alone can't tell duplicates apart,
+    /// so every list edit carries this index along (read via fed_index).
+    fed_at: usize,
     fed_unobserved: bool,
     fed_pending_since_ms: i64,
     fed_absences: u8,
@@ -153,6 +159,7 @@ fn persist(inner: &Inner) {
         fed: inner.fed.clone(),
         fed_unobserved: inner.fed_unobserved,
         fed_pending_since_ms: inner.fed_pending_since_ms,
+        fed_at: inner.fed_at,
         list: inner.list.clone(),
     };
     if let Ok(json) = serde_json::to_string(&p) {
@@ -184,6 +191,7 @@ pub fn init(app: &AppHandle) {
     inner.fed = loaded.fed;
     inner.fed_unobserved = loaded.fed_unobserved;
     inner.fed_pending_since_ms = loaded.fed_pending_since_ms;
+    inner.fed_at = loaded.fed_at;
 }
 
 /// Loose GSMTC↔Web-API track match: same title (case-insensitive) and the
@@ -199,10 +207,34 @@ fn matches_track(np: &NowPlaying, t: &QueueTrack) -> bool {
     !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a))
 }
 
+/// Row index of the fed copy. A stale `fed_at` (an older store, or a row
+/// that no longer carries the fed uri) falls back to the first matching row.
+fn fed_index(inner: &Inner) -> Option<usize> {
+    let fed = inner.fed.as_deref()?;
+    if inner.list.get(inner.fed_at).is_some_and(|t| t.uri == fed) {
+        return Some(inner.fed_at);
+    }
+    inner.list.iter().position(|t| t.uri == fed)
+}
+
+/// The fed copy is the track now playing — by metadata, since GSMTC has no uri.
+fn fed_is_playing(inner: &Inner, np: &NowPlaying) -> bool {
+    fed_index(inner).is_some_and(|i| matches_track(np, &inner.list[i]))
+}
+
+/// Mark the front row as handed to Spotify, not yet observed in its queue.
+fn arm_front(inner: &mut Inner, uri: String) {
+    inner.fed = Some(uri);
+    inner.fed_at = 0;
+    inner.fed_unobserved = true;
+    inner.fed_pending_since_ms = unix_ms();
+    inner.fed_absences = 0;
+}
+
 /// Pop the fed item (it played) — caller holds the lock via &mut Inner.
 /// Returns the list for emitting.
-fn pop_fed(inner: &mut Inner, fed_uri: &str) -> Vec<QueueTrack> {
-    if let Some(i) = inner.list.iter().position(|t| t.uri == fed_uri) {
+fn pop_fed(inner: &mut Inner) -> Vec<QueueTrack> {
+    if let Some(i) = fed_index(inner) {
         inner.list.remove(i);
     }
     inner.fed = None;
@@ -255,32 +287,18 @@ pub fn tick(app: &AppHandle, np: &NowPlaying) {
                 // item armed (it's still waiting in Spotify's queue — a
                 // re-feed would duplicate it). A restart that IS the fed
                 // item means its queued copy just started: pop it.
-                match inner.fed.clone() {
-                    Some(fed_uri)
-                        if inner
-                            .list
-                            .iter()
-                            .find(|t| t.uri == fed_uri)
-                            .is_some_and(|t| matches_track(np, t)) =>
-                    {
-                        (Some(pop_fed(&mut inner, &fed_uri)), false, true)
-                    }
-                    _ => (None, false, true),
+                if fed_is_playing(&inner, np) {
+                    (Some(pop_fed(&mut inner)), false, true)
+                } else {
+                    (None, false, true)
                 }
             } else {
                 inner.last_track = Some(key);
-                match inner.fed.clone() {
+                if fed_is_playing(&inner, np) {
                     // The fed item started playing — it left Spotify's queue
                     // and leaves Pulse's list.
-                    Some(fed_uri)
-                        if inner
-                            .list
-                            .iter()
-                            .find(|t| t.uri == fed_uri)
-                            .is_some_and(|t| matches_track(np, t)) =>
-                    {
-                        (Some(pop_fed(&mut inner, &fed_uri)), false, true)
-                    }
+                    (Some(pop_fed(&mut inner)), false, true)
+                } else if inner.fed.is_some() {
                     // A change to some OTHER track while a fed item is
                     // pending: it usually just means the user jumped around
                     // and the fed item still waits in Spotify's queue (keep
@@ -288,8 +306,9 @@ pub fn tick(app: &AppHandle, np: &NowPlaying) {
                     // it can also mean the fed item was CONSUMED where we
                     // couldn't see (in-app skip, app downtime) and will
                     // never pop by playing — ask Spotify which it is.
-                    Some(_) => (None, true, true),
-                    None => (None, false, true),
+                    (None, true, true)
+                } else {
+                    (None, false, true)
                 }
             }
         };
@@ -360,10 +379,7 @@ pub fn tick(app: &AppHandle, np: &NowPlaying) {
             // POSTed copy is the documented one-track leak and must not
             // block feeding the REAL front.
             if inner.list.first().is_some_and(|t| t.uri == front.uri) {
-                inner.fed = Some(front.uri);
-                inner.fed_unobserved = true;
-                inner.fed_pending_since_ms = unix_ms();
-                inner.fed_absences = 0;
+                arm_front(&mut inner, front.uri);
                 persist(&inner);
             } else {
                 log::warn!(
@@ -441,7 +457,7 @@ fn reconcile_fed(app: &AppHandle) {
         if !may_consume_fed(&mut inner, still_there, unix_ms()) {
             return;
         }
-        pop_fed(&mut inner, &fed_uri)
+        pop_fed(&mut inner)
     };
     emit_list(app, &list);
 }
@@ -469,15 +485,16 @@ fn may_consume_fed(inner: &mut Inner, present: bool, now: i64) -> bool {
 }
 
 /// Run a mutation, persist, emit. Everything the UI does routes through here.
-fn mutate(app: &AppHandle, f: impl FnOnce(&mut Inner)) {
+fn mutate<R>(app: &AppHandle, f: impl FnOnce(&mut Inner) -> R) -> R {
     let upnext = app.state::<UpNext>();
-    let list = {
+    let (out, list) = {
         let mut inner = lock(&upnext);
-        f(&mut inner);
+        let out = f(&mut inner);
         persist(&inner);
-        inner.list.clone()
+        (out, inner.list.clone())
     };
     emit_list(app, &list);
+    out
 }
 
 /// Current list uris, in order — similar.rs's dedupe read.
@@ -505,29 +522,75 @@ pub(crate) fn remember_accepted_front(app: &AppHandle, uri: &str) {
 
 fn remember_front(inner: &mut Inner, uri: &str) {
     if inner.fed.is_none() && inner.list.first().is_some_and(|t| t.uri == uri) {
-        inner.fed = Some(uri.to_owned());
-        inner.fed_unobserved = true;
-        inner.fed_pending_since_ms = unix_ms();
-        inner.fed_absences = 0;
+        arm_front(inner, uri.to_owned());
         inner.reconcile_pending = true;
         persist(inner);
     }
 }
 
-/// Remove by uri (first occurrence). Public for play_now's queue-row path.
-pub fn remove(app: &AppHandle, uri: &str) {
-    mutate(app, |inner| {
-        if let Some(i) = inner.list.iter().position(|t| t.uri == uri) {
-            inner.list.remove(i);
-        }
-        // Removing the fed front: the item is already in Spotify's queue and
-        // can't be pulled back — the documented one-track leak. Unmark so
-        // the feeder moves on to the new front.
-        if inner.fed.as_deref() == Some(uri) {
+/// Remove one row. Returns true when that row was the fed copy, which will
+/// still play: Spotify's queue can't give it back.
+pub fn remove(app: &AppHandle, uri: &str, at: Option<usize>) -> bool {
+    mutate(app, |inner| remove_row(inner, uri, at))
+}
+
+/// `at` names the row; the uri guards it against an index from a stale render
+/// (fall back to the first row with that uri). Duplicates are legal, so the
+/// fed marker follows its own row rather than whichever copy matches first.
+fn remove_row(inner: &mut Inner, uri: &str, at: Option<usize>) -> bool {
+    let Some(i) = at
+        .filter(|&i| inner.list.get(i).is_some_and(|t| t.uri == uri))
+        .or_else(|| inner.list.iter().position(|t| t.uri == uri))
+    else {
+        return false;
+    };
+    let fed = fed_index(inner);
+    inner.list.remove(i);
+    match fed {
+        // Removing the fed copy: it is already in Spotify's queue and can't
+        // be pulled back — the documented one-track leak. Unmark so the
+        // feeder moves on to the new front.
+        Some(f) if f == i => {
             inner.fed = None;
             inner.fed_unobserved = false;
+            true
         }
-    });
+        Some(f) => {
+            inner.fed_at = if f > i { f - 1 } else { f };
+            false
+        }
+        None => false,
+    }
+}
+
+fn insert_row(inner: &mut Inner, item: QueueTrack, at: Option<usize>) {
+    let fed = fed_index(inner);
+    let at = at.unwrap_or(inner.list.len()).min(inner.list.len());
+    inner.list.insert(at, item);
+    if let Some(f) = fed {
+        inner.fed_at = if f >= at { f + 1 } else { f };
+    }
+}
+
+fn move_row(inner: &mut Inner, from: usize, to: usize) {
+    let len = inner.list.len();
+    if from >= len || to >= len || from == to {
+        return;
+    }
+    let fed = fed_index(inner);
+    let item = inner.list.remove(from);
+    inner.list.insert(to, item);
+    if let Some(f) = fed {
+        inner.fed_at = if f == from {
+            to
+        } else if from < f && f <= to {
+            f - 1
+        } else if to <= f && f < from {
+            f + 1
+        } else {
+            f
+        };
+    }
 }
 
 /// The frontend arms its own suppression when IT starts a jump; this event
@@ -585,14 +648,21 @@ pub fn try_queue_skip(app: &AppHandle) -> bool {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         // Read the fed marker AFTER the wait — the feed just resolved it.
-        let was_fed = lock(&upnext).fed.as_deref() == Some(front.uri.as_str());
+        let was_fed = fed_index(&lock(&upnext)) == Some(0);
+        // play_now answers "already playing" for the current track and skips
+        // nothing, so a front that repeats it would dead-end the press.
+        if replay_front(&app, &front, was_fed) {
+            let _ = app.emit("spotify-jump-cancel", ());
+            crate::emit_now(&app);
+            return;
+        }
         match spotify::play_now(&app, &front.uri) {
             // Landed (verified): pop the front from Pulse's list. A FED
             // front pops via tick's fed-match instead (racing it here could
             // eat a duplicate entry) — this handles the unfed mid-song case.
             "ok" | "partial" => {
                 if !was_fed {
-                    remove(&app, &front.uri);
+                    remove(&app, &front.uri, Some(0));
                 }
             }
             // Skips happened but the landing is unconfirmed / another jump
@@ -614,6 +684,57 @@ pub fn try_queue_skip(app: &AppHandle) -> bool {
     true
 }
 
+/// Next when the front row is the song already playing (queued again). Next
+/// means hear it again: step into Spotify's copy when one was fed, otherwise
+/// restart in place. The row leaves the list only once a re-read confirms
+/// it. Returns false when the front is not the current track.
+fn replay_front(app: &AppHandle, front: &QueueTrack, was_fed: bool) -> bool {
+    let before = spotify::queue_fresh(app);
+    let current = before.currently_playing.as_ref().map(|t| t.uri.as_str());
+    if before.status != "ok" || current != Some(front.uri.as_str()) {
+        return false;
+    }
+    let copies = |q: &spotify::QueueResult| q.queue.iter().filter(|t| t.uri == front.uri).count();
+    if was_fed {
+        // A plain next plays whatever Spotify holds next. Only when that is
+        // the fed copy can its departure from the queue confirm the replay;
+        // otherwise reconcile settles the marker on a later track change.
+        let copy_next = before.queue.first().is_some_and(|t| t.uri == front.uri);
+        if !media::next() || !copy_next {
+            return true;
+        }
+        let consumed = (0..3).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let after = spotify::queue_fresh(app);
+            after.status == "ok" && after.positions_complete && copies(&after) < copies(&before)
+        });
+        if consumed {
+            let upnext = app.state::<UpNext>();
+            let list = {
+                let mut inner = lock(&upnext);
+                if fed_index(&inner) == Some(0) {
+                    Some(pop_fed(&mut inner))
+                } else {
+                    None
+                }
+            };
+            if let Some(list) = list {
+                emit_list(app, &list);
+            }
+        }
+    } else if media::seek_abs_ms(0) {
+        let restarted = (0..3).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            spotify::playing_progress(app)
+                .is_some_and(|(uri, ms)| uri == front.uri && ms < RESTART_NEAR_START_MS)
+        });
+        if restarted {
+            remove(app, &front.uri, Some(0));
+        }
+    }
+    true
+}
+
 // ---- commands ----
 
 /// Seed for the queue UI ("upnext-changed" is the event half).
@@ -624,25 +745,19 @@ pub async fn upnext_list(upnext: State<'_, UpNext>) -> Result<Vec<QueueTrack>, (
 
 #[tauri::command]
 pub async fn upnext_add(app: AppHandle, item: QueueTrack, at: Option<usize>) {
-    mutate(&app, |inner| {
-        let at = at.unwrap_or(inner.list.len()).min(inner.list.len());
-        inner.list.insert(at, item);
-    });
+    mutate(&app, |inner| insert_row(inner, item, at));
 }
 
+/// True when the removed row was already handed to Spotify (it will still
+/// play) — the queue says so instead of implying the removal took.
 #[tauri::command]
-pub async fn upnext_remove(app: AppHandle, uri: String) {
-    remove(&app, &uri);
+pub async fn upnext_remove(app: AppHandle, uri: String, at: Option<usize>) -> bool {
+    remove(&app, &uri, at)
 }
 
 #[tauri::command]
 pub async fn upnext_move(app: AppHandle, from: usize, to: usize) {
-    mutate(&app, |inner| {
-        if from < inner.list.len() && to < inner.list.len() && from != to {
-            let item = inner.list.remove(from);
-            inner.list.insert(to, item);
-        }
-    });
+    mutate(&app, |inner| move_row(inner, from, to));
 }
 
 #[cfg(test)]
@@ -733,5 +848,58 @@ mod handoff_tests {
         assert!(!may_consume_fed(&mut inner, false, 29_999));
         assert!(!may_consume_fed(&mut inner, false, 30_100));
         assert!(may_consume_fed(&mut inner, false, 35_100));
+    }
+
+    fn fed(list: &[&str], at: usize) -> Inner {
+        Inner {
+            list: list.iter().map(|u| track(u)).collect(),
+            fed: Some(list[at].into()),
+            fed_at: at,
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn removing_a_later_duplicate_keeps_the_fed_front() {
+        let mut inner = fed(&["X", "A", "X"], 0);
+        assert!(!remove_row(&mut inner, "X", Some(2)));
+        assert_eq!(fed_index(&inner), Some(0));
+        let uris: Vec<_> = inner.list.iter().map(|t| t.uri.as_str()).collect();
+        assert_eq!(uris, ["X", "A"]);
+    }
+    #[test]
+    fn removing_the_fed_copy_reports_it_will_still_play() {
+        let mut inner = fed(&["X", "A", "X"], 0);
+        assert!(remove_row(&mut inner, "X", Some(0)));
+        assert!(inner.fed.is_none());
+        assert_eq!(inner.list.len(), 2);
+    }
+    #[test]
+    fn stale_index_falls_back_to_the_uri() {
+        let mut inner = fed(&["A", "B"], 0);
+        assert!(remove_row(&mut inner, "A", Some(1)));
+        assert_eq!(inner.list[0].uri, "B");
+        assert!(!remove_row(&mut inner, "Z", Some(0)));
+        assert_eq!(inner.list.len(), 1);
+    }
+    #[test]
+    fn fed_row_follows_inserts_and_moves() {
+        let mut inner = fed(&["X", "A"], 0);
+        insert_row(&mut inner, track("X"), Some(0));
+        assert_eq!(fed_index(&inner), Some(1));
+        move_row(&mut inner, 1, 2);
+        assert_eq!(fed_index(&inner), Some(2));
+        move_row(&mut inner, 0, 2);
+        assert_eq!(fed_index(&inner), Some(1));
+        let popped = pop_fed(&mut inner);
+        let uris: Vec<_> = popped.iter().map(|t| t.uri.as_str()).collect();
+        assert_eq!(uris, ["A", "X"]);
+    }
+    #[test]
+    fn older_store_without_a_fed_row_uses_the_first_copy() {
+        let old: Persisted = serde_json::from_str(r#"{"v":1,"fed":"X","list":[]}"#).unwrap();
+        assert_eq!(old.fed_at, 0);
+        let mut inner = fed(&["A", "X"], 1);
+        inner.fed_at = old.fed_at;
+        assert_eq!(fed_index(&inner), Some(1));
     }
 }

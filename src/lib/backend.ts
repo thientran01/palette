@@ -953,14 +953,14 @@ export const commands = {
       mockUpNextChanged();
     }
   },
-  upnextRemove(uri: string): void {
-    if (IN_TAURI) {
-      void invoke("upnext_remove", { uri });
-    } else {
-      const i = mockUpNext.findIndex((t) => t.uri === uri);
-      if (i !== -1) mockUpNext.splice(i, 1);
-      mockUpNextChanged();
-    }
+  /** Removes the row at `at` (the uri guards a stale index). Resolves true
+   * when Spotify was already handed that row, so it will still play. */
+  async upnextRemove(uri: string, at: number): Promise<boolean> {
+    if (IN_TAURI) return invoke<boolean>("upnext_remove", { uri, at });
+    const i = mockUpNext[at]?.uri === uri ? at : mockUpNext.findIndex((t) => t.uri === uri);
+    if (i !== -1) mockUpNext.splice(i, 1);
+    mockUpNextChanged();
+    return false;
   },
   upnextMove(from: number, to: number): void {
     if (IN_TAURI) {
