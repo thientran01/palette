@@ -8,6 +8,16 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Added
+
+- "Restart Palette" in the tray menu, for when the window gets stuck (for example, painting black) and needs a fresh start.
+
+### Fixed
+
+- Removing one copy of a song queued twice removes that row. It used to take out the first copy, and could drop the song Spotify was about to play.
+- Removing a song Spotify has already been handed says it will still play, instead of looking removed.
+- Next no longer does nothing when the next queued song is the one already playing. It plays that song again from the start.
+
 ## [1.0.6] - 2026-10-03
 
 ### Fixed
