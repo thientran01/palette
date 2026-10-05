@@ -11,6 +11,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 ### Added
 
 - "Restart Palette" in the tray menu, for when the window gets stuck (for example, painting black) and needs a fresh start.
+- With nothing playing, you can still change the widget's size and open your queue. The expanded view shows the queue under "Nothing playing" instead of an empty box.
 
 ### Fixed
 
