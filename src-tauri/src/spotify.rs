@@ -1361,6 +1361,20 @@ pub fn search_track(app: &AppHandle, title: &str, artist: &str) -> Option<String
     search_best(app, title, artist).map(|t| t.uri)
 }
 
+/// Fresh uri and progress of the current item — upnext's replay check.
+pub(crate) fn playing_progress(app: &AppHandle) -> Option<(String, i64)> {
+    let v = api_call(
+        app,
+        "GET",
+        "https://api.spotify.com/v1/me/player/currently-playing",
+    )
+    .ok()??;
+    Some((
+        v["item"]["uri"].as_str()?.to_owned(),
+        v["progress_ms"].as_i64()?,
+    ))
+}
+
 /// The current track's uri, if the enrichment has seen one.
 pub fn now_uri(app: &AppHandle) -> Option<String> {
     let auth = app.state::<SpotifyAuth>();

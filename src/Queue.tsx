@@ -485,7 +485,7 @@ const QueueRowBase = function QueueRow({
    * title/artist only (the 312px popover can't spare it). */
   showDuration: boolean;
   onDragStart: (e: React.PointerEvent, index: number) => void;
-  onRemove: (uri: string) => void;
+  onRemove: (uri: string, index: number) => void;
   onKeyDown: (e: React.KeyboardEvent, index: number) => void;
 }) {
   return (
@@ -516,7 +516,7 @@ const QueueRowBase = function QueueRow({
       >
         <GripGlyph size={s.glyph} />
       </span>
-      <RowActionButton label="Remove from queue" onClick={() => onRemove(track.uri)} s={s}>
+      <RowActionButton label="Remove from queue" onClick={() => onRemove(track.uri, index)} s={s}>
         <CrossGlyph size={s.glyph - 1} />
       </RowActionButton>
     </div>
@@ -939,10 +939,21 @@ export function QueuePanel({
     window.addEventListener("pointercancel", cancel);
   };
 
+  // A row Spotify was already handed can't be taken back, so say it will
+  // still play rather than letting the removal look complete.
+  const removeRow = (uri: string, index: number) => {
+    void commands
+      .upnextRemove(uri, index)
+      .then((stillPlays) => {
+        if (stillPlays) showToast("Already sent to Spotify · it will still play", 2600);
+      })
+      .catch(() => {});
+  };
+
   const onQueueKeyDown = (e: React.KeyboardEvent, index: number) => {
     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
-      commands.upnextRemove(rows[index].uri);
+      removeRow(rows[index].uri, index);
     } else if (e.key === "ArrowUp" && index > 0) {
       e.preventDefault();
       commands.upnextMove(index, index - 1);
@@ -1098,6 +1109,7 @@ export function QueuePanel({
   const rowHandlers = useRef({
     onQueueDragStart,
     onQueueKeyDown,
+    removeRow,
     playResolved,
     addResolved,
     onGhostStart,
@@ -1106,6 +1118,7 @@ export function QueuePanel({
   rowHandlers.current = {
     onQueueDragStart,
     onQueueKeyDown,
+    removeRow,
     playResolved,
     addResolved,
     onGhostStart,
@@ -1114,7 +1127,7 @@ export function QueuePanel({
   const [rowActions] = useState(() => ({
     onDragStart: (e: React.PointerEvent, index: number) =>
       rowHandlers.current.onQueueDragStart(e, index),
-    onRemove: (uri: string) => commands.upnextRemove(uri),
+    onRemove: (uri: string, index: number) => rowHandlers.current.removeRow(uri, index),
     onKeyDown: (e: React.KeyboardEvent, index: number) =>
       rowHandlers.current.onQueueKeyDown(e, index),
     onPlayNow: (entry: HistoryEntry) => rowHandlers.current.playResolved(entry),
