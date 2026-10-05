@@ -1483,6 +1483,9 @@ pub fn run() {
             // grab pulse.log to send (see the log plugin above). Seated next to
             // "Check for updates" — both are supportability affordances.
             let open_logs = MenuItem::with_id(app, "logs", "Open logs", true, None::<&str>)?;
+            // Same as quitting and reopening: recovers a WebView2 that lost its
+            // transparency (the window paints black) without a trip to Start.
+            let restart = MenuItem::with_id(app, "restart", "Restart Palette", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Palette", true, None::<&str>)?;
             // Dev-only conceal test affordance: fullscreen apps are awkward
             // to summon on demand; this feeds the presence loop a synthetic
@@ -1523,6 +1526,7 @@ pub fn run() {
                     &sim_wedge,
                     &update_check,
                     &open_logs,
+                    &restart,
                     &quit,
                 ],
             )?;
@@ -1539,6 +1543,7 @@ pub fn run() {
                     &spotify_item,
                     &update_check,
                     &open_logs,
+                    &restart,
                     &quit,
                 ],
             )?;
@@ -1616,6 +1621,9 @@ pub fn run() {
                             let _ = app.opener().open_path(dir.to_string_lossy(), None::<&str>);
                         }
                     }
+                    // request_restart, not restart(): on this (main) thread
+                    // restart() skips RunEvent::Exit, which flushes history.
+                    "restart" => app.request_restart(),
                     "quit" => app.exit(0),
                     _ => {}
                 })
