@@ -1617,6 +1617,12 @@ function App() {
   // state and are NOT persisted — override semantics mean every launch reopens
   // at the default, not wherever it was last left.
   const [mode, setMode] = useState<Mode>(readLaunchMode);
+  // The idle pill has no queue seat (its toggle rides the playing pill's
+  // scrim), so a queue bit carried down the ladder from card would leave a
+  // popover with nothing to close it, or pop one open when a song starts.
+  useEffect(() => {
+    if (nothing && mode === "pill") setQueueOpen(false);
+  }, [nothing, mode]);
 
   const reducedMotion = useReducedMotion();
 
@@ -1777,10 +1783,7 @@ function App() {
   // The popover extends the interactive footprint past the mode box — the
   // hit rect must union it while open or its clicks fall through to the
   // desktop (the worst failure class in this app).
-  // The idle pill has no queue seat (its scrim is the playing pill's), so a
-  // bit carried down the ladder from card must not float a popover with no
-  // control to close it.
-  const popoverVisible = queueOpen && mode !== "expanded" && !(nothing && mode === "pill");
+  const popoverVisible = queueOpen && mode !== "expanded";
   // ONE QueuePanel per mode: inside expanded the peer layer owns the
   // garment, so the popover's PANEL unmounts there (two resident panels
   // doubled the upnext/history subscriptions and every render fan-out).
