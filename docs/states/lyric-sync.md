@@ -1,15 +1,15 @@
 # Lyric sync status
 
-Sync management lives under **More options → Lyric syncs** in the shared top-right controls. The widget keeps this seat across lyrics, album art, and queue; focus places it beside the queue and exit buttons. No status glyph sits beside the lyric column. The menu follows the existing hover and keyboard reveal, stays visible while open, and fits inside the fixed widget footprint. Escape dismisses the menu or library before Focus handles Escape and returns focus to the trigger. Menu arrow keys, Home, and End move between its actions. Reduced motion disables the entrance.
+The existing lyric-sync ribbon icon opens **Lyric syncs** directly. It keeps its original widget position, directly below the lyrics/album toggle (`right: 7px; top: 36px`), across lyrics, album art, and queue. Focus keeps the original position at the lyric column's upper-right edge, 4px above its 11vh top; it reveals when hovering the lyric or queue column or the trigger, on keyboard focus in that column or the trigger, or while the library is open. The icon stays the same across sync states; live status appears inside the library. The library fits inside the fixed widget footprint. Escape dismisses the library before Focus handles Escape and returns focus to the trigger. Reduced motion disables the entrance.
 
-**More options → Lyric settings** opens Playback preferences. **Karaoke lyrics** defaults to on for existing installs. Turning it off renders the original full lyric lines and stops the word-wipe driver in both rooms; line highlighting, auto-follow, instrumental-break dots, seeking, and the lyrics/album toggle remain active. The preference persists through settings.rs, mirrors live between windows, and keeps saved word timing available for re-enabling.
+**Settings → Playback → Karaoke lyrics** defaults to on for existing installs. Turning it off renders the original full lyric lines and stops the word-wipe driver in both rooms; line highlighting, auto-follow, instrumental-break dots, seeking, and the lyrics/album toggle remain active. The preference persists through settings.rs, mirrors live between windows, and keeps saved word timing available for re-enabling.
 
 ## Control and preference coverage
 
-- [x] The menu stays in the same seat across lyrics, art, and queue, including a lyric miss.
-- [x] Focus has no control floating beside the lyric column.
-- [x] The menu and saved library remain within the widget's existing hit rectangle.
-- [x] Keyboard open, arrow navigation, Escape, outside dismissal, and focus return are covered.
+- [x] The sync icon stays in the same seat across lyrics, art, and queue, including a lyric miss.
+- [x] Focus keeps the original lyric-column position and reveals the icon over lyrics or queue content.
+- [x] The sync icon and saved library remain within the widget's existing hit rectangle.
+- [x] Keyboard open, Escape, outside dismissal, and focus return are covered.
 - [x] A failed preference update releases the busy guard and shows a retry message.
 - [x] Startup snapshots cannot overwrite a newer live preference event.
 - [x] Karaoke off leaves line highlight, auto-follow, and click-to-seek unchanged at both scales.

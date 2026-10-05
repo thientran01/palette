@@ -15,10 +15,11 @@
 //! paused app costs zero audio work.
 //!
 //! Emits target the main and focus windows only. Search and prefs never
-//! render the waveform. A silence latch stops the FFT and emit once
+//! render the waveform. A silence latch throttles the FFT and stops emits once
 //! smoothed output has sat below ZERO_EPS for LATCH_AFTER_TICKS (~396ms):
 //! one terminating zero payload (the same `Bands::default()` the switch-off
-//! arm already sends), then a cheap raw-RMS peek until energy returns.
+//! arm already sends), then cheap raw-RMS peeks with an FFT recheck every
+//! ~264ms. Quiet intros can resume below the raw fast-wake threshold.
 //! Process-path staleness still zeros the ring at 250ms so the bars fall;
 //! the latch arms on that fallen envelope and does not replace the zeroing.
 
@@ -69,10 +70,12 @@ const LATCH_AFTER_TICKS: u8 = 12;
 /// IDLE_EPS (0.004) and WAKE_LEVEL (0.02), so the latch arms after the
 /// bars have already gone visually dead, not mid-fall.
 const ZERO_EPS: f32 = 0.01;
-/// Raw sample-RMS wake. Different unit from ZERO_EPS. Just above the
-/// 1e-4 gain floor so WASAPI hiss does not unlatch, well below real
-/// playback.
+/// Raw sample-RMS fast wake. Different unit from the auto-gained ZERO_EPS;
+/// quiet music can fall below this, so it cannot be the only resume path.
 const RAW_WAKE: f32 = 1e-3;
+/// Bound the delay for music below RAW_WAKE without running the FFT at 30Hz
+/// through sustained silence. Eight owner ticks are ~264ms.
+const SOFT_WAKE_PROBE_TICKS: u8 = 8;
 
 #[derive(Serialize, Clone, Copy, Default)]
 pub struct Bands {
@@ -144,14 +147,14 @@ impl Ring {
     }
 }
 
-/// Owner-loop silence latch. Live FFTs and emits; Latched peeks raw RMS
-/// only. One fact drives each transition: smoothed output below ZERO_EPS
-/// for LATCH_AFTER_TICKS consecutive ticks arms it, raw RMS above RAW_WAKE
-/// wakes it.
+/// Owner-loop silence latch. Live FFTs and emits; Latched mostly peeks raw
+/// RMS, periodically checking the actual visual output for quiet music.
+/// Smoothed output below ZERO_EPS for LATCH_AFTER_TICKS arms it; raw RMS
+/// above RAW_WAKE or a non-quiet FFT probe wakes it. Silent probes emit nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SilenceLatch {
     Live { quiet_ticks: u8 },
-    Latched,
+    Latched { probe_ticks: u8 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,29 +174,41 @@ impl SilenceLatch {
     }
 
     fn is_latched(&self) -> bool {
-        matches!(self, Self::Latched)
+        matches!(self, Self::Latched { .. })
     }
 
     /// Latched peek. `true` means fall through and run the FFT this tick.
     fn consider_wake(&mut self, raw_awake: bool) -> bool {
-        match *self {
-            Self::Latched if raw_awake => {
+        match self {
+            Self::Latched { .. } if raw_awake => {
                 *self = Self::Live { quiet_ticks: 0 };
                 true
             }
-            Self::Latched => false,
+            Self::Latched { probe_ticks } => {
+                *probe_ticks += 1;
+                if *probe_ticks >= SOFT_WAKE_PROBE_TICKS {
+                    *probe_ticks = 0;
+                    true // Probe while still latched; after_fft decides whether to wake.
+                } else {
+                    false
+                }
+            }
             Self::Live { .. } => true,
         }
     }
 
     fn after_fft(&mut self, quiet: bool) -> LatchEmit {
         match *self {
-            Self::Latched => LatchEmit::None,
+            Self::Latched { .. } if quiet => LatchEmit::None,
+            Self::Latched { .. } => {
+                *self = Self::new();
+                LatchEmit::Bands
+            }
             Self::Live { quiet_ticks } => {
                 if quiet {
                     let n = quiet_ticks.saturating_add(1);
                     if n >= LATCH_AFTER_TICKS {
-                        *self = Self::Latched;
+                        *self = Self::Latched { probe_ticks: 0 };
                         LatchEmit::Zero
                     } else {
                         *self = Self::Live { quiet_ticks: n };
@@ -214,6 +229,102 @@ fn bands_quiet(b: &Bands) -> bool {
         && b.high <= ZERO_EPS
         && b.level <= ZERO_EPS
         && b.spectrum.iter().all(|&s| s <= ZERO_EPS)
+}
+
+/// The live normalization and silence state, shared with the regression
+/// tests so a quiet-resume check cannot bypass retained peaks or smoothing.
+struct BandEnvelope {
+    smoothed: [f32; 3],
+    gain_ref: [f32; 3],
+    spec_edges: [f32; SPECTRUM_BINS + 1],
+    smoothed_spec: [f32; SPECTRUM_BINS],
+    gain_spec: [f32; SPECTRUM_BINS],
+    rms_ref: f32,
+    smoothed_dyn: f32,
+    latch: SilenceLatch,
+}
+
+impl BandEnvelope {
+    fn new() -> Self {
+        Self {
+            smoothed: [0.0; 3],
+            gain_ref: [1e-4; 3],
+            spec_edges: spectrum_edges(),
+            smoothed_spec: [0.0; SPECTRUM_BINS],
+            gain_spec: [1e-4; SPECTRUM_BINS],
+            rms_ref: 1e-4,
+            smoothed_dyn: 0.0,
+            latch: SilenceLatch::new(),
+        }
+    }
+
+    fn reset_capture(&mut self) {
+        self.smoothed = [0.0; 3];
+        self.smoothed_spec = [0.0; SPECTRUM_BINS];
+        self.smoothed_dyn = 0.0;
+        self.latch.reset();
+    }
+
+    fn after_fft(&mut self, fft: &[Complex<f32>], rate: f32, rms: f32) -> Option<Bands> {
+        let raw = band_energies(fft, rate);
+        // Keep the broadband dynamics reference across silence: a quiet
+        // return should still draw shorter bars than the preceding loud song.
+        self.rms_ref = (self.rms_ref * RMS_DECAY).max(rms).max(1e-4);
+        let dyn_target = (rms / self.rms_ref).clamp(0.0, 1.0).sqrt();
+        let dk = if dyn_target > self.smoothed_dyn {
+            ATTACK
+        } else {
+            DYN_RELEASE
+        };
+        self.smoothed_dyn += (dyn_target - self.smoothed_dyn) * dk;
+        let dyn_scale = DYN_FLOOR + (1.0 - DYN_FLOOR) * self.smoothed_dyn;
+
+        let mut norm = [0.0f32; 3];
+        for i in 0..3 {
+            self.gain_ref[i] = (self.gain_ref[i] * GAIN_DECAY).max(raw[i]).max(1e-4);
+            let target = (raw[i] / self.gain_ref[i]).clamp(0.0, 1.0);
+            let k = if target > self.smoothed[i] {
+                ATTACK
+            } else {
+                RELEASE
+            };
+            self.smoothed[i] += (target - self.smoothed[i]) * k;
+            norm[i] = self.smoothed[i];
+        }
+        let mut spectrum = [0.0f32; SPECTRUM_BINS];
+        for (i, value) in spectrum.iter_mut().enumerate() {
+            let raw_e = range_energy(fft, rate, self.spec_edges[i], self.spec_edges[i + 1]);
+            self.gain_spec[i] = (self.gain_spec[i] * GAIN_DECAY).max(raw_e).max(1e-4);
+            let target = (raw_e / self.gain_spec[i]).clamp(0.0, 1.0);
+            let k = if target > self.smoothed_spec[i] {
+                ATTACK
+            } else {
+                RELEASE
+            };
+            self.smoothed_spec[i] += (target - self.smoothed_spec[i]) * k;
+            *value = self.smoothed_spec[i];
+        }
+        // Unscaled level drives wake/sleep; dynamics affect only bar height.
+        let bands = Bands {
+            bass: norm[0] * dyn_scale,
+            mid: norm[1] * dyn_scale,
+            high: norm[2] * dyn_scale,
+            level: (norm[0] * 0.5 + norm[1] * 0.35 + norm[2] * 0.15).clamp(0.0, 1.0),
+            spectrum: spectrum.map(|s| s * dyn_scale),
+        };
+        match self.latch.after_fft(bands_quiet(&bands)) {
+            LatchEmit::Bands => Some(bands),
+            LatchEmit::Zero => {
+                // A prior loud peak must not keep a new quiet intro asleep.
+                // Recalibrate frequency gain after sustained visual silence;
+                // retain rms_ref so quiet sections still draw shorter bars.
+                self.gain_ref = [1e-4; 3];
+                self.gain_spec = [1e-4; SPECTRUM_BINS];
+                Some(Bands::default())
+            }
+            LatchEmit::None => None,
+        }
+    }
 }
 
 /// Search and prefs never consume this event. emit_to on a missing focus
@@ -445,16 +556,9 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
         // An EXPIRED stamp is left in place — its window is the next backoff's
         // base, and is_demoted already reads it as not-demoted.
         let mut demoted: Option<(String, Instant, Duration)> = None;
-        let mut smoothed = [0.0f32; 3];
-        let mut gain_ref = [1e-4f32; 3];
-        let spec_edges = spectrum_edges();
-        let mut smoothed_spec = [0.0f32; SPECTRUM_BINS];
-        let mut gain_spec = [1e-4f32; SPECTRUM_BINS];
-        let mut rms_ref = 1e-4f32;
-        let mut smoothed_dyn = 0.0f32;
+        let mut visual = BandEnvelope::new();
         let mut scratch = vec![Complex::default(); FFT_SIZE];
         let mut snap = vec![0.0f32; FFT_SIZE];
-        let mut latch = SilenceLatch::new();
         // Stream-health watchdog: the callback bumps `frames`; if it stalls
         // while we're supposedly capturing (default device changed, stream
         // silently died — cpal never signals this), drop and reopen.
@@ -478,11 +582,8 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                 if active.is_some() {
                     crate::karaoke::on_capture_stop(&app);
                     active = None; // drops the capture, releases the device
-                    smoothed = [0.0; 3];
-                    smoothed_spec = [0.0; SPECTRUM_BINS];
-                    smoothed_dyn = 0.0;
+                    visual.reset_capture();
                     emit_bands(&app, Bands::default());
-                    latch.reset();
                 }
             } else if active.is_none() {
                 // Open: process-scoped first (the playing app's tree only),
@@ -696,7 +797,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
             let stale =
                 matches!(cap, Capture::Process(p, _) if p.ms_since_data() > SILENCE_AFTER_MS);
 
-            if latch.is_latched() {
+            if visual.latch.is_latched() {
                 // Stale process-path packets leave the last-heard samples
                 // in the ring. Peeking that RMS would unlatch forever.
                 let raw_awake = if stale {
@@ -707,7 +808,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     ring.rms() > RAW_WAKE
                 };
-                if !latch.consider_wake(raw_awake) {
+                if !visual.latch.consider_wake(raw_awake) {
                     std::thread::sleep(EMIT_INTERVAL);
                     continue;
                 }
@@ -725,63 +826,9 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
                 scratch[i] = Complex::new(s * window[i], 0.0);
             }
             fft.process(&mut scratch);
-            let raw = band_energies(&scratch, *rate);
-
-            // Dynamics factor: broadband RMS against a slow peak reference.
-            // Per-bin auto-gain (below) erases loud-vs-quiet across song
-            // sections — every bin re-normalizes to its own recent peak — so
-            // this factor scales the *visual* targets back down during quiet
-            // passages. sqrt eases the curve (half amplitude → ~0.7, not 0.5).
             let rms = (snap.iter().map(|s| s * s).sum::<f32>() / snap.len() as f32).sqrt();
-            rms_ref = (rms_ref * RMS_DECAY).max(rms).max(1e-4);
-            let dyn_target = (rms / rms_ref).clamp(0.0, 1.0).sqrt();
-            let dk = if dyn_target > smoothed_dyn {
-                ATTACK
-            } else {
-                DYN_RELEASE
-            };
-            smoothed_dyn += (dyn_target - smoothed_dyn) * dk;
-            let dyn_scale = DYN_FLOOR + (1.0 - DYN_FLOOR) * smoothed_dyn;
-
-            let mut norm = [0.0f32; 3];
-            for i in 0..3 {
-                gain_ref[i] = (gain_ref[i] * GAIN_DECAY).max(raw[i]).max(1e-4);
-                let target = (raw[i] / gain_ref[i]).clamp(0.0, 1.0);
-                let k = if target > smoothed[i] {
-                    ATTACK
-                } else {
-                    RELEASE
-                };
-                smoothed[i] += (target - smoothed[i]) * k;
-                norm[i] = smoothed[i];
-            }
-            let mut spectrum = [0.0f32; SPECTRUM_BINS];
-            for i in 0..SPECTRUM_BINS {
-                let raw_e = range_energy(&scratch, *rate, spec_edges[i], spec_edges[i + 1]);
-                gain_spec[i] = (gain_spec[i] * GAIN_DECAY).max(raw_e).max(1e-4);
-                let target = (raw_e / gain_spec[i]).clamp(0.0, 1.0);
-                let k = if target > smoothed_spec[i] {
-                    ATTACK
-                } else {
-                    RELEASE
-                };
-                smoothed_spec[i] += (target - smoothed_spec[i]) * k;
-                spectrum[i] = smoothed_spec[i];
-            }
-            // `level` stays UNSCALED — it drives the separator's wake/sleep
-            // (frontend WAKE_LEVEL), and a quiet passage is still "playing".
-            // Only the visual targets (bands + spectrum) take the dynamics.
-            let bands = Bands {
-                bass: norm[0] * dyn_scale,
-                mid: norm[1] * dyn_scale,
-                high: norm[2] * dyn_scale,
-                level: (norm[0] * 0.5 + norm[1] * 0.35 + norm[2] * 0.15).clamp(0.0, 1.0),
-                spectrum: spectrum.map(|s| s * dyn_scale),
-            };
-            match latch.after_fft(bands_quiet(&bands)) {
-                LatchEmit::Bands => emit_bands(&app, bands),
-                LatchEmit::Zero => emit_bands(&app, Bands::default()),
-                LatchEmit::None => {}
+            if let Some(bands) = visual.after_fft(&scratch, *rate, rms) {
+                emit_bands(&app, bands);
             }
             std::thread::sleep(EMIT_INTERVAL);
         }
@@ -804,7 +851,8 @@ mod tests {
     fn silence_emits_one_zero_then_stops() {
         let mut latch = SilenceLatch::new();
         let mut saw = Vec::new();
-        for _ in 0..LATCH_AFTER_TICKS as usize + 5 {
+        // Include several periodic probes: silence must not re-emit zeros.
+        for _ in 0..LATCH_AFTER_TICKS as usize + 24 {
             saw.push(step(&mut latch, true, false));
         }
         let live = LATCH_AFTER_TICKS as usize - 1;
@@ -829,6 +877,96 @@ mod tests {
         assert!(latch.is_latched());
         assert_eq!(step(&mut latch, false, true), LatchEmit::Bands);
         assert!(!latch.is_latched());
+    }
+
+    /// A quiet intro can be audible and strong enough for the auto-gained
+    /// waveform while its raw RMS is below the latch's fast-wake threshold.
+    /// The live Spotify probe measured RMS around 0.00013; use a tone at that
+    /// amplitude to reconcile the raw gate with the real FFT input.
+    #[test]
+    fn quiet_intro_resumes_after_silence() {
+        assert_quiet_intro_resumes(false);
+    }
+
+    #[test]
+    fn quiet_intro_resumes_after_loud_song() {
+        assert_quiet_intro_resumes(true);
+    }
+
+    fn tone_fft(rms: f32) -> (Vec<Complex<f32>>, f32) {
+        let mut ring = Ring::new();
+        for i in 0..FFT_SIZE {
+            let t = i as f32 / 48_000.0;
+            ring.push_frame(rms * 2.0f32.sqrt() * (t * 440.0 * std::f32::consts::TAU).sin());
+        }
+        let measured_rms = ring.rms();
+        let mut fft = ring
+            .snapshot()
+            .into_iter()
+            .enumerate()
+            .map(|(i, sample)| {
+                let hann =
+                    0.5 * (1.0 - (std::f32::consts::TAU * i as f32 / (FFT_SIZE - 1) as f32).cos());
+                Complex::new(sample * hann, 0.0)
+            })
+            .collect::<Vec<_>>();
+        FftPlanner::<f32>::new()
+            .plan_fft_forward(FFT_SIZE)
+            .process(&mut fft);
+        (fft, measured_rms)
+    }
+
+    fn visual_tick(visual: &mut BandEnvelope, fft: &[Complex<f32>], rms: f32) -> Option<Bands> {
+        if !visual.latch.consider_wake(rms > RAW_WAKE) {
+            return None;
+        }
+        visual.after_fft(fft, 48_000.0, rms)
+    }
+
+    fn assert_quiet_intro_resumes(after_loud_song: bool) {
+        let mut visual = BandEnvelope::new();
+        let mut loud_height = None;
+        if after_loud_song {
+            let (loud, rms) = tone_fft(0.1);
+            for _ in 0..150 {
+                loud_height = visual_tick(&mut visual, &loud, rms).map(|b| b.mid);
+            }
+        }
+        let zero = vec![Complex::default(); FFT_SIZE];
+        let mut zero_emits = 0;
+        for _ in 0..160 {
+            let was_latched = visual.latch.is_latched();
+            let output = visual_tick(&mut visual, &zero, 0.0);
+            if was_latched {
+                assert!(output.is_none(), "silent probes must not emit");
+            } else if visual.latch.is_latched() {
+                assert_eq!(output.unwrap().level, 0.0);
+                zero_emits += 1;
+            }
+        }
+        assert!(visual.latch.is_latched());
+        assert_eq!(
+            zero_emits, 1,
+            "silence emits one terminating zero, even across probes"
+        );
+
+        let (quiet, rms) = tone_fft(0.00013);
+        assert!(rms > 0.0001 && rms < RAW_WAKE);
+        let mut wake = None;
+        assert!(
+            (0..8).any(|_| visual_tick(&mut visual, &quiet, rms).is_some_and(|b| {
+                wake = Some(b);
+                b.level > 0.02
+            })),
+            "quiet music must deliver a frontend wake payload within eight ticks"
+        );
+        assert!(!visual.latch.is_latched());
+        if let Some(loud_height) = loud_height {
+            assert!(
+                wake.unwrap().mid < loud_height,
+                "quiet music must still draw shorter bars"
+            );
+        }
     }
 
     #[test]

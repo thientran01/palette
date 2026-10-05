@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import type { MorphName } from "./icons/geometry";
 import { MorphIcon } from "./icons/MorphIcon";
-import { PlayerMenu } from "./PlayerMenu";
+import { LyricSyncStatus } from "./LyricSyncStatus";
 import { useKaraokePreference } from "./lib/karaokePreference";
 import { useBracketPulse } from "./icons/useBracketPulse";
 import {
@@ -977,10 +977,10 @@ function ExpandedView({
             the "content starts ~20px down then jumps up" bug). Carries the one
             living md waveform. Shown for lyrics + queue (headerShown holds
             across that swap, so it doesn't even fade); fades only for the
-            album view. pr-16 clears the shared corner controls. */}
+            album view. pr-8 clears the hover-revealed ViewToggle seat. */}
         <div
           inert={!headerShown}
-          className={`absolute inset-x-0 top-0 z-10 flex items-center gap-2.5 pr-16 ${layer(headerShown)}`}
+          className={`absolute inset-x-0 top-0 z-10 flex items-center gap-2.5 pr-8 ${layer(headerShown)}`}
         >
           <Art url={artUrl} size={44} radiusPx={6} />
           <div className="min-w-0 flex-1">
@@ -1238,12 +1238,12 @@ function ExpandedView({
           11a: the note seat is the ONLY lyrics entry — from the queue
           surface it EXITS to lyrics (or art when none are synced). */}
       <div
-        className="pointer-events-none absolute right-[37px] top-2 z-20 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-100"
+        className="pointer-events-none absolute right-[7px] top-9 z-20 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-100"
         onMouseDown={e => e.stopPropagation()}
       >
-        <PlayerMenu np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
+        <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
       </div>
-      {/* The view toggle remains an immediate action beside the menu. */}
+      {/* Keep the original sync seat below the view toggle on every surface. */}
       <ViewToggle
         glyph={
           queueOpen
