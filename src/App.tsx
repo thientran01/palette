@@ -364,8 +364,24 @@ const SHELL_SEAT: Record<DockCorner, string> = {
  * Search — the play-from-silence path — so a stranger with nothing playing
  * learns how to start. The resting middot is the ONE licensed ambient element
  * outside the separator's bars (CLAUDE.md Presence clause 2); its markup rides
- * along here unchanged. */
-function EmptyState({ mode, searchChord }: { mode: Mode; searchChord: string }) {
+ * along here unchanged.
+ *
+ * Expanded has 400px of room, so silence there is not an empty box (Thien,
+ * 2026-10-05: "you should be able to view your queue and stuff still"): the
+ * resting row moves to the top as a header and the queue surface fills the
+ * body — up next to rearrange, recently played to start something again.
+ * The bottom padding keeps the list clear of the corner chrome's band (the
+ * 28px cluster on the 25px control centerline). */
+function EmptyState({
+  mode,
+  searchChord,
+  queue,
+}: {
+  mode: Mode;
+  searchChord: string;
+  /** The queue panel, shown under the resting header in expanded only. */
+  queue: React.ReactNode;
+}) {
   const restingRow = (
     <div className="flex items-center justify-center gap-1 text-muted">
       <MorphIcon name="note" size={22} />
@@ -375,17 +391,44 @@ function EmptyState({ mode, searchChord }: { mode: Mode; searchChord: string }) 
       </span>
     </div>
   );
-  // Pill stays calm; also fall back to the lone row until the chord table seeds
-  // (empty chord → no honest keycaps to show).
-  if (mode === "pill" || !searchChord) {
+  const nudge = searchChord ? (
+    <p className="flex items-center gap-1.5 text-[12px] text-muted/85">
+      Press <Keycaps chord={searchChord} size="sm" /> to play something
+    </p>
+  ) : null;
+  if (mode === "expanded") {
+    return (
+      <div className="flex h-full w-full flex-col px-3 pb-9 pt-4">
+        <div className="flex shrink-0 flex-col items-center gap-2 pb-3">
+          {restingRow}
+          {nudge}
+        </div>
+        {/* -mx-2 cancels the rows'/labels' px-2 so thumbs sit on the px-3
+            content line, like the playing expanded queue surface. */}
+        <div
+          className="-mx-2 flex min-h-0 flex-1 flex-col"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {queue}
+        </div>
+      </div>
+    );
+  }
+  // The pill seats the row on the art's left line like the playing pill: the
+  // bracket cluster now reveals on its right edge, and centered the row ran
+  // under it.
+  if (mode === "pill") {
+    return <div className="flex h-full w-full items-center pl-3">{restingRow}</div>;
+  }
+  // Fall back to the lone row until the chord table seeds (empty chord → no
+  // honest keycaps to show).
+  if (!nudge) {
     return <div className="flex h-full w-full items-center justify-center">{restingRow}</div>;
   }
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-2">
       {restingRow}
-      <p className="flex items-center gap-1.5 text-[12px] text-muted/85">
-        Press <Keycaps chord={searchChord} size="sm" /> to play something
-      </p>
+      {nudge}
     </div>
   );
 }
@@ -1518,12 +1561,10 @@ function App() {
   // The queue UI (11a): ONE open/closed bit; the garment follows the mode
   // (popover over pill/card, content surface inside expanded), so state is
   // shared across the ladder and never reset by resizing — the continuity
-  // rule for free. Closed when no session (the cluster that opens it is
-  // hidden then too).
+  // rule for free. It survives a session ending too: the queue is still
+  // reachable with nothing playing (card's queue seat, expanded's resting
+  // surface), so a vanishing Apple Music session must not yank it shut.
   const [queueOpen, setQueueOpen] = useState(false);
-  useEffect(() => {
-    if (nothing) setQueueOpen(false);
-  }, [nothing]);
   const spotify = useSpotifyStatus();
   const spotifyConnected = spotify.connected;
   // The device Spotify is playing on when it isn't this PC (phone/speaker/…) —
@@ -1736,7 +1777,10 @@ function App() {
   // The popover extends the interactive footprint past the mode box — the
   // hit rect must union it while open or its clicks fall through to the
   // desktop (the worst failure class in this app).
-  const popoverVisible = queueOpen && mode !== "expanded" && !nothing;
+  // The idle pill has no queue seat (its scrim is the playing pill's), so a
+  // bit carried down the ladder from card must not float a popover with no
+  // control to close it.
+  const popoverVisible = queueOpen && mode !== "expanded" && !(nothing && mode === "pill");
   // ONE QueuePanel per mode: inside expanded the peer layer owns the
   // garment, so the popover's PANEL unmounts there (two resident panels
   // doubled the upnext/history subscriptions and every render fan-out).
@@ -1983,7 +2027,15 @@ function App() {
         <motion.div key={mode} {...morph} className="absolute inset-0">
         <ModeContent mode={mode} corner={corner}>
         {nothing ? (
-          <EmptyState mode={mode} searchChord={searchChord} />
+          <EmptyState
+            mode={mode}
+            searchChord={searchChord}
+            queue={
+              mode === "expanded" && (
+                <QueuePanel np={np} connected={spotifyConnected} open />
+              )
+            }
+          />
         ) : mode === "pill" ? (
           /* "5a — time at rest" (ANIMATIONS.md §3): at rest the pill is pure
              glance — art · title · artist · elapsed time, no buttons. On widget
@@ -2174,14 +2226,20 @@ function App() {
           and every mode of the fixed-size window. See ModeCluster/QueueSeat.
           The queue seat skips the pill (its queue toggle rides the hover
           scrim instead — the pill's bottom-left corner is the album art). */}
-      {!nothing && (
-        <>
-          {mode !== "pill" && (
-            <QueueSeat queueOpen={queueOpen} onToggle={() => setQueueOpen((o) => !o)} />
-          )}
-          <ModeCluster mode={mode} onStep={stepMode} queueOpen={queueOpen} />
-        </>
+      {/* Rendered with nothing playing too — the mode ladder and the queue
+          stay reachable in silence (Thien, 2026-10-05). The idle expanded
+          view shows the queue as its body, so it has no toggle to offer. */}
+      {(mode === "card" || (mode === "expanded" && !nothing)) && (
+        <QueueSeat queueOpen={queueOpen} onToggle={() => setQueueOpen((o) => !o)} />
       )}
+      <ModeCluster
+        mode={mode}
+        onStep={stepMode}
+        // Pins only while a toggle-opened queue is up: an idle pill shows no
+        // popover, and the idle expanded queue is the resting body, not an
+        // open overlay.
+        queueOpen={queueOpen && (!nothing || mode === "card")}
+      />
       </div>
       {/* The 11a queue popover — the pill/card garment, floating ABOVE the
           shell inside the never-resizing window (never inside it: the shell
@@ -2200,29 +2258,27 @@ function App() {
           window (prototype frame was 520): pill 330, card 290. While open,
           the hit rect unions this box's MEASURED height (the footprint
           effect above holds the ref — content-sized, not the cap). */}
-      {!nothing && (
-        <div
-          ref={popoverRef}
-          inert={!popoverVisible}
-          onMouseDown={(e) => e.stopPropagation()}
-          className={`absolute z-30 flex flex-col rounded-xl border border-border/10 bg-surface p-1.5 shadow-xl shadow-black/40 ${
-            corner.endsWith("right") ? "right-1.5" : "left-1.5"
-          } ${
-            popoverVisible
-              ? "visible opacity-100 [transition:opacity_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),max-height_200ms_var(--ease-in-out-tk)]"
-              : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),max-height_200ms_var(--ease-in-out-tk),visibility_0s_140ms]"
-          }`}
-          style={{
-            width: POPOVER_W,
-            maxHeight: Math.min(330, WINDOW_MAX[1] - MODE_SIZES[mode][1] - POPOVER_GAP),
-            ...(corner.startsWith("bottom")
-              ? { bottom: MODE_SIZES[mode][1] - SHELL_GUTTER_PX + 6 + POPOVER_GAP }
-              : { top: MODE_SIZES[mode][1] - SHELL_GUTTER_PX + 6 + POPOVER_GAP }),
-          }}
-        >
-          {popMounted && <QueuePanel np={np} connected={spotifyConnected} open={popoverVisible} />}
-        </div>
-      )}
+      <div
+        ref={popoverRef}
+        inert={!popoverVisible}
+        onMouseDown={(e) => e.stopPropagation()}
+        className={`absolute z-30 flex flex-col rounded-xl border border-border/10 bg-surface p-1.5 shadow-xl shadow-black/40 ${
+          corner.endsWith("right") ? "right-1.5" : "left-1.5"
+        } ${
+          popoverVisible
+            ? "visible opacity-100 [transition:opacity_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),max-height_200ms_var(--ease-in-out-tk)]"
+            : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),max-height_200ms_var(--ease-in-out-tk),visibility_0s_140ms]"
+        }`}
+        style={{
+          width: POPOVER_W,
+          maxHeight: Math.min(330, WINDOW_MAX[1] - MODE_SIZES[mode][1] - POPOVER_GAP),
+          ...(corner.startsWith("bottom")
+            ? { bottom: MODE_SIZES[mode][1] - SHELL_GUTTER_PX + 6 + POPOVER_GAP }
+            : { top: MODE_SIZES[mode][1] - SHELL_GUTTER_PX + 6 + POPOVER_GAP }),
+        }}
+      >
+        {popMounted && <QueuePanel np={np} connected={spotifyConnected} open={popoverVisible} />}
+      </div>
       {/* Dismiss scrim — full-window while a transient overlay is open. Its
           stopPropagation is what stops the dismissing click from ALSO starting
           a native window drag (the root's onMouseDown), and its click closes
