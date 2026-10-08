@@ -8,6 +8,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-10-08
+
 ### Added
 
 - "Restart Palette" in the tray menu, for when the window gets stuck (for example, painting black) and needs a fresh start.
