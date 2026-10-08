@@ -109,12 +109,10 @@ fn list(root: &Path) -> Result<Vec<SavedSync>, String> {
         }
     }
     let mut found: BTreeMap<String, u64> = BTreeMap::new();
-    for dir in [
-        "karaoke",
-        crate::vocal_preview::OLDER_CACHE_DIR,
-        crate::vocal_preview::PREVIOUS_CACHE_DIR,
-        crate::vocal_preview::CACHE_DIR,
-    ] {
+    for dir in std::iter::once("karaoke")
+        .chain(crate::vocal_preview::EARLIER_CACHE_DIRS)
+        .chain([crate::vocal_preview::CACHE_DIR])
+    {
         let Ok(files) = std::fs::read_dir(root.join(dir)) else {
             continue;
         };

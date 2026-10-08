@@ -6,6 +6,7 @@ use crate::acoustic;
 use crate::align::{self, TimeMap, Word};
 use crate::lyrics;
 use crate::media::NowPlaying;
+use crate::separation::Stereo;
 use crate::settings::{self, write_atomic};
 use crate::spotify;
 use serde::{Deserialize, Serialize};
@@ -143,7 +144,7 @@ pub async fn active_syncs() -> Vec<ActiveSync> {
 }
 
 const CACHE_MAX_FILES: usize = 500;
-const TARGET_HZ: u32 = 16_000;
+pub(crate) const TARGET_HZ: u32 = 16_000;
 const MAX_SAMPLES: usize = 16_000 * 60 * 8;
 const ARM_NEAR_START_MS: i64 = 8_000;
 const PEAK_ABORT: f32 = 1e-3;
@@ -216,6 +217,9 @@ struct Rec {
     acc: f32,
     n: u32,
     samples: Vec<f32>,
+    /// Interleaved stereo at `rate_in`, kept only for the vocal trial's
+    /// separator. Dropped (not the recording) if a packet arrives without it.
+    stereo: Option<Vec<i16>>,
     peak: f32,
     /// Wall clock at the first delivered block + input frames received
     /// since: the pair that detects a delivery gap (see GAP_ABORT_MS).
@@ -379,10 +383,7 @@ fn load_cached(dir: &Path, key: &str, synced: Option<&str>, preview_enabled: boo
                 sync_state(key, "saved", "Experimental vocal timing is ready.");
                 return preview;
             }
-            for dir in [
-                crate::vocal_preview::PREVIOUS_CACHE_DIR,
-                crate::vocal_preview::OLDER_CACHE_DIR,
-            ] {
+            for dir in crate::vocal_preview::EARLIER_CACHE_DIRS {
                 let previous =
                     read_file_preserving(&parent.join(dir).join(format!("{key}.json")), synced);
                 if !previous.is_empty() {
@@ -675,6 +676,7 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         acc: 0.0,
         n: 0,
         samples: Vec::with_capacity(TARGET_HZ as usize * 240),
+        stereo: crate::vocal_preview::enabled().then(Vec::new),
         peak: 0.0,
         started: None,
         received: 0,
@@ -703,11 +705,12 @@ pub fn on_capture_stop(app: &AppHandle) {
     }
 }
 
-/// Feed one capture block of mono frames. Called from the audio thread;
-/// one lock per block (a packet is ~10–20ms of audio), never per sample —
-/// the per-sample version took the mutex 48k times a second on the
+/// Feed one capture block of mono frames, plus the same block as
+/// interleaved stereo when the capture path has it. Called from the audio
+/// thread; one lock per block (a packet is ~10–20ms of audio), never per
+/// sample — the per-sample version took the mutex 48k times a second on the
 /// realtime thread.
-pub fn push_frames(frames: &[f32], sample_rate: u32) {
+pub fn push_frames(frames: &[f32], stereo: Option<&[f32]>, sample_rate: u32) {
     if frames.is_empty() || sample_rate == 0 || !RECORDING.load(Ordering::Relaxed) {
         return;
     }
@@ -759,7 +762,23 @@ pub fn push_frames(frames: &[f32], sample_rate: u32) {
             return;
         }
     }
+    push_stereo(&mut rec.stereo, stereo, frames.len());
     rec.received += frames.len() as u64;
+}
+
+/// Keep the trial's stereo frame-for-frame with the mono recording; a block
+/// without matching stereo ends stereo for this recording (mono separation
+/// still works), so the two never drift apart.
+fn push_stereo(kept: &mut Option<Vec<i16>>, block: Option<&[f32]>, frames: usize) {
+    let Some(buf) = kept.as_mut() else {
+        return;
+    };
+    match block {
+        Some(block) if block.len() == frames * 2 => {
+            buf.extend(block.iter().map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16))
+        }
+        _ => *kept = None,
+    }
 }
 
 // Writing opt-in diagnostic PCM must not contend with model inference.
@@ -939,6 +958,11 @@ fn write_dump(
         pcm.extend_from_slice(&v.to_le_bytes());
     }
     write_atomic(&dir.join("pcm.i16"), &pcm)?;
+    // Vocal trial only: lets the separator be replayed offline at `rate_in`.
+    if let Some(stereo) = &rec.stereo {
+        let bytes: Vec<u8> = stereo.iter().flat_map(|s| s.to_le_bytes()).collect();
+        write_atomic(&dir.join("stereo.i16"), &bytes)?;
+    }
     write_atomic(&dir.join("lyrics.lrc"), lrc.as_bytes())?;
     let to_io = |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let words_json = serde_json::to_vec(&StoreFile {
@@ -1082,8 +1106,17 @@ fn commit_recording(
             .map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
             .collect();
         let started = Instant::now();
-        let result =
-            crate::acoustic_worker::align(pcm, lines.clone(), map.clone(), dir.to_path_buf());
+        let stereo = rec.stereo.clone().map(|interleaved| Stereo {
+            interleaved,
+            rate: rec.rate_in,
+        });
+        let result = crate::acoustic_worker::align(
+            pcm,
+            stereo,
+            lines.clone(),
+            map.clone(),
+            dir.to_path_buf(),
+        );
         match result {
             Ok(words) => {
                 log::info!(
@@ -1298,6 +1331,7 @@ mod tests {
                 .iter()
                 .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32767.0)
                 .collect(),
+            stereo: None,
             peak: 1.0,
             started: None,
             received: raw.len() as u64 / 2,
@@ -1565,12 +1599,10 @@ mod tests {
             std::env::temp_dir().join(format!("palette-source-cache-{}", std::process::id()));
         let baseline = root.join("karaoke");
         let source = "[00:01.00]one";
-        let dirs = [
-            crate::vocal_preview::CACHE_DIR,
-            crate::vocal_preview::PREVIOUS_CACHE_DIR,
-            crate::vocal_preview::OLDER_CACHE_DIR,
-            "karaoke",
-        ];
+        let dirs: Vec<&str> = std::iter::once(crate::vocal_preview::CACHE_DIR)
+            .chain(crate::vocal_preview::EARLIER_CACHE_DIRS)
+            .chain(["karaoke"])
+            .collect();
         for (i, dir) in dirs.iter().enumerate() {
             write_file(
                 &root.join(dir),
@@ -1586,7 +1618,7 @@ mod tests {
         }
         assert_eq!(
             load_cached(&baseline, "song", Some(source), false)[0].t,
-            1300
+            1000 + (dirs.len() as i64 - 1) * 100
         );
         for (i, dir) in dirs.iter().enumerate() {
             assert_eq!(
@@ -1630,7 +1662,7 @@ mod tests {
         );
         std::fs::write(preview.join("song.json"), b"invalid").unwrap();
         assert_eq!(load_cached(&baseline, "song", Some(source), true), original);
-        let previous_dir = root.join(crate::vocal_preview::PREVIOUS_CACHE_DIR);
+        let previous_dir = root.join(crate::vocal_preview::EARLIER_CACHE_DIRS[0]);
         write_file(&previous_dir, "song", source, &experimental).unwrap();
         let old_bytes = std::fs::read(previous_dir.join("song.json")).unwrap();
         assert_eq!(
@@ -1766,6 +1798,7 @@ mod tests {
             acc: 0.0,
             n: 0,
             samples: Vec::new(),
+            stereo: None,
             peak: 0.0,
             started: None,
             // 10s of input frames received; pairs below are stamped "now".
@@ -1774,6 +1807,36 @@ mod tests {
             last_anchor_at: 0,
             seek_strikes: 0,
         }
+    }
+
+    #[test]
+    fn trial_stereo_stays_frame_aligned_or_is_dropped() {
+        let mut kept = Some(Vec::new());
+        push_stereo(&mut kept, Some(&[0.5, -0.5, 2.0, -2.0]), 2);
+        assert_eq!(kept.as_deref(), Some(&[16383, -16383, 32767, -32767][..]));
+        // A block with the wrong frame count would shift later audio.
+        push_stereo(&mut kept, Some(&[0.0; 3]), 2);
+        assert!(kept.is_none());
+        let mut kept = Some(Vec::new());
+        push_stereo(&mut kept, None, 4);
+        assert!(kept.is_none());
+        push_stereo(&mut kept, Some(&[0.0; 2]), 1);
+        assert!(kept.is_none(), "stereo never restarts mid-recording");
+    }
+
+    #[test]
+    fn separated_vocals_share_the_recorder_grid() {
+        let input: Vec<f32> = (0..48_123)
+            .map(|i| ((i * 7919) % 2001) as f32 / 2000.0 - 0.5)
+            .collect();
+        let mut rec = rec_with(vec![], 180_000);
+        for &s in &input {
+            assert!(rec.push(s));
+        }
+        assert_eq!(
+            crate::separation::to_target_grid(&input, rec.rate_in, TARGET_HZ),
+            rec.samples
+        );
     }
 
     #[test]
