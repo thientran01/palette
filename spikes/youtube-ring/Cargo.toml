@@ -1,0 +1,23 @@
+[package]
+name = "youtube-ring"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+tao = "0.35.3"
+wry = "0.55.1"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+] }
+
+# Standalone crate — keep out of any parent workspace (smtc-spike precedent).
+[workspace]
