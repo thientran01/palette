@@ -29,15 +29,27 @@ const MATCH_FLOOR: f64 = 0.05;
 /// honors one Retry-After on top.
 const RESOLVE_GAP: Duration = Duration::from_millis(120);
 
-/// discovery_picks fan: at most 2 seed tracks, ≤2 resolved picks each, and —
-/// because a candidate that MISSES on Spotify still costs a search + gap —
-/// at most TRIES_PER_SEED resolve attempts per seed. Worst case is a bounded
-/// 2×5 = 10 gapped Spotify calls (quick-review catch: the earlier "≤4"
-/// claim only counted successes; a miss-heavy seed walked all FETCH_LIMIT
-/// candidates). A hard Last.fm error on any seed breaks the whole walk.
-const SEED_CAP: usize = 2;
+/// discovery_picks fan: up to SEED_CAP seed tracks, walked only until
+/// PICK_TARGET picks land, ≤2 resolved picks per seed, and — because a
+/// candidate that MISSES on Spotify still costs a search + gap — at most
+/// TRIES_PER_SEED resolve attempts per seed and TRIES_TOTAL overall. Worst
+/// case stays a bounded 10 gapped Spotify calls (quick-review catch: the
+/// earlier "≤4" claim only counted successes; a miss-heavy seed walked every
+/// candidate). A hard Last.fm error on any seed breaks the whole walk.
+///
+/// Discovery asks Last.fm for a longer list than more-like-this, and walks
+/// more seeds: seeds are the user's most-played tracks, whose neighborhoods
+/// are exactly the ones they already know, so as history grows the played
+/// exclusion can eat all 15 similars of both seeds and leave the section
+/// silently empty (the suspected cause of an empty "Something different",
+/// 2026-10-20). Extra seeds only cost a Last.fm call each, and only when the
+/// earlier seeds came up short.
+const DISCOVERY_FETCH_LIMIT: u32 = 50;
+const SEED_CAP: usize = 4;
+const PICK_TARGET: usize = 3;
 const PER_SEED: usize = 2;
 const TRIES_PER_SEED: usize = 5;
+const TRIES_TOTAL: usize = 10;
 
 /// One run at a time (the enrich_in_flight shape) — a double click must not
 /// race two fills into the same list.
@@ -164,7 +176,7 @@ fn fill(app: &AppHandle, title: &str, artist: &str) -> String {
  * tracks instead of appending to up-next — the empty state renders them as
  * playable rows, seeded from what the user actually listens to.
  *
- * The frontend passes 1–2 seeds (rotated by its day-block) and the normalized
+ * The frontend passes 1–4 seeds (rotated by its day-block) and the normalized
  * keys of everything already in the history pool, so "different" means
  * genuinely un-played. Excluding BEFORE resolving means a dead candidate never
  * costs a Spotify search.
@@ -226,9 +238,12 @@ fn run_discovery(app: &AppHandle, seeds: Vec<Seed>, exclude: Vec<String>) -> Dis
 }
 
 fn discover(app: &AppHandle, seeds: Vec<Seed>, exclude: Vec<String>) -> DiscoveryResult {
-    let empty = |status: &str| DiscoveryResult {
-        status: status.into(),
-        picks: Vec::new(),
+    let empty = |status: &str| {
+        log::info!("discovery: {status}");
+        DiscoveryResult {
+            status: status.into(),
+            picks: Vec::new(),
+        }
     };
     if !spotify::connected(app) {
         return empty("disconnected");
@@ -247,29 +262,45 @@ fn discover(app: &AppHandle, seeds: Vec<Seed>, exclude: Vec<String>) -> Discover
     // A hard verdict (rejected key / unreachable) is worth reporting only when
     // nothing resolved; a merely dry seed is not an error.
     let mut hard_err: Option<&'static str> = None;
+    let mut tries_total = 0usize;
+    // Per-seed "similars/excluded/tried/picked" for the outcome log line. The
+    // UI hides a failed section silently, so the log is the only place a
+    // dry or failing walk is visible.
+    let mut trace: Vec<String> = Vec::new();
 
     for seed in seeds.iter().take(SEED_CAP) {
-        let similars = match lastfm::get_similar(&key, &seed.title, &seed.artist, FETCH_LIMIT) {
-            Ok(v) => v,
-            Err(e) => {
-                // bad_key is terminal for every seed (same key); offline breaks
-                // too, so a second seed can't spend another 15s timeout.
-                if e == "bad_key" || e == "offline" {
-                    hard_err = Some(e);
-                    break;
+        if picks.len() >= PICK_TARGET || tries_total >= TRIES_TOTAL {
+            break;
+        }
+        let similars =
+            match lastfm::get_similar(&key, &seed.title, &seed.artist, DISCOVERY_FETCH_LIMIT) {
+                Ok(v) => v,
+                Err(e) => {
+                    trace.push(e.to_string());
+                    // bad_key is terminal for every seed (same key); offline breaks
+                    // too, so a second seed can't spend another 15s timeout.
+                    if e == "bad_key" || e == "offline" {
+                        hard_err = Some(e);
+                        break;
+                    }
+                    continue; // "no_data" for this seed — try the next
                 }
-                continue; // "no_data" for this seed — try the next
-            }
-        };
+            };
         let mut from_seed = 0usize;
         let mut tried = 0usize;
+        let mut excluded = 0usize;
         for c in ordered(&seed.artist, &similars) {
-            if from_seed >= PER_SEED || tried >= TRIES_PER_SEED {
+            if from_seed >= PER_SEED
+                || tried >= TRIES_PER_SEED
+                || tries_total >= TRIES_TOTAL
+                || picks.len() >= PICK_TARGET
+            {
                 break;
             }
             // Exclusion/dedupe checks are free — only a real resolve attempt
-            // (a Spotify search + gap) counts against TRIES_PER_SEED.
+            // (a Spotify search + gap) counts against the try budgets.
             if excl.contains(&norm_key(&c.artist, &c.title)) {
+                excluded += 1;
                 continue;
             }
             let ca = c.artist.trim().to_lowercase();
@@ -277,6 +308,7 @@ fn discover(app: &AppHandle, seeds: Vec<Seed>, exclude: Vec<String>) -> Discover
                 continue;
             }
             tried += 1;
+            tries_total += 1;
             if resolved_any {
                 std::thread::sleep(RESOLVE_GAP);
             }
@@ -297,6 +329,7 @@ fn discover(app: &AppHandle, seeds: Vec<Seed>, exclude: Vec<String>) -> Discover
             });
             from_seed += 1;
         }
+        trace.push(format!("{}/{excluded}/{tried}/{from_seed}", similars.len()));
     }
 
     let status = if !picks.is_empty() {
@@ -304,6 +337,11 @@ fn discover(app: &AppHandle, seeds: Vec<Seed>, exclude: Vec<String>) -> Discover
     } else {
         hard_err.unwrap_or("no_data")
     };
+    log::info!(
+        "discovery: {status}, {} picks; per seed similars/excluded/tried/picked: [{}]",
+        picks.len(),
+        trace.join(", ")
+    );
     DiscoveryResult {
         status: status.into(),
         picks,
