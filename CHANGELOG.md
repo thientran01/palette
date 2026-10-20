@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Fixed
+
+- Search's "Something different" section no longer goes empty for long listening histories. It now looks further down Last.fm's similar-tracks list and tries more of your songs before giving up, and Palette's log records why the section came up empty.
+
 ## [1.0.7] - 2026-10-08
 
 ### Added
