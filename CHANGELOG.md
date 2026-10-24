@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Fixed
+
+- Long track titles in the pill now end in an ellipsis before the waveform instead of running into it.
+
 ## [1.0.9] - 2026-10-24
 
 ### Fixed
