@@ -41,9 +41,10 @@ const RESOLVE_GAP: Duration = Duration::from_millis(120);
 /// more seeds: seeds are the user's most-played tracks, whose neighborhoods
 /// are exactly the ones they already know, so as history grows the played
 /// exclusion can eat all 15 similars of both seeds and leave the section
-/// silently empty (the suspected cause of an empty "Something different",
-/// 2026-10-20). Extra seeds only cost a Last.fm call each, and only when the
-/// earlier seeds came up short.
+/// silently empty. Extra seeds only cost Last.fm calls, and only when the
+/// earlier seeds came up short. (The empty section Thien hit in Oct 2026 was
+/// a different cause: track.getSimilar returning nothing at all, which
+/// lastfm::similar_or_artist_fallback covers.)
 const DISCOVERY_FETCH_LIMIT: u32 = 50;
 const SEED_CAP: usize = 4;
 const PICK_TARGET: usize = 3;
@@ -125,7 +126,7 @@ fn fill(app: &AppHandle, title: &str, artist: &str) -> String {
     let Some(key) = settings::get_string(app, "lastfm_api_key").filter(|k| !k.is_empty()) else {
         return "no_key".into();
     };
-    let similars = match lastfm::get_similar(&key, title, artist, FETCH_LIMIT) {
+    let similars = match lastfm::similar_or_artist_fallback(&key, title, artist, FETCH_LIMIT) {
         Ok(v) => v,
         Err(e) => return e.into(),
     };
@@ -272,20 +273,24 @@ fn discover(app: &AppHandle, seeds: Vec<Seed>, exclude: Vec<String>) -> Discover
         if picks.len() >= PICK_TARGET || tries_total >= TRIES_TOTAL {
             break;
         }
-        let similars =
-            match lastfm::get_similar(&key, &seed.title, &seed.artist, DISCOVERY_FETCH_LIMIT) {
-                Ok(v) => v,
-                Err(e) => {
-                    trace.push(e.to_string());
-                    // bad_key is terminal for every seed (same key); offline breaks
-                    // too, so a second seed can't spend another 15s timeout.
-                    if e == "bad_key" || e == "offline" {
-                        hard_err = Some(e);
-                        break;
-                    }
-                    continue; // "no_data" for this seed — try the next
+        let similars = match lastfm::similar_or_artist_fallback(
+            &key,
+            &seed.title,
+            &seed.artist,
+            DISCOVERY_FETCH_LIMIT,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                trace.push(e.to_string());
+                // bad_key is terminal for every seed (same key); offline breaks
+                // too, so a second seed can't spend another 15s timeout.
+                if e == "bad_key" || e == "offline" {
+                    hard_err = Some(e);
+                    break;
                 }
-            };
+                continue; // "no_data" for this seed — try the next
+            }
+        };
         let mut from_seed = 0usize;
         let mut tried = 0usize;
         let mut excluded = 0usize;

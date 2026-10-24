@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Fixed
+
+- Search's "Something different" and the queue's more-like-this work again. Last.fm stopped returning similar tracks, so Palette now falls back to similar artists and suggests their top tracks.
+
 ## [1.0.8] - 2026-10-20
 
 ### Fixed
