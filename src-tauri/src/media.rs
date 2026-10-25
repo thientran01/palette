@@ -77,13 +77,27 @@ pub struct ArtCache(pub Mutex<Option<ArtState>>);
 /// apply_art_read) and stop the re-reads early.
 const ART_PROBE_WINDOW_MS: i64 = 10_000;
 
+/// Re-read schedule for a MISSING cover once the probe window has closed.
+/// A thumbnail that never read inside the window (Spotify still fetching the
+/// image, a stream read that timed out) used to stay blank for the whole
+/// track. Entry n is the wait after the n-th failed read; the backoff gives
+/// up ~2 minutes past the window so a player whose thumbnail is broken for
+/// good stops costing reads.
+const ART_RETRY_BACKOFF_MS: [i64; 6] = [2_000, 4_000, 8_000, 16_000, 32_000, 60_000];
+
+/// Per-track ceiling on failed re-reads of a missing cover, backoff and
+/// wake-triggered (art_rearm) together. Each failed read can hold the media
+/// loop for up to ART_TIMEOUT_MS, so a source that spams property-change
+/// wakes over a broken thumbnail must not buy unbounded reads.
+const ART_MAX_MISSES: u8 = 12;
+
 pub enum ArtState {
     /// Key claimed by a metadata-first snapshot; no read has finished yet.
     /// The emitted art_id is None until the media loop's art_pump runs the
     /// deferred first read.
     Pending { key: String, first_seen_ms: i64 },
-    /// At least one read finished. url None = the read failed — cached too,
-    /// so a bad thumbnail isn't retried outside the probe window.
+    /// At least one read finished. url None = the read failed — cached too;
+    /// outside the probe window it is re-read only on the retry backoff.
     Cached {
         key: String,
         /// Bumped when probing catches the thumbnail bytes changing under
@@ -97,6 +111,12 @@ pub enum ArtState {
         /// True once a probe read confirmed the bytes unchanged — probing
         /// stops early instead of running out the window.
         settled: bool,
+        /// Missing cover only (url None): when the next re-read is due once
+        /// the probe window has closed. None = not missing, or retries spent.
+        retry_at_ms: Option<i64>,
+        /// Failed reads of a missing cover after the window. Indexes
+        /// ART_RETRY_BACKOFF_MS and is capped by ART_MAX_MISSES.
+        misses: u8,
     },
 }
 
@@ -104,6 +124,25 @@ impl ArtState {
     fn key(&self) -> &str {
         match self {
             ArtState::Pending { key, .. } | ArtState::Cached { key, .. } => key,
+        }
+    }
+
+    /// True while the media loop owes this entry a read: a Pending first
+    /// read (regardless of age — see art_probing), an unsettled entry inside
+    /// the probe window, or a missing cover whose retry has come due. The ONE
+    /// rule shared by art_pump's sampling and art_probing's beat forcing.
+    fn read_due(&self, now: i64) -> bool {
+        match self {
+            ArtState::Pending { .. } => true,
+            ArtState::Cached {
+                settled,
+                first_seen_ms,
+                retry_at_ms,
+                ..
+            } => {
+                (!settled && now - first_seen_ms < ART_PROBE_WINDOW_MS)
+                    || retry_at_ms.is_some_and(|t| now >= t)
+            }
         }
     }
 
@@ -828,9 +867,24 @@ pub fn snapshot(art_cache: &ArtCache) -> NowPlaying {
             }
         }
     } else {
+        release_other_key(
+            &mut lock_art(art_cache),
+            &ident_key(&np.app_id, &np.title, &np.artist),
+        );
         None
     };
     np
+}
+
+/// A track with no thumbnail claims nothing, so a previous track's entry
+/// would linger — and art_probing can't tell whose key is due, so that
+/// entry's Pending read or missing-cover retry would force a full snapshot
+/// every beat for as long as the art-less track plays. Drop it. The same
+/// key is kept: its thumbnail may only be briefly detached.
+fn release_other_key(slot: &mut Option<ArtState>, key: &str) {
+    if slot.as_ref().is_some_and(|s| s.key() != key) {
+        *slot = None;
+    }
 }
 
 /// A finished thumbnail read, reduced to what the cache stores.
@@ -850,18 +904,20 @@ enum ArtSample {
 }
 
 /// Pure state transition for a completed art read (read None = the read
-/// failed). Returns true when the emitted art_id changed, i.e. the caller
-/// owes the frontend a follow-up emit.
+/// failed) finishing at `now`. Returns true when the emitted art_id changed,
+/// i.e. the caller owes the frontend a follow-up emit.
 fn apply_art_read(
     slot: &mut Option<ArtState>,
     key: &str,
     sampled: ArtSample,
     read: Option<ArtRead>,
+    now: i64,
 ) -> bool {
     match (slot.as_mut(), sampled) {
         // Deferred first read: Pending → Cached at rev 0. A failed read is
         // cached too (url None, art_id stays None — nothing to emit); probe
-        // re-reads inside the window get to upgrade it.
+        // re-reads inside the window, then the retry backoff, get to
+        // upgrade it.
         (
             Some(ArtState::Pending {
                 key: k,
@@ -882,6 +938,8 @@ fn apply_art_read(
                 fingerprint,
                 first_seen_ms,
                 settled: false,
+                retry_at_ms: (!present).then_some(now + ART_RETRY_BACKOFF_MS[0]),
+                misses: 0,
             });
             present
         }
@@ -892,7 +950,9 @@ fn apply_art_read(
                 url,
                 fingerprint,
                 settled,
-                ..
+                first_seen_ms,
+                retry_at_ms,
+                misses,
             }),
             ArtSample::Probe {
                 rev: sampled_rev,
@@ -901,8 +961,19 @@ fn apply_art_read(
         ) if k == key && *rev == sampled_rev => {
             match read {
                 // Failed probe read = no information — keep the cached entry
-                // (don't drop a good image on a transient failure), keep probing.
-                None => false,
+                // (don't drop a good image on a transient failure), keep
+                // probing. A cover still missing past the window backs off
+                // instead of re-reading every beat, and eventually stops.
+                None => {
+                    if url.is_none() && now - *first_seen_ms >= ART_PROBE_WINDOW_MS {
+                        *misses = misses.saturating_add(1);
+                        *retry_at_ms = ART_RETRY_BACKOFF_MS
+                            .get(*misses as usize)
+                            .filter(|_| *misses < ART_MAX_MISSES)
+                            .map(|wait| now + wait);
+                    }
+                    false
+                }
                 // Two consecutive reads with identical bytes: settled, at any
                 // rev — a correct first read stops after this confirming read
                 // instead of running out the 10s window.
@@ -921,6 +992,7 @@ fn apply_art_read(
                     *url = Some(r.url);
                     *fingerprint = Some(r.fingerprint);
                     *settled = false;
+                    *retry_at_ms = None;
                     true
                 }
             }
@@ -931,10 +1003,10 @@ fn apply_art_read(
     }
 }
 
-/// Media-loop art pump: runs the deferred first read for a Pending key and
-/// the distrust-window probe re-reads, entirely off the emit path. Called
-/// right after emit_now with the payload it returned (`now` names the key
-/// the read is for). Returns true when the cached art_id changed — the
+/// Media-loop art pump: runs the deferred first read for a Pending key, the
+/// distrust-window probe re-reads, and the backoff re-reads of a missing
+/// cover, entirely off the emit path. Called right after emit_now with the
+/// payload it returned (`now` names the key the read is for). Returns true when the cached art_id changed — the
 /// caller re-emits so the frontend gets the same payload with art_id set.
 ///
 /// Runs ONLY on the media loop thread, right after the emit: single-flight
@@ -951,22 +1023,15 @@ pub fn art_pump(cache: &ArtCache, now: &NowPlaying) -> bool {
     let sampled = {
         let slot = lock_art(cache);
         match slot.as_ref() {
-            // A Pending first read runs regardless of window age (a key
-            // claimed while the loop was hidden must still get its art).
-            Some(ArtState::Pending { key: k, .. }) if *k == key => Some(ArtSample::Pending),
-            Some(ArtState::Cached {
-                key: k,
-                rev,
-                fingerprint,
-                first_seen_ms,
-                settled,
-                ..
-            }) if *k == key && !settled && now_ms() - first_seen_ms < ART_PROBE_WINDOW_MS => {
-                Some(ArtSample::Probe {
+            Some(s) if s.key() == key && s.read_due(now_ms()) => Some(match s {
+                ArtState::Pending { .. } => ArtSample::Pending,
+                ArtState::Cached {
+                    rev, fingerprint, ..
+                } => ArtSample::Probe {
                     rev: *rev,
                     fingerprint: *fingerprint,
-                })
-            }
+                },
+            }),
             _ => None,
         }
     };
@@ -979,7 +1044,34 @@ pub fn art_pump(cache: &ArtCache, now: &NowPlaying) -> bool {
             fingerprint: art_fingerprint(&bytes),
             url: art_data_url(&bytes, &mime),
         });
-    apply_art_read(&mut lock_art(cache), &key, sampled, read)
+    let landed = read.is_some();
+    let mut slot = lock_art(cache);
+    let changed = apply_art_read(&mut slot, &key, sampled, read, now_ms());
+    // A missing cover is the one art outcome a user notices — leave a trail
+    // in pulse.log for both ends of it (a read dropped for a newer key has
+    // nothing to report).
+    if let Some(ArtState::Cached {
+        url,
+        retry_at_ms,
+        misses,
+        ..
+    }) = slot.as_ref().filter(|s| s.key() == key)
+    {
+        if changed
+            && matches!(
+                sampled,
+                ArtSample::Probe {
+                    fingerprint: None,
+                    ..
+                }
+            )
+        {
+            log::info!("media: album art arrived on a re-read after a failed first read");
+        } else if !landed && url.is_none() && retry_at_ms.is_none() {
+            log::info!("media: album art still missing after {misses} re-reads; giving up");
+        }
+    }
+    changed
 }
 
 /// Re-open art distrust on a media-properties wake inside the probe window.
@@ -990,15 +1082,26 @@ pub fn art_pump(cache: &ArtCache, now: &NowPlaying) -> bool {
 /// the next art_pump catch the byte change (rev bump → follow-up emit).
 /// Bounded: outside the window this is a no-op, so wake spam (pause/play)
 /// costs at most a few extra reads per track.
+///
+/// A MISSING cover is the exception: the wake makes a re-read due at any
+/// age, since a thumbnail the player attaches late (after its own download)
+/// announces itself the same way. ART_MAX_MISSES bounds that per track.
 pub fn art_rearm(cache: &ArtCache) {
+    let now = now_ms();
     if let Some(ArtState::Cached {
         settled,
         first_seen_ms,
+        url,
+        retry_at_ms,
+        misses,
         ..
     }) = lock_art(cache).as_mut()
     {
-        if *settled && now_ms() - *first_seen_ms < ART_PROBE_WINDOW_MS {
+        if *settled && now - *first_seen_ms < ART_PROBE_WINDOW_MS {
             *settled = false;
+        }
+        if url.is_none() && *misses < ART_MAX_MISSES {
+            *retry_at_ms = Some(now);
         }
     }
 }
@@ -1116,23 +1219,19 @@ pub fn tick_key() -> Option<TickKey> {
 
 /// True while the art pipeline needs the media loop to run full snapshots
 /// (where art_pump lives): a Pending key waiting for its deferred first
-/// read, or an unsettled Cached entry inside the distrust window (art_pump
-/// re-reads each tick then). Settled or window-expired Cached entries stop
-/// forcing snapshots. Pending probes REGARDLESS of age, matching art_pump's
-/// own sampling rule: a key claimed by an off-loop snapshot (hotkey emit
+/// read, an unsettled Cached entry inside the distrust window (art_pump
+/// re-reads each tick then), or a missing cover whose retry is due — the
+/// same ArtState::read_due rule art_pump samples with. Settled or
+/// window-expired Cached entries stop forcing snapshots between retries.
+/// Pending probes REGARDLESS of age: a key claimed by an off-loop snapshot (hotkey emit
 /// while hidden) can outlive the window before the loop ever pumps it, and
 /// the position-only reuse path would otherwise starve that first read
 /// forever — pre-reuse, the position-forced full snapshots healed it by
 /// accident.
 pub fn art_probing(cache: &ArtCache) -> bool {
-    lock_art(cache).as_ref().is_some_and(|e| match e {
-        ArtState::Pending { .. } => true,
-        ArtState::Cached {
-            settled,
-            first_seen_ms,
-            ..
-        } => !settled && now_ms() - first_seen_ms < ART_PROBE_WINDOW_MS,
-    })
+    lock_art(cache)
+        .as_ref()
+        .is_some_and(|e| e.read_due(now_ms()))
 }
 
 /// What the media loop's heartbeat does this beat (see plan_beat).
@@ -1380,6 +1479,8 @@ mod tests {
             fingerprint: fp,
             first_seen_ms: now_ms(),
             settled,
+            retry_at_ms: None,
+            misses: 0,
         })
     }
 
@@ -1398,7 +1499,13 @@ mod tests {
     #[test]
     fn pending_first_read_lands_at_rev_zero_and_emits() {
         let mut slot = pending("a");
-        assert!(apply_art_read(&mut slot, "a", ArtSample::Pending, read(7)));
+        assert!(apply_art_read(
+            &mut slot,
+            "a",
+            ArtSample::Pending,
+            read(7),
+            now_ms()
+        ));
         assert_eq!(state(&slot), (0, Some(7), false));
         assert_eq!(
             slot.as_ref().unwrap().art_id().as_deref(),
@@ -1410,7 +1517,7 @@ mod tests {
     #[test]
     fn identical_probe_reads_settle_at_rev_zero_and_stop_probing() {
         let mut slot = pending("a");
-        apply_art_read(&mut slot, "a", ArtSample::Pending, read(7));
+        apply_art_read(&mut slot, "a", ArtSample::Pending, read(7), now_ms());
         let emit = apply_art_read(
             &mut slot,
             "a",
@@ -1419,6 +1526,7 @@ mod tests {
                 fingerprint: Some(7),
             },
             read(7),
+            now_ms(),
         );
         assert!(!emit, "settling changes no art_id");
         assert_eq!(state(&slot), (0, Some(7), true));
@@ -1437,6 +1545,7 @@ mod tests {
                 fingerprint: Some(7),
             },
             read(9),
+            now_ms(),
         );
         assert!(emit, "a rev bump owes the frontend a follow-up emit");
         assert_eq!(state(&slot), (1, Some(9), false));
@@ -1454,6 +1563,7 @@ mod tests {
                 fingerprint: Some(9),
             },
             read(9),
+            now_ms(),
         );
         assert!(!emit);
         assert_eq!(state(&slot), (1, Some(9), true));
@@ -1470,6 +1580,7 @@ mod tests {
                 fingerprint: Some(7),
             },
             None,
+            now_ms(),
         );
         assert!(!emit);
         assert_eq!(
@@ -1482,7 +1593,7 @@ mod tests {
     #[test]
     fn pending_failed_read_caches_miss_then_a_success_upgrades() {
         let mut slot = pending("a");
-        let emit = apply_art_read(&mut slot, "a", ArtSample::Pending, None);
+        let emit = apply_art_read(&mut slot, "a", ArtSample::Pending, None, now_ms());
         assert!(!emit, "nothing to show yet, nothing to emit");
         assert_eq!(state(&slot), (0, None, false));
         assert_eq!(slot.as_ref().unwrap().art_id(), None);
@@ -1494,9 +1605,130 @@ mod tests {
                 fingerprint: None,
             },
             read(7),
+            now_ms(),
         );
         assert!(emit, "None→Some fingerprint counts as a byte change");
         assert_eq!(state(&slot), (1, Some(7), false));
+    }
+
+    /// A key first seen `age_ms` ago whose first read failed at `now`.
+    fn missed(key: &str, age_ms: i64, now: i64) -> Option<ArtState> {
+        let mut slot = Some(ArtState::Pending {
+            key: key.into(),
+            first_seen_ms: now - age_ms,
+        });
+        apply_art_read(&mut slot, key, ArtSample::Pending, None, now);
+        slot
+    }
+
+    fn retry(slot: &Option<ArtState>) -> (Option<i64>, u8) {
+        match slot.as_ref().expect("cached state") {
+            ArtState::Cached {
+                retry_at_ms,
+                misses,
+                ..
+            } => (*retry_at_ms, *misses),
+            ArtState::Pending { .. } => panic!("expected Cached"),
+        }
+    }
+
+    const MISS_PROBE: ArtSample = ArtSample::Probe {
+        rev: 0,
+        fingerprint: None,
+    };
+
+    #[test]
+    fn missing_cover_backs_off_past_the_window_then_gives_up() {
+        let mut now = now_ms();
+        let mut slot = missed("a", ART_PROBE_WINDOW_MS + 1_000, now);
+        let entry = slot.as_ref().unwrap();
+        assert!(
+            !entry.read_due(now),
+            "window closed, first retry not due yet"
+        );
+        assert!(entry.read_due(now + ART_RETRY_BACKOFF_MS[0]));
+        for (n, wait) in ART_RETRY_BACKOFF_MS.iter().enumerate().skip(1) {
+            now = retry(&slot).0.expect("retry scheduled");
+            assert!(!apply_art_read(&mut slot, "a", MISS_PROBE, None, now));
+            assert_eq!(retry(&slot), (Some(now + wait), n as u8));
+        }
+        now = retry(&slot).0.unwrap();
+        apply_art_read(&mut slot, "a", MISS_PROBE, None, now);
+        assert_eq!(
+            retry(&slot),
+            (None, ART_RETRY_BACKOFF_MS.len() as u8),
+            "backoff spent"
+        );
+        assert!(!slot.as_ref().unwrap().read_due(now + 3_600_000));
+    }
+
+    #[test]
+    fn missing_cover_inside_the_window_probes_every_beat_without_counting() {
+        let now = now_ms();
+        let mut slot = missed("a", 0, now);
+        assert!(slot.as_ref().unwrap().read_due(now), "window still open");
+        apply_art_read(&mut slot, "a", MISS_PROBE, None, now + 500);
+        assert_eq!(
+            retry(&slot),
+            (Some(now + ART_RETRY_BACKOFF_MS[0]), 0),
+            "in-window misses don't spend the backoff"
+        );
+    }
+
+    #[test]
+    fn late_retry_recovers_a_missing_cover() {
+        let now = now_ms();
+        let mut slot = missed("a", ART_PROBE_WINDOW_MS + 1_000, now);
+        let at = retry(&slot).0.unwrap();
+        assert!(apply_art_read(&mut slot, "a", MISS_PROBE, read(7), at));
+        assert_eq!(state(&slot), (1, Some(7), false));
+        assert_eq!(retry(&slot).0, None, "found art stops the retries");
+        assert_eq!(slot.as_ref().unwrap().art_id().as_deref(), Some("a:1"));
+    }
+
+    #[test]
+    fn rearm_makes_a_missing_cover_due_at_any_age_up_to_the_cap() {
+        let cache = ArtCache(Mutex::new(missed("a", 600_000, now_ms())));
+        assert!(!art_probing(&cache), "old miss waits for its backoff");
+        art_rearm(&cache);
+        assert!(art_probing(&cache), "a wake re-reads a missing cover now");
+
+        if let Some(ArtState::Cached {
+            retry_at_ms,
+            misses,
+            ..
+        }) = lock_art(&cache).as_mut()
+        {
+            *retry_at_ms = None;
+            *misses = ART_MAX_MISSES;
+        }
+        art_rearm(&cache);
+        assert!(!art_probing(&cache), "capped: wakes stop buying reads");
+
+        let cache = ArtCache(Mutex::new(cached("a", 0, Some(7), true)));
+        {
+            let mut slot = lock_art(&cache);
+            if let Some(ArtState::Cached { first_seen_ms, .. }) = slot.as_mut() {
+                *first_seen_ms -= 600_000;
+            }
+        }
+        art_rearm(&cache);
+        assert!(
+            !art_probing(&cache),
+            "a present cover past the window stays put"
+        );
+    }
+
+    #[test]
+    fn an_art_less_track_releases_the_previous_tracks_retries() {
+        let mut slot = missed("a", 600_000, now_ms());
+        release_other_key(&mut slot, "a");
+        assert!(slot.is_some(), "same key keeps its entry");
+        release_other_key(&mut slot, "b");
+        assert!(
+            slot.is_none(),
+            "another key's due retry must not keep forcing snapshots"
+        );
     }
 
     #[test]
@@ -1504,7 +1736,13 @@ mod tests {
         // Read for key "a" sampled Pending, but "b" claimed the slot while
         // the stream read ran — the result must not stamp a's art onto b.
         let mut slot = pending("b");
-        assert!(!apply_art_read(&mut slot, "a", ArtSample::Pending, read(7)));
+        assert!(!apply_art_read(
+            &mut slot,
+            "a",
+            ArtSample::Pending,
+            read(7),
+            now_ms()
+        ));
         match slot.as_ref().unwrap() {
             ArtState::Pending { key, .. } => assert_eq!(key, "b"),
             ArtState::Cached { .. } => panic!("b's Pending claim must survive"),
@@ -1519,6 +1757,7 @@ mod tests {
                 fingerprint: Some(7),
             },
             read(8),
+            now_ms(),
         );
         assert!(!emit);
         assert_eq!(state(&slot), (2, Some(9), false), "stale-rev read dropped");
