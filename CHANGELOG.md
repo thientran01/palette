@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Fixed
+
+- Album art that fails to load when a song starts now keeps retrying with backoff for about two minutes, and again whenever the player updates the song's details, instead of staying a blank note for the whole track.
+
 ## [1.0.9] - 2026-10-24
 
 ### Fixed
