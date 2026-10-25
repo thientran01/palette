@@ -867,9 +867,24 @@ pub fn snapshot(art_cache: &ArtCache) -> NowPlaying {
             }
         }
     } else {
+        release_other_key(
+            &mut lock_art(art_cache),
+            &ident_key(&np.app_id, &np.title, &np.artist),
+        );
         None
     };
     np
+}
+
+/// A track with no thumbnail claims nothing, so a previous track's entry
+/// would linger — and art_probing can't tell whose key is due, so that
+/// entry's Pending read or missing-cover retry would force a full snapshot
+/// every beat for as long as the art-less track plays. Drop it. The same
+/// key is kept: its thumbnail may only be briefly detached.
+fn release_other_key(slot: &mut Option<ArtState>, key: &str) {
+    if slot.as_ref().is_some_and(|s| s.key() != key) {
+        *slot = None;
+    }
 }
 
 /// A finished thumbnail read, reduced to what the cache stores.
@@ -1701,6 +1716,18 @@ mod tests {
         assert!(
             !art_probing(&cache),
             "a present cover past the window stays put"
+        );
+    }
+
+    #[test]
+    fn an_art_less_track_releases_the_previous_tracks_retries() {
+        let mut slot = missed("a", 600_000, now_ms());
+        release_other_key(&mut slot, "a");
+        assert!(slot.is_some(), "same key keeps its entry");
+        release_other_key(&mut slot, "b");
+        assert!(
+            slot.is_none(),
+            "another key's due retry must not keep forcing snapshots"
         );
     }
 
