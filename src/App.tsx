@@ -2062,28 +2062,39 @@ function App() {
                   (the waveform announce ladder was removed 2026-07-23: its
                   collapse-to-one-dot read as a full reset at focus's room
                   scale). */}
-              <p className="min-w-0 flex-1 truncate text-xs font-medium text-fg">
-                {/* inline-block: translate does NOT apply to non-replaced
-                    inline boxes (spec) — a bare span slides nowhere and the
-                    beat silently degrades to the fade (quick-review catch).
-                    Default baseline alignment, so nothing shifts against the
-                    inline waveform beside it. */}
+              {/* FLEX row, not one inline-flow ellipsis (same move as the
+                  card title): under a single truncate, a long title pushed
+                  the waveform past the line's end edge and the ellipsis
+                  landed on top of its bars — the composited capsules paint
+                  through (Thien, 2026-10-24). Now the title truncates in its
+                  own box and the waveform never shrinks. The artist takes
+                  only the leftover (flex-1 = basis 0), so the title keeps
+                  priority exactly as the inline flow gave it — and never
+                  picks up a sub-pixel share of the shrink, which would draw
+                  an ellipsis on a title that fits (a weighted shrink-[999]
+                  did). Flex items are blockified, so the slide's translate
+                  still applies. */}
+              <p className="flex min-w-0 flex-1 items-center text-xs font-medium text-fg">
                 <TrackFadeSpan
                   key={`t:${slideEpoch}`}
                   k={lyricsKeyOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
-                  className="inline-block"
+                  className="min-w-0 truncate"
                 >
                   {np.title}
                 </TrackFadeSpan>
-                <Waveform trailing={!np.artist} playing={np.status === "playing"} />
+                {/* Its own 16px line box, so align-middle seats the capsules
+                    on the text's middle exactly as the inline flow did. */}
+                <span className="shrink-0">
+                  <Waveform trailing={!np.artist} playing={np.status === "playing"} />
+                </span>
                 <TrackFadeSpan
                   key={`a:${slideEpoch}`}
                   k={lyricsKeyOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
-                  className="inline-block font-normal text-muted"
+                  className="min-w-0 flex-1 truncate font-normal text-muted"
                 >
                   {np.artist}
                 </TrackFadeSpan>
