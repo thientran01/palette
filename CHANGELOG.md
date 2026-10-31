@@ -8,6 +8,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.11] - 2026-10-31
+
 ### Changed
 
 - Karaoke word sync is more accurate at the end of songs, before instrumental breaks, on lines that repeat a phrase, and on "ooh"/"ah" adlib lines. Saved syncs keep showing and quietly relearn the next time each song is played in full.
