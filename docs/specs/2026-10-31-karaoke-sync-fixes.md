@@ -41,6 +41,18 @@ The first scoreboard's five worst songs shared three patterns:
   interval takes the spread. A path that agrees keeps its own timing. The
   85% figure: the last vocable onset sits at a median 74% of the interval.
 
+## Where it ships
+
+The vocal trial (`Knobs::TRIAL`) has its own cache generation
+(`karaoke-vocals-preview-v5`, recipe `mms-int8/mdx-kim2-5`). The v4 cache
+stays readable while songs re-learn.
+
+The shipped mix path (`Knobs::MIX`) runs the same decoder in a separate
+commit, which bumps `acoustic::RECIPE` from `mms-int8/1` to `mms-int8/2`.
+`read_store` rejects (and prunes) a saved sync whose recipe differs, so
+every saved sync is recorded again on its next full listen. That is the
+cost of the mix gains below, and it is why that commit stands apart.
+
 ## Results (median / p90 ms, share within 300 ms)
 
 | | lead 0 before | lead 0 after | lead 200 before | lead 200 after |

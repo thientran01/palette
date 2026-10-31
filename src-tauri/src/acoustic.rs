@@ -19,7 +19,9 @@ const STAR: usize = 28;
 mod entry_timing;
 
 /// Recipe pins the exported weights, normalization, window and decoder.
-pub const RECIPE: &str = "mms-int8/1";
+/// 2: Knobs::MIX's tuned decoder (2026-10-31). Bumping it re-learns every
+/// saved sync on its next play.
+pub const RECIPE: &str = "mms-int8/2";
 pub const MODEL_SHA256: &str = "50128ba8db1150101b9e7d3610cdfda5c8fd2637b918d151ff6aa6fde2b9c2de";
 pub const RUNTIME_SHA256: &str = "c7151fd9844ad7c7d18525f1177e9ef62d91e4a6ac3583d0be700554a2b2b1d6";
 static ASSETS: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -32,7 +34,7 @@ pub fn configure(dir: PathBuf) {
     log::info!(
         "karaoke: acoustic model {}",
         if enabled {
-            "enabled (mms-int8/1)"
+            "enabled (mms-int8/2)"
         } else {
             "not installed"
         }
@@ -459,19 +461,12 @@ pub struct Knobs {
 }
 
 impl Knobs {
-    pub const MIX: Knobs = Knobs {
-        guide: false,
-        guide_late_ms: 1500,
-        guide_last: false,
-        cap_per_syllable_ms: 0,
-        cap_base_ms: 0,
-        vocable_tolerance_ms: 0,
-        connected_retry: false,
-    };
     /// Scored on JamendoLyrics (examples/karaoke_bench.rs, 71 songs, stamps
-    /// on time and 200ms early): each part won on its own and together no
-    /// song got clearly worse. docs/specs/2026-10-31-karaoke-sync-fixes.md.
-    pub const TRIAL: Knobs = Knobs {
+    /// on time and 200ms early): each part won on its own, on the mix and
+    /// on separated vocals, and together no song got clearly worse.
+    /// docs/specs/2026-10-31-karaoke-sync-fixes.md. Changing these changes
+    /// RECIPE: every saved sync was learned under them.
+    pub const MIX: Knobs = Knobs {
         guide: true,
         guide_late_ms: 700,
         guide_last: true,
@@ -480,6 +475,7 @@ impl Knobs {
         vocable_tolerance_ms: 1500,
         connected_retry: true,
     };
+    pub const TRIAL: Knobs = Knobs::MIX;
 
     /// Where a line's window stops looking: the next stamp, or sooner when
     /// that stamp is farther than the line could plausibly take to sing.
@@ -1417,7 +1413,10 @@ mod tests {
 
     #[test]
     fn window_cap_only_shortens_long_gaps() {
-        let off = Knobs::MIX;
+        let off = Knobs {
+            cap_per_syllable_ms: 0,
+            ..Knobs::MIX
+        };
         assert_eq!(off.window_next(10_000, 40_000, 3), 40_000);
         let cap = Knobs {
             cap_per_syllable_ms: 900,
@@ -1450,12 +1449,12 @@ mod tests {
     }
 
     #[test]
-    fn mix_knobs_keep_the_shipped_decoder() {
+    fn both_paths_run_the_tuned_decoder() {
+        assert_eq!(Knobs::MIX, Knobs::TRIAL);
         let k = Knobs::MIX;
-        assert!(!k.guide && !k.guide_last && !k.connected_retry);
-        assert_eq!(k.window_next(0, 99_000, 9), 99_000);
-        assert_eq!(k.vocable_tolerance_ms, 0);
-        assert_eq!(Knobs::TRIAL.window_next(0, 99_000, 9), 6600);
+        assert!(k.guide && k.guide_last && k.connected_retry);
+        assert_eq!(k.window_next(0, 99_000, 9), 6600);
+        assert_eq!(RECIPE, "mms-int8/2");
     }
 
     #[test]
