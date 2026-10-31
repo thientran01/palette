@@ -21,7 +21,7 @@ The model is checksum-verified on load and is never bundled or downloaded by the
 - Seek, capture, and complete-listen guards remain unchanged. Failed separation preserves original timing and leaves the trial retryable.
 - Turning the trial off uses original timing again. Nothing in the original karaoke cache is overwritten by experimental results.
 
-Trial output uses `karaoke-vocals-preview-v4` and recipe `mms-int8/mdx-kim2-4`. The v3/v2/v1 Demucs caches stay readable while songs relearn and are never deleted on mismatch. The ordinary karaoke cache remains separate.
+Trial output uses `karaoke-vocals-preview-v5` and recipe `mms-int8/mdx-kim2-5` (the tuned decoder in `Knobs::TRIAL`, see `docs/specs/2026-10-31-karaoke-sync-fixes.md`). The v4 MDX cache and the v3/v2/v1 Demucs caches stay readable while songs relearn and are never deleted on mismatch. The ordinary karaoke cache remains separate.
 
 ## Processing
 

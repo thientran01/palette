@@ -4,6 +4,7 @@ use crate::align::{tokenize, TimeMap, TimedLine, Word, WordPoint};
 use ort::{session::Session, value::Tensor};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     io::Read,
     path::{Path, PathBuf},
     sync::OnceLock,
@@ -18,7 +19,12 @@ const STAR: usize = 28;
 mod entry_timing;
 
 /// Recipe pins the exported weights, normalization, window and decoder.
-pub const RECIPE: &str = "mms-int8/1";
+/// 2: Knobs::MIX's tuned decoder (2026-10-31). Bumping it relearns every
+/// saved sync on the song's next full listen.
+pub const RECIPE: &str = "mms-int8/2";
+/// Recipes RECIPE replaced. Words saved under them keep showing, and are
+/// never deleted on mismatch, until the next full listen relearns the song.
+pub const EARLIER_RECIPES: [&str; 1] = ["mms-int8/1"];
 pub const MODEL_SHA256: &str = "50128ba8db1150101b9e7d3610cdfda5c8fd2637b918d151ff6aa6fde2b9c2de";
 pub const RUNTIME_SHA256: &str = "c7151fd9844ad7c7d18525f1177e9ef62d91e4a6ac3583d0be700554a2b2b1d6";
 static ASSETS: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -31,7 +37,7 @@ pub fn configure(dir: PathBuf) {
     log::info!(
         "karaoke: acoustic model {}",
         if enabled {
-            "enabled (mms-int8/1)"
+            "enabled (mms-int8/2)"
         } else {
             "not installed"
         }
@@ -364,17 +370,20 @@ enum EntryMode {
     Guide,
 }
 
+/// `next_t` is the following stamp, or for the last line the end of what
+/// was recorded; `None` keeps the line out of the retry.
 fn guide_eligible(
     line: &TimedLine,
-    next: Option<&TimedLine>,
+    next_t: Option<i64>,
     tokens: &[String],
     first: i64,
     recorded_start: i64,
+    late_ms: i64,
 ) -> bool {
-    let Some(next) = next else {
+    let Some(next_t) = next_t else {
         return false;
     };
-    let span = next.t.saturating_sub(line.t);
+    let span = next_t.saturating_sub(line.t);
     let initial = tokens.first().map(|t| {
         t.trim()
             .trim_matches(|c: char| !c.is_alphabetic())
@@ -386,7 +395,27 @@ fn guide_eligible(
         && !line.text.contains(['(', ')', '（', '）'])
         && !entry_timing::repeated_la(tokens)
         && !matches!(initial.as_deref(), Some("oh" | "ooh" | "ah"))
-        && first.saturating_sub(line.t) > 1500
+        && first.saturating_sub(line.t) > late_ms
+}
+
+/// A retried entrance the line's following targets join straight away is a
+/// real earlier copy, however faint its first phoneme: support falls when
+/// the free path grabbed a louder repeat later in the window. The noise
+/// shape the support guard rejects is a lone early blip with the rest of
+/// the line still waiting at the original position.
+fn connected_entry_retry(
+    original: &[TokenSpan],
+    candidate: &[TokenSpan],
+    first: usize,
+    frame_ms: f64,
+) -> bool {
+    let Some(following) = candidate.get(first + 1) else {
+        return false;
+    };
+    candidate[first].start < original[first].start
+        && candidate[first].confidence > 0.0
+        && following.start < original[first].start
+        && (following.start.saturating_sub(candidate[first].end) as f64) * frame_ms <= 400.0
 }
 
 fn supported_entry_retry(original: &[TokenSpan], candidate: &[TokenSpan], first: usize) -> bool {
@@ -404,9 +433,88 @@ fn supported_entry_retry(original: &[TokenSpan], candidate: &[TokenSpan], first:
                 * 0.5
 }
 
+/// Model output per input window, keyed by a hash of the window's samples.
+/// An offline seam (examples/karaoke_bench.rs): decoder candidates rescore
+/// stored emissions instead of rerunning the model. The app never sets one.
+pub type EmissionCache = HashMap<u64, Vec<f32>>;
+
+/// Decoder and placement switches. `Knobs::MIX` (align) and `Knobs::TRIAL`
+/// (align_guided_entries) are what the app runs; any other value is an
+/// offline candidate for examples/karaoke_bench.rs to score.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Knobs {
+    /// Retry a late first word under the source-entry prior.
+    pub guide: bool,
+    /// How far past its stamp a first word must land to be retried.
+    pub guide_late_ms: i64,
+    /// Also retry the last line, which has no following stamp.
+    pub guide_last: bool,
+    /// Cap a line's window at its stamp + base + this per sung syllable
+    /// when the next stamp is farther (last line, instrumental break).
+    /// Per syllable, not per word: a held "intentandoooo" takes four
+    /// seconds of a two-word line. 0 = off.
+    pub cap_per_syllable_ms: i64,
+    pub cap_base_ms: i64,
+    /// A vocable-only line ("oh ah ah") whose path strays from an even
+    /// spread by more than this falls back to the spread. 0 = off.
+    pub vocable_tolerance_ms: i64,
+    /// Also trust a retried entrance the rest of the line follows straight
+    /// away, however faint its first phoneme (`connected_entry_retry`).
+    pub connected_retry: bool,
+}
+
+impl Knobs {
+    /// Scored on JamendoLyrics (examples/karaoke_bench.rs, 71 songs, stamps
+    /// on time and 200ms early): each part won on its own, on the mix and
+    /// on separated vocals, and together no song got clearly worse.
+    /// docs/specs/2026-10-31-karaoke-sync-fixes.md. Changing these changes
+    /// RECIPE: every saved sync was learned under them.
+    pub const MIX: Knobs = Knobs {
+        guide: true,
+        guide_late_ms: 700,
+        guide_last: true,
+        cap_per_syllable_ms: 400,
+        cap_base_ms: 3000,
+        vocable_tolerance_ms: 1500,
+        connected_retry: true,
+    };
+    pub const TRIAL: Knobs = Knobs::MIX;
+
+    /// Where a line's window stops looking: the next stamp, or sooner when
+    /// that stamp is farther than the line could plausibly take to sing.
+    fn window_next(&self, line_t: i64, next_t: i64, syllables: usize) -> i64 {
+        if self.cap_per_syllable_ms <= 0 {
+            return next_t;
+        }
+        next_t.min(line_t + self.cap_base_ms + self.cap_per_syllable_ms * syllables as i64)
+    }
+}
+
+/// Vowel groups in Latin spelling, one per CJK or Hangul character, and at
+/// least one per token: a rough sung-syllable count for the window cap.
+fn sung_syllables(tokens: &[String]) -> usize {
+    const VOWELS: &str = "aeiouyàáâãäåæèéêëìíîïòóôõöøœùúûüýÿ";
+    tokens
+        .iter()
+        .map(|token| {
+            let mut count = 0;
+            let mut in_vowel = false;
+            for c in token.chars().flat_map(char::to_lowercase) {
+                let vowel = VOWELS.contains(c);
+                if (vowel && !in_vowel) || crate::align::is_syllable_char(c) {
+                    count += 1;
+                }
+                in_vowel = vowel;
+            }
+            count.max(1)
+        })
+        .sum()
+}
+
 pub struct AcousticAligner {
     session: Session,
     romanizer: uroman::Uroman,
+    emissions: Option<EmissionCache>,
 }
 
 impl AcousticAligner {
@@ -453,11 +561,41 @@ impl AcousticAligner {
         Ok(Self {
             session,
             romanizer: uroman::Uroman::new(),
+            emissions: None,
         })
+    }
+
+    /// Offline seam: reuse and record model emissions per window.
+    pub fn set_emission_cache(&mut self, cache: Option<EmissionCache>) {
+        self.emissions = cache;
+    }
+
+    pub fn take_emission_cache(&mut self) -> Option<EmissionCache> {
+        self.emissions.take()
     }
 
     pub fn align(&mut self, pcm: &[i16], lines: &[TimedLine], map: &TimeMap) -> Result<Vec<Word>> {
         self.align_probe(pcm, lines, map, 500.0, None)
+    }
+
+    /// Offline evaluation seam: either app pipeline with candidate knobs.
+    /// `guided` selects align_guided_entries' path (separated vocals).
+    pub fn align_with_knobs(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+        guided: bool,
+        knobs: Knobs,
+        diagnostics: Option<&mut Vec<serde_json::Value>>,
+    ) -> Result<Vec<Word>> {
+        if !guided {
+            return self.align_inner(pcm, lines, map, 500.0, diagnostics, EntryMode::None, knobs);
+        }
+        let mut words =
+            self.align_inner(pcm, lines, map, 500.0, diagnostics, EntryMode::Guide, knobs)?;
+        entry_timing::refine(pcm, map, &mut words);
+        Ok(words)
     }
 
     /// Offline evidence seam. Production always uses the 500ms window above.
@@ -470,7 +608,15 @@ impl AcousticAligner {
         margin_ms: f64,
         diagnostics: Option<&mut Vec<serde_json::Value>>,
     ) -> Result<Vec<Word>> {
-        self.align_inner(pcm, lines, map, margin_ms, diagnostics, EntryMode::None)
+        self.align_inner(
+            pcm,
+            lines,
+            map,
+            margin_ms,
+            diagnostics,
+            EntryMode::None,
+            Knobs::MIX,
+        )
     }
 
     pub fn align_entries(
@@ -479,7 +625,8 @@ impl AcousticAligner {
         lines: &[TimedLine],
         map: &TimeMap,
     ) -> Result<Vec<Word>> {
-        let mut words = self.align_inner(pcm, lines, map, 500.0, None, EntryMode::Refine)?;
+        let mut words =
+            self.align_inner(pcm, lines, map, 500.0, None, EntryMode::Refine, Knobs::MIX)?;
         entry_timing::refine(pcm, map, &mut words);
         Ok(words)
     }
@@ -493,11 +640,21 @@ impl AcousticAligner {
         map: &TimeMap,
         diagnostics: Option<&mut Vec<serde_json::Value>>,
     ) -> Result<Vec<Word>> {
-        let mut words = self.align_inner(pcm, lines, map, 500.0, diagnostics, EntryMode::Guide)?;
+        let mut words = self.align_inner(
+            pcm,
+            lines,
+            map,
+            500.0,
+            diagnostics,
+            EntryMode::Guide,
+            Knobs::TRIAL,
+        )?;
         entry_timing::refine(pcm, map, &mut words);
         Ok(words)
     }
 
+    // Every public entry point is a thin preset over this one loop.
+    #[allow(clippy::too_many_arguments)]
     fn align_inner(
         &mut self,
         pcm: &[i16],
@@ -506,6 +663,7 @@ impl AcousticAligner {
         margin_ms: f64,
         mut diagnostics: Option<&mut Vec<serde_json::Value>>,
         mode: EntryMode,
+        knobs: Knobs,
     ) -> Result<Vec<Word>> {
         let entries = mode != EntryMode::None;
         if !margin_ms.is_finite() || !(0.0..=1500.0).contains(&margin_ms) {
@@ -522,7 +680,14 @@ impl AcousticAligner {
                 continue;
             }
             let next = lines.get(li + 1).map_or(to_time(pcm.len() as f64), |l| l.t);
-            let Some(window) = recorded_window_margin(pcm.len(), map, line.t, next, margin_ms)
+            // A held "ooh" has no syllable budget (eight seconds apiece on
+            // JamendoLyrics' Fantasma), so vocable lines keep the full gap.
+            let capped = if tokens.iter().all(|t| is_vocable(t)) {
+                next
+            } else {
+                knobs.window_next(line.t, next, sung_syllables(&tokens))
+            };
+            let Some(window) = recorded_window_margin(pcm.len(), map, line.t, capped, margin_ms)
             else {
                 // A partial listen can end before later lyric rows. Keep the
                 // captured prefix for diagnostics; cache_complete in the
@@ -555,26 +720,11 @@ impl AcousticAligner {
             if plan.ranges.iter().all(Option::is_none) {
                 continue;
             }
-            let input: Vec<f32> = pcm[begin..end]
-                .iter()
-                .map(|&s| s as f32 / 32768.0)
-                .collect();
-            let tensor =
-                Tensor::from_array(([1usize, input.len()], input)).map_err(|e| e.to_string())?;
-            let output = self
-                .session
-                .run(ort::inputs!["waveform" => tensor])
-                .map_err(|e| e.to_string())?;
-            let (shape, logp) = output
-                .get("log_probs")
-                .ok_or("missing acoustic output")?
-                .try_extract_tensor::<f32>()
-                .map_err(|e| e.to_string())?;
-            if shape.len() != 3 || shape[0] != 1 || shape[2] != CLASSES as i64 {
-                return Err("unexpected acoustic output".into());
-            }
+            let logp = self.emissions_for(&pcm[begin..end])?;
+            let logp = logp.as_slice();
+            let ratio = (end - begin) as f64 / (logp.len() / CLASSES) as f64;
+            let frame_ms = ratio * map.slope_ms;
             let mut spans = ctc_spans(logp, CLASSES, &plan.targets)?;
-            let ratio = (end - begin) as f64 / shape[1] as f64;
             let first = plan
                 .ranges
                 .iter()
@@ -584,14 +734,19 @@ impl AcousticAligner {
                 .start;
             let original_entry = to_time(begin as f64 + spans[first].start as f64 * ratio);
             let mut guided = false;
-            if mode == EntryMode::Guide
+            let mut retry = serde_json::Value::Null;
+            let guide_next = lines.get(li + 1).map(|l| l.t).or(knobs
+                .guide_last
+                .then(|| to_time(end as f64).min(line.t + 20_000)));
+            if knobs.guide
                 && first == 1
                 && guide_eligible(
                     line,
-                    lines.get(li + 1),
+                    guide_next,
                     &plan.tokens,
                     original_entry,
                     to_time(begin as f64),
+                    knobs.guide_late_ms,
                 )
             {
                 let prior = EntryPrior {
@@ -604,17 +759,29 @@ impl AcousticAligner {
                 if let Ok(candidate) =
                     ctc_spans_with_prior(logp, CLASSES, &plan.targets, Some(prior))
                 {
-                    if supported_entry_retry(&spans, &candidate, first) {
+                    let accepted = supported_entry_retry(&spans, &candidate, first)
+                        || (knobs.connected_retry
+                            && connected_entry_retry(&spans, &candidate, first, frame_ms));
+                    if diagnostics.is_some() {
+                        retry = serde_json::json!({
+                            "entry": to_time(begin as f64 + candidate[first].start as f64 * ratio),
+                            "support": candidate[first].confidence,
+                            "original_support": spans[first].confidence,
+                            "accepted": accepted,
+                        });
+                    }
+                    if accepted {
                         spans = candidate;
                         guided = true;
                     }
                 }
             }
             let positions = word_frames(&plan.ranges, &spans);
+            let line_start = words.len();
             if let Some(rows) = diagnostics.as_deref_mut() {
                 rows.push(serde_json::json!({
                     "line_index": li, "line_t": line.t, "next_t": next,
-                    "source_guided": guided, "original_entry": original_entry,
+                    "source_guided": guided, "original_entry": original_entry, "retry": retry,
                     "window_start": to_time(begin as f64), "window_end": to_time(end as f64),
                     "frame_ms": ratio * map.slope_ms,
                     "tokens": plan.tokens, "targets": plan.targets.iter().map(|&t| LABELS[t] as char).collect::<String>(),
@@ -647,8 +814,117 @@ impl AcousticAligner {
                     points,
                 });
             }
+            if knobs.vocable_tolerance_ms > 0 {
+                if let Some(next_line) = lines.get(li + 1) {
+                    vocable_fallback(
+                        &mut words[line_start..],
+                        line.t,
+                        next_line.t,
+                        knobs.vocable_tolerance_ms,
+                    );
+                }
+            }
         }
         Ok(words)
+    }
+
+    /// Model log-probabilities for one window, through the offline cache
+    /// when one is installed.
+    fn emissions_for(&mut self, input: &[i16]) -> Result<Vec<f32>> {
+        let key = self.emissions.as_ref().map(|_| fingerprint(input));
+        if let (Some(cache), Some(key)) = (&self.emissions, key) {
+            if let Some(hit) = cache.get(&key) {
+                return Ok(hit.clone());
+            }
+        }
+        let samples: Vec<f32> = input.iter().map(|&s| s as f32 / 32768.0).collect();
+        let tensor =
+            Tensor::from_array(([1usize, samples.len()], samples)).map_err(|e| e.to_string())?;
+        let output = self
+            .session
+            .run(ort::inputs!["waveform" => tensor])
+            .map_err(|e| e.to_string())?;
+        let (shape, logp) = output
+            .get("log_probs")
+            .ok_or("missing acoustic output")?
+            .try_extract_tensor::<f32>()
+            .map_err(|e| e.to_string())?;
+        if shape.len() != 3 || shape[0] != 1 || shape[2] != CLASSES as i64 || shape[1] < 1 {
+            return Err("unexpected acoustic output".into());
+        }
+        let logp = logp.to_vec();
+        drop(output);
+        if let (Some(cache), Some(key)) = (self.emissions.as_mut(), key) {
+            cache.insert(key, logp.clone());
+        }
+        Ok(logp)
+    }
+}
+
+/// FNV-1a over the window's samples: the emission cache key.
+fn fingerprint(samples: &[i16]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64 ^ samples.len() as u64;
+    for b in samples.iter().flat_map(|s| s.to_le_bytes()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// Sung vocables give CTC no consonants to hold onto, so a free path can
+/// compress "ooh ooh ooh ooh" into two seconds of a 30-second phrase or
+/// slide a lone "oh" to the end of its gap.
+fn is_vocable(token: &str) -> bool {
+    let plain = token
+        .trim()
+        .trim_matches(|c: char| !c.is_alphabetic())
+        .to_lowercase();
+    !token.contains(['(', ')'])
+        && matches!(
+            plain.as_str(),
+            "oh" | "ooh"
+                | "oooh"
+                | "ohh"
+                | "oo"
+                | "ooo"
+                | "ah"
+                | "ahh"
+                | "aah"
+                | "ahha"
+                | "aw"
+                | "uh"
+                | "mm"
+                | "mmm"
+                | "hmm"
+        )
+}
+
+/// Share of a vocable line's stamp-to-stamp interval the spread fills:
+/// singers breathe before the next line (on JamendoLyrics the last vocable
+/// onset sits at a median 74% of the interval).
+const VOCABLE_SPAN: f64 = 0.85;
+
+/// A vocable-only line whose decoded onsets stray from an even spread over
+/// its interval by more than `tolerance_ms` takes the spread instead. A
+/// path that agrees with the spread keeps its own, finer timing.
+fn vocable_fallback(words: &mut [Word], line_t: i64, next_t: i64, tolerance_ms: i64) {
+    if words.is_empty() || next_t <= line_t || !words.iter().all(|w| is_vocable(&w.text)) {
+        return;
+    }
+    let span = (next_t - line_t) as f64 * VOCABLE_SPAN;
+    let n = words.len() as f64;
+    let spread = |i: usize| line_t + (span * i as f64 / n).round() as i64;
+    let strays = words
+        .iter()
+        .enumerate()
+        .any(|(i, w)| (w.t - spread(i)).abs() > tolerance_ms);
+    if !strays {
+        return;
+    }
+    for (i, w) in words.iter_mut().enumerate() {
+        w.t = spread(i);
+        w.end = Some(spread(i + 1));
+        w.points.clear();
     }
 }
 
@@ -776,7 +1052,14 @@ mod tests {
             text: "next".into(),
         };
         let eligible = |line: &TimedLine, next: Option<&TimedLine>, first, start| {
-            guide_eligible(line, next, &tokenize(&line.text), first, start)
+            guide_eligible(
+                line,
+                next.map(|n| n.t),
+                &tokenize(&line.text),
+                first,
+                start,
+                1500,
+            )
         };
         assert!(eligible(&line, Some(&next), 2501, 500));
         assert!(!eligible(&line, Some(&next), 2500, 500));
@@ -981,6 +1264,208 @@ mod tests {
         assert_eq!(window.len(), 336_000);
         let baseline = recorded_window_margin(640_000, &map, 10_000, 30_000, 500.0).unwrap();
         assert_eq!(baseline, 152_000..480_000);
+    }
+
+    // Regression (JamendoLyrics "i've waited i've waited"): the free path
+    // skipped a faint first copy of the line for a louder one 1.6s on. The
+    // retry finds the real entrance, whose first phoneme has too little
+    // support for the support guard; the rest of the line following it
+    // straight away is what tells it apart from a lone noise blip.
+    #[test]
+    fn connected_retry_trusts_a_faint_entrance_the_line_follows() {
+        let mut rows = vec![[-0.1_f64, -12.0, -12.0, -0.2]; 400];
+        rows[40] = [-1.0, -3.0, -12.0, -1.0];
+        for row in &mut rows[42..60] {
+            *row = [-0.5, -12.0, -0.5, -0.5];
+        }
+        // The louder repeat, which the trailing wildcard can also absorb.
+        for row in &mut rows[200..215] {
+            *row = [-4.0, -0.01, -12.0, -0.3];
+        }
+        for row in &mut rows[217..225] {
+            *row = [-4.0, -12.0, -0.01, -0.3];
+        }
+        let flat: Vec<f32> = rows
+            .into_iter()
+            .flat_map(|row| {
+                let z = row.iter().map(|v| v.exp()).sum::<f64>().ln();
+                row.map(|v| (v - z) as f32)
+            })
+            .collect();
+        let targets = [3, 1, 2, 3];
+        let original = ctc_spans(&flat, 4, &targets).unwrap();
+        assert_eq!(original[1].start, 200);
+        let candidate = ctc_spans_with_prior(
+            &flat,
+            4,
+            &targets,
+            Some(EntryPrior {
+                target: 1,
+                deadline: 45.0,
+                penalty_per_frame: 0.16,
+            }),
+        )
+        .unwrap();
+        assert_eq!((candidate[1].start, candidate[2].start), (40, 42));
+        assert!(!supported_entry_retry(&original, &candidate, 1));
+        assert!(connected_entry_retry(&original, &candidate, 1, 20.0));
+    }
+
+    #[test]
+    fn connected_retry_still_rejects_a_lone_blip() {
+        let original = [
+            TokenSpan {
+                start: 0,
+                end: 10,
+                confidence: 0.9,
+            },
+            TokenSpan {
+                start: 825,
+                end: 843,
+                confidence: 0.9,
+            },
+            TokenSpan {
+                start: 850,
+                end: 875,
+                confidence: 0.9,
+            },
+        ];
+        let blip = [
+            TokenSpan {
+                start: 0,
+                end: 10,
+                confidence: 0.9,
+            },
+            TokenSpan {
+                start: 45,
+                end: 46,
+                confidence: 0.4,
+            },
+            TokenSpan {
+                start: 850,
+                end: 875,
+                confidence: 0.9,
+            },
+        ];
+        assert!(!connected_entry_retry(&original, &blip, 1, 20.0));
+        let mut far = blip.clone();
+        far[2] = TokenSpan {
+            start: 80,
+            end: 90,
+            confidence: 0.9,
+        };
+        // 34 frames of 20ms after the entrance: not the same phrase.
+        assert!(!connected_entry_retry(&original, &far, 1, 20.0));
+        far[2].start = 50;
+        assert!(connected_entry_retry(&original, &far, 1, 20.0));
+    }
+
+    fn vocable_line(texts: &[&str], onsets: &[i64]) -> Vec<Word> {
+        texts
+            .iter()
+            .zip(onsets)
+            .map(|(text, &t)| Word {
+                text: text.to_string(),
+                t,
+                end: Some(t + 100),
+                line_t: Some(10_000),
+                points: vec![WordPoint { t, fraction: 0.0 }],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn vocable_line_that_collapsed_takes_the_bounded_spread() {
+        // "ooh ooh ooh ooh" sung across 26s, decoded into its first two.
+        let mut words = vocable_line(
+            &["Ooh, ", "ooh ", "ooh ", "ooh"],
+            &[10_400, 10_800, 11_200, 11_900],
+        );
+        vocable_fallback(&mut words, 10_000, 30_000, 1000);
+        let onsets: Vec<i64> = words.iter().map(|w| w.t).collect();
+        assert_eq!(onsets, [10_000, 14_250, 18_500, 22_750]);
+        assert_eq!(words[0].end, Some(14_250));
+        assert_eq!(words[3].end, Some(27_000));
+        assert!(words.iter().all(|w| w.points.is_empty()));
+    }
+
+    #[test]
+    fn vocable_fallback_keeps_agreeing_paths_and_real_words() {
+        let agreeing = vocable_line(&["oh ", "ah ", "ah"], &[10_100, 10_900, 11_600]);
+        let mut words = agreeing.clone();
+        vocable_fallback(&mut words, 10_000, 12_800, 1000);
+        assert_eq!(words, agreeing);
+        for texts in [["oh ", "my ", "love"], ["(oh) ", "(ah) ", "(ah)"]] {
+            let line = vocable_line(&texts, &[10_000, 25_000, 26_000]);
+            let mut words = line.clone();
+            vocable_fallback(&mut words, 10_000, 30_000, 1000);
+            assert_eq!(words, line);
+        }
+    }
+
+    #[test]
+    fn sung_syllables_count_vowel_groups_and_characters() {
+        let count = |text: &str| sung_syllables(&tokenize(text));
+        assert_eq!(count("intentando destacar"), 7);
+        assert_eq!(count("will burn"), 2);
+        assert_eq!(count("rhythm"), 1);
+        assert_eq!(count("mmm"), 1);
+        assert_eq!(count("canción él"), 3);
+        assert_eq!(count("사랑해"), 3);
+    }
+
+    #[test]
+    fn window_cap_only_shortens_long_gaps() {
+        let off = Knobs {
+            cap_per_syllable_ms: 0,
+            ..Knobs::MIX
+        };
+        assert_eq!(off.window_next(10_000, 40_000, 3), 40_000);
+        let cap = Knobs {
+            cap_per_syllable_ms: 900,
+            cap_base_ms: 1500,
+            ..Knobs::MIX
+        };
+        assert_eq!(cap.window_next(10_000, 40_000, 3), 14_200);
+        assert_eq!(cap.window_next(10_000, 12_000, 3), 12_000);
+    }
+
+    #[test]
+    fn guide_threshold_and_last_line_are_explicit() {
+        let line = TimedLine {
+            t: 1000,
+            text: "will burn".into(),
+        };
+        let tokens = tokenize(&line.text);
+        assert!(!guide_eligible(&line, Some(5000), &tokens, 2200, 500, 1500));
+        assert!(guide_eligible(&line, Some(5000), &tokens, 2200, 500, 1000));
+        // The last line's bound is what was recorded after its stamp.
+        assert!(guide_eligible(
+            &line,
+            Some(12_000),
+            &tokens,
+            4000,
+            500,
+            1500
+        ));
+        assert!(!guide_eligible(&line, None, &tokens, 4000, 500, 1500));
+    }
+
+    #[test]
+    fn both_paths_run_the_tuned_decoder() {
+        assert_eq!(Knobs::MIX, Knobs::TRIAL);
+        let k = Knobs::MIX;
+        assert!(k.guide && k.guide_last && k.connected_retry);
+        assert_eq!(k.window_next(0, 99_000, 9), 6600);
+        assert_eq!(RECIPE, "mms-int8/2");
+    }
+
+    #[test]
+    fn emission_cache_keys_distinguish_windows() {
+        let a = [1i16, 2, 3];
+        assert_eq!(fingerprint(&a), fingerprint(&[1, 2, 3]));
+        assert_ne!(fingerprint(&a), fingerprint(&[1, 2, 4]));
+        assert_ne!(fingerprint(&a), fingerprint(&a[..2]));
     }
 
     #[test]

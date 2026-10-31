@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lines = parse_lrc(&std::fs::read_to_string(args[0].join("lyrics.lrc"))?);
     let words = model.align_guided_entries(&vocals, &lines, &map, None)?;
     let result = serde_json::json!({
-        "recipe": "mms-int8/mdx-kim2-4",
+        "recipe": "mms-int8/mdx-kim2-5",
         "input": if stereo.is_some() { "stereo" } else { "mono" },
         "separation_seconds": separated,
         "total_seconds": started.elapsed().as_secs_f64(),

@@ -243,7 +243,7 @@ fn flush_latin(latin: &mut String, out: &mut Vec<String>) {
     }
 }
 
-fn is_syllable_char(c: char) -> bool {
+pub(crate) fn is_syllable_char(c: char) -> bool {
     matches!(
         u32::from(c),
         0xAC00..=0xD7A3 | 0x1100..=0x11FF | 0x3130..=0x318F
