@@ -420,9 +420,10 @@ fn read_file_inner(path: &Path, synced: Option<&str>, prune: bool) -> Vec<Word> 
             .words
             .iter()
             .any(|w| w.text.chars().any(|c| c.is_ascii_digit()));
+    let expected = crate::vocal_preview::cache_recipe(path, recipe());
     if stale_digits
         || file.v != STORE_V
-        || file.recipe != crate::vocal_preview::cache_recipe(path, recipe())
+        || (file.recipe != expected && !superseded(&file.recipe, expected))
         || file.synced.as_deref() != Some(synced)
     {
         if prune {
@@ -431,6 +432,13 @@ fn read_file_inner(path: &Path, synced: Option<&str>, prune: bool) -> Vec<Word> 
         return Vec::new();
     }
     file.words
+}
+
+/// A song saved under an acoustic recipe the current one replaced keeps its
+/// words on screen; `has_file` still reports it missing so the next full
+/// listen relearns it.
+fn superseded(stored: &str, expected: &str) -> bool {
+    expected == acoustic::RECIPE && acoustic::EARLIER_RECIPES.contains(&stored)
 }
 
 fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::Result<()> {
@@ -482,12 +490,15 @@ fn has_file(dir: &Path, key: &str, synced: Option<&str>) -> bool {
         return false;
     }
     // Old accurate word caches remain readable while the next full listen
-    // upgrades acoustic detail. Mark the attempt even for non-English songs.
-    crate::acoustic::assets().is_none()
-        || std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<StoreFile>(&bytes).ok())
-            .is_some_and(|file| file.detail_v >= 1)
+    // upgrades acoustic detail or relearns under a newer recipe. Mark the
+    // attempt even for non-English songs.
+    std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<StoreFile>(&bytes).ok())
+        .is_some_and(|file| {
+            file.recipe == crate::vocal_preview::cache_recipe(&path, recipe())
+                && (crate::acoustic::assets().is_none() || file.detail_v >= 1)
+        })
 }
 
 /// Cache eligibility is stricter than the 55% diagnostic-dump threshold:
@@ -1405,6 +1416,21 @@ mod tests {
         );
         assert!(!has_file(&cache, &key, Some(&synced)));
         println!("Retained acoustic spelling detail for {detailed} words");
+        // A sync saved under the replaced recipe keeps displaying and is never
+        // deleted, but the next full listen relearns it.
+        let mut earlier = serde_json::to_value(&stored).unwrap();
+        earlier["recipe"] = acoustic::EARLIER_RECIPES[0].into();
+        std::fs::write(
+            cache.join(format!("{key}.json")),
+            serde_json::to_vec(&earlier).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            load(&cache, &artist, &title, &album, duration_ms, Some(&synced)),
+            words
+        );
+        assert!(!has_file(&cache, &key, Some(&synced)));
+        assert!(cache.join(format!("{key}.json")).is_file());
 
         assert!(load(
             &cache,
@@ -1736,6 +1762,17 @@ mod tests {
         assert!(read_file(&path, Some("[00:01.00]one")).is_empty());
         assert!(!path.is_file());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_replaced_acoustic_recipe_stays_readable() {
+        assert!(superseded("mms-int8/1", acoustic::RECIPE));
+        assert!(!superseded("other/9", acoustic::RECIPE));
+        assert!(!acoustic::EARLIER_RECIPES.contains(&acoustic::RECIPE));
+        // Without the acoustic model, and in the vocal trial's own caches,
+        // a recipe mismatch still drops the file as before.
+        assert!(!superseded("mms-int8/1", align::Stages::RECIPE));
+        assert!(!superseded("mms-int8/1", crate::vocal_preview::RECIPE));
     }
 
     #[test]

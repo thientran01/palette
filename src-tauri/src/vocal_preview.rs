@@ -2,19 +2,23 @@
 //! (`separation.rs`) before acoustic alignment. Never enabled in release builds.
 use std::path::Path;
 
-pub const CACHE_DIR: &str = "karaoke-vocals-preview-v4";
-pub const RECIPE: &str = "mms-int8/mdx-kim2-4";
+/// v5: Knobs::TRIAL decoder (connected entry retry, last-line guide,
+/// syllable window cap, vocable fallback).
+pub const CACHE_DIR: &str = "karaoke-vocals-preview-v5";
+pub const RECIPE: &str = "mms-int8/mdx-kim2-5";
 /// Earlier trial generations, newest first, with the recipe each wrote.
 /// Still readable while the trial relearns; never deleted on mismatch.
-pub const EARLIER_CACHES: [(&str, &str); 3] = [
+pub const EARLIER_CACHES: [(&str, &str); 4] = [
+    ("karaoke-vocals-preview-v4", "mms-int8/mdx-kim2-4"),
     ("karaoke-vocals-preview-v3", "mms-int8/demucs-source-3"),
     ("karaoke-vocals-preview-v2", "mms-int8/demucs-entry-2"),
     ("karaoke-vocals-preview-v1", "mms-int8/demucs-preview-1"),
 ];
-pub const EARLIER_CACHE_DIRS: [&str; 3] = [
+pub const EARLIER_CACHE_DIRS: [&str; 4] = [
     EARLIER_CACHES[0].0,
     EARLIER_CACHES[1].0,
     EARLIER_CACHES[2].0,
+    EARLIER_CACHES[3].0,
 ];
 
 pub fn enabled() -> bool {
