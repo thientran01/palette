@@ -619,20 +619,24 @@ impl AcousticAligner {
         )
     }
 
+    /// Offline comparison baseline: the vocal path without the entry retry.
     pub fn align_entries(
         &mut self,
         pcm: &[i16],
         lines: &[TimedLine],
         map: &TimeMap,
     ) -> Result<Vec<Word>> {
-        let mut words =
-            self.align_inner(pcm, lines, map, 500.0, None, EntryMode::Refine, Knobs::MIX)?;
+        let knobs = Knobs {
+            guide: false,
+            ..Knobs::TRIAL
+        };
+        let mut words = self.align_inner(pcm, lines, map, 500.0, None, EntryMode::Refine, knobs)?;
         entry_timing::refine(pcm, map, &mut words);
         Ok(words)
     }
 
     /// Source-guidance trial: retries the decoder on the same emissions.
-    /// Existing align/align_entries remain unchanged comparison baselines.
+    /// align_entries is the same path without the retry, for comparison.
     pub fn align_guided_entries(
         &mut self,
         pcm: &[i16],
