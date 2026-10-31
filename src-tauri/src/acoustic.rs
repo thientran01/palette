@@ -19,9 +19,12 @@ const STAR: usize = 28;
 mod entry_timing;
 
 /// Recipe pins the exported weights, normalization, window and decoder.
-/// 2: Knobs::MIX's tuned decoder (2026-10-31). Bumping it re-learns every
-/// saved sync on its next play.
+/// 2: Knobs::MIX's tuned decoder (2026-10-31). Bumping it relearns every
+/// saved sync on the song's next full listen.
 pub const RECIPE: &str = "mms-int8/2";
+/// Recipes RECIPE replaced. Words saved under them keep showing, and are
+/// never deleted on mismatch, until the next full listen relearns the song.
+pub const EARLIER_RECIPES: [&str; 1] = ["mms-int8/1"];
 pub const MODEL_SHA256: &str = "50128ba8db1150101b9e7d3610cdfda5c8fd2637b918d151ff6aa6fde2b9c2de";
 pub const RUNTIME_SHA256: &str = "c7151fd9844ad7c7d18525f1177e9ef62d91e4a6ac3583d0be700554a2b2b1d6";
 static ASSETS: OnceLock<Option<PathBuf>> = OnceLock::new();

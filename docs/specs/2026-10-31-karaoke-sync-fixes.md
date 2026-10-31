@@ -47,11 +47,14 @@ The vocal trial (`Knobs::TRIAL`) has its own cache generation
 (`karaoke-vocals-preview-v5`, recipe `mms-int8/mdx-kim2-5`). The v4 cache
 stays readable while songs re-learn.
 
-The shipped mix path (`Knobs::MIX`) runs the same decoder in a separate
-commit, which bumps `acoustic::RECIPE` from `mms-int8/1` to `mms-int8/2`.
-`read_store` rejects (and prunes) a saved sync whose recipe differs, so
-every saved sync is recorded again on its next full listen. That is the
-cost of the mix gains below, and it is why that commit stands apart.
+The shipped mix path (`Knobs::MIX`) runs the same decoder and bumps
+`acoustic::RECIPE` from `mms-int8/1` to `mms-int8/2`, so every saved sync is
+learned again on its song's next full listen. `read_file` used to delete a
+saved sync whose recipe differed, which would have blanked every song's word
+timing until it was heard in full again. `acoustic::EARLIER_RECIPES` keeps
+`mms-int8/1` files readable and undeleted instead; `has_file` still reports
+them missing, so the recorder relearns them and the new file replaces the
+old one. Other recipe mismatches still drop the file as before.
 
 ## Results (median / p90 ms, share within 300 ms)
 
