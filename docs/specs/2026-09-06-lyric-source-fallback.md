@@ -1,5 +1,7 @@
 # Source-guided lyric entrances
 
+> **Superseded in part (2026-10-31):** see `2026-10-31-karaoke-sync-fixes.md`. The entry retry now also runs on the shipped mixed-audio path and on the last line, the gate is 700 ms, and a connected entrance is trusted alongside the support guard (`acoustic::Knobs`, recipe `mms-int8/2`).
+
 ## Approved behavior
 
 Source line timestamps guide acoustic alignment; they never replace valid word/syllable animation with a plain highlight. This supersedes the earlier plain-highlight fallback after direct user feedback. Invalid or missing word spans retain ordinary line display.
