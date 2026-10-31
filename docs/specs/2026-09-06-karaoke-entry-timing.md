@@ -1,5 +1,7 @@
 # Trial entry timing
 
+> **Superseded in part (2026-10-31):** see `2026-10-31-karaoke-sync-fixes.md`. The entry retry now also runs on the shipped mixed-audio path and on the last line, the gate is 700 ms, and a connected entrance is trusted alongside the support guard (`acoustic::Knobs`, recipe `mms-int8/2`).
+
 Scope approved in conversation: ship the positively reviewed entry improvements, excluding unvalidated held-note changes. One PR stacked on the vocal trial and source guard.
 
 Separated-vocal worker uses align_entries; normal align and offline align_probe retain their behavior. Initial oh/ooh/ah tokens use 20ms RMS frames, 15% of interpolated p90 with a 0.001 floor, bridge <=100ms dips, require >=300ms support. Search starts no earlier than line minus 500ms or previous word end and stops at the next word start, with a 10s maximum. Choose the longest eligible run; require at least 120ms entry advance. Never shorten the original end or move following words; clear stale subword points. Parenthesized initial tokens are excluded.
