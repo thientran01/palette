@@ -8,6 +8,27 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-10-28
+
+### Fixed
+
+- Album art that fails to load when a song starts now keeps retrying with backoff for about two minutes, and again whenever the player updates the song's details, instead of staying a blank note for the whole track.
+- Long track titles in the pill now end in an ellipsis before the waveform instead of running into it.
+
+## [1.0.9] - 2026-10-24
+
+### Fixed
+
+- Search's "Something different" and the queue's more-like-this work again. Last.fm stopped returning similar tracks, so Palette now falls back to similar artists and suggests their top tracks.
+
+## [1.0.8] - 2026-10-20
+
+### Fixed
+
+- Search's "Something different" section no longer goes empty for long listening histories. It now looks further down Last.fm's similar-tracks list and tries more of your songs before giving up, and Palette's log records why the section came up empty.
+
+## [1.0.7] - 2026-10-08
+
 ### Added
 
 - "Restart Palette" in the tray menu, for when the window gets stuck (for example, painting black) and needs a fresh start.

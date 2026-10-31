@@ -121,21 +121,26 @@ function discoveryKey(artist: string, title: string): string {
   return `${artist.trim().toLowerCase()}\u0001${title.trim().toLowerCase()}`;
 }
 
-/** Up to two discovery seeds, rotated by the day-block so suggestions refresh
- * a few times a day. Seed B prefers a different artist than A, so two seeds
- * don't both pull the same artist's neighborhood. */
+/** Up to four discovery seeds, rotated by the day-block so suggestions refresh
+ * a few times a day, each from a different artist so two seeds don't pull the
+ * same artist's neighborhood. The backend walks them in order and stops once
+ * it has enough picks, so the later seeds only cost anything when the earlier
+ * ones come up dry (a most-played seed's neighbors are often all already
+ * played — similar.rs). */
+const SEED_COUNT = 4;
 function pickSeeds(pool: Agg[], seed: number): { title: string; artist: string }[] {
   const top = pool.slice(0, 10);
   if (!top.length) return [];
   const a = top[seed % top.length];
   const seeds = [{ title: a.title, artist: a.artist }];
-  const artistA = a.artist.trim().toLowerCase();
+  const artists = new Set([a.artist.trim().toLowerCase()]);
   const start = (seed * 7 + 3) % top.length;
-  for (let i = 0; i < top.length; i++) {
+  for (let i = 0; i < top.length && seeds.length < SEED_COUNT; i++) {
     const c = top[(start + i) % top.length];
-    if (c.key === a.key || c.artist.trim().toLowerCase() === artistA) continue;
+    const artist = c.artist.trim().toLowerCase();
+    if (artists.has(artist)) continue;
+    artists.add(artist);
     seeds.push({ title: c.title, artist: c.artist });
-    break;
   }
   return seeds;
 }
