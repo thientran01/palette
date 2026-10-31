@@ -3,7 +3,8 @@
 //! behavior changes; this only replays both shipped pipelines offline.
 //!
 //!   cargo run --release --example karaoke_bench -- <jamendolyrics-dir> <model-dir> <out-dir>
-//!       [--only <substring>] [--mix-only] [--lead-ms <n>] [--shard k/n] [--report]
+//!       [--only <a,b>] [--mix-only] [--cached-only] [--diagnostics] [--dumps <dir>]
+//!       [--lead-ms <n>] [--shard k/n] [--variant <name>=<knob>:<v>,...]... [--report]
 //!
 //! Per song: ffmpeg decodes the MP3 to 48kHz float stereo (the usual
 //! loopback device rate); mono = channel mean box-decimated to 16kHz and
@@ -21,12 +22,26 @@
 //! in parallel and a final `--report` prints the whole set. Never point
 //! <out-dir> inside the repo.
 //!
+//! Each `--variant` overrides `Knobs` fields (guide, late, last, cap,
+//! capbase, vocable, connected; booleans as 0/1) on top of what each
+//! pipeline ships (`Knobs::MIX` / `Knobs::TRIAL`), and writes
+//! songs-lead<n>-<name>/; with several, compare-lead<n>.md puts them
+//! side by side against the first. Model emissions are cached per window in
+//! <out-dir>/emissions, so decoder-only candidates rescore without the
+//! model; `--cached-only` skips songs whose vocals were never separated.
+//! `--dumps <karaoke-dumps dir>` instead reports how far each variant moves
+//! words on the app's own unlabelled dumps (drift-dumps.md).
+//! `--diagnostics` stores the aligner's per-line diagnostics (including each
+//! entry retry and whether it was accepted) beside the scores. The process
+//! runs at idle priority. docs/specs/2026-10-31-karaoke-sync-fixes.md has
+//! the decisions this produced.
+//!
 //! Line stamps are human line onsets, so a line's first word starts from a
 //! near-perfect stamp; "rest" scores only the words after it.
 
 use pulse_lib::{
-    acoustic::AcousticAligner,
-    align::{tokenize, TimeMap, TimedLine, Word},
+    acoustic::{AcousticAligner, EmissionCache, Knobs},
+    align::{parse_lrc, tokenize, TimeMap, TimedLine, Word},
     separation::{to_target_grid, Stereo, VocalSeparator, MODEL_FILE},
 };
 use std::collections::BTreeMap;
@@ -350,6 +365,102 @@ fn from_rows(rows: &serde_json::Value) -> Errors {
     e
 }
 
+/// `name=key:value,key:value` over `Knobs` fields; an empty spec is the app.
+struct Variant {
+    name: String,
+    spec: String,
+}
+
+impl Variant {
+    fn knobs(&self, base: Knobs) -> Knobs {
+        let mut k = base;
+        for part in self.spec.split(',').filter(|p| !p.is_empty()) {
+            let (key, value) = part
+                .split_once(':')
+                .unwrap_or_else(|| die(format!("variant {}: {part} is not key:value", self.name)));
+            let int = || -> i64 {
+                value
+                    .parse()
+                    .unwrap_or_else(|_| die(format!("variant {}: {part}", self.name)))
+            };
+            match key {
+                "guide" => k.guide = int() != 0,
+                "late" => k.guide_late_ms = int(),
+                "last" => k.guide_last = int() != 0,
+                "cap" => k.cap_per_syllable_ms = int(),
+                "capbase" => k.cap_base_ms = int(),
+                "vocable" => k.vocable_tolerance_ms = int(),
+                "connected" => k.connected_retry = int() != 0,
+                _ => die(format!("variant {}: unknown knob {key}", self.name)),
+            }
+        }
+        k
+    }
+
+    fn dir(&self, out: &Path, lead_ms: i64) -> PathBuf {
+        if self.name == "shipped" && self.spec.is_empty() {
+            out.join(format!("songs-lead{lead_ms}"))
+        } else {
+            out.join(format!("songs-lead{lead_ms}-{}", self.name))
+        }
+    }
+}
+
+/// The benchmark shares the user's desktop: run at idle priority so the
+/// machine stays usable while it works.
+fn lower_priority() {
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, SetPriorityClass, IDLE_PRIORITY_CLASS,
+    };
+    // SAFETY: the pseudo-handle for this process needs no cleanup.
+    if let Err(e) = unsafe { SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS) } {
+        eprintln!("could not lower priority: {e}");
+    }
+}
+
+fn load_emissions(path: &Path) -> EmissionCache {
+    let Ok(raw) = std::fs::read(path) else {
+        return EmissionCache::new();
+    };
+    let mut cache = EmissionCache::new();
+    let mut at = 0;
+    let take = |at: &mut usize, n: usize| -> Option<&[u8]> {
+        let s = raw.get(*at..*at + n)?;
+        *at += n;
+        Some(s)
+    };
+    while at < raw.len() {
+        let (Some(key), Some(len)) = (take(&mut at, 8), take(&mut at, 4)) else {
+            break;
+        };
+        let key = u64::from_le_bytes(key.try_into().expect("8 bytes"));
+        let len = u32::from_le_bytes(len.try_into().expect("4 bytes")) as usize;
+        let Some(body) = take(&mut at, len * 4) else {
+            break;
+        };
+        let values = body
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        cache.insert(key, values);
+    }
+    cache
+}
+
+fn save_emissions(path: &Path, cache: &EmissionCache) {
+    let mut raw = Vec::new();
+    for (key, values) in cache {
+        raw.extend(key.to_le_bytes());
+        raw.extend((values.len() as u32).to_le_bytes());
+        raw.extend(values.iter().flat_map(|v| v.to_le_bytes()));
+    }
+    if let Err(e) = std::fs::write(path, raw) {
+        eprintln!("{}: {e}", path.display());
+    }
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut flag = |name: &str, value: bool| -> Option<String> {
@@ -367,6 +478,9 @@ fn main() {
     let only = flag("--only", true);
     let mix_only = flag("--mix-only", false).is_some();
     let report_only = flag("--report", false).is_some();
+    let cached_only = flag("--cached-only", false).is_some();
+    let diagnostics = flag("--diagnostics", false).is_some();
+    let dumps = flag("--dumps", true);
     let shard: Option<(usize, usize)> = flag("--shard", true).map(|v| {
         v.split_once('/')
             .and_then(|(k, n)| Some((k.parse().ok()?, n.parse().ok()?)))
@@ -377,36 +491,74 @@ fn main() {
         v.parse()
             .unwrap_or_else(|_| die("--lead-ms needs an integer"))
     });
+    let mut variants = Vec::new();
+    while let Some(v) = flag("--variant", true) {
+        let (name, spec) = v.split_once('=').unwrap_or((v.as_str(), ""));
+        variants.push(Variant {
+            name: name.to_string(),
+            spec: spec.to_string(),
+        });
+    }
+    if variants.is_empty() {
+        variants.push(Variant {
+            name: "shipped".into(),
+            spec: String::new(),
+        });
+    }
     let [dataset, models, out] = args.as_slice() else {
-        die("usage: karaoke_bench <jamendolyrics-dir> <model-dir> <out-dir> [--only s] [--mix-only] [--lead-ms n] [--shard k/n] [--report]");
+        die("usage: karaoke_bench <jamendolyrics-dir> <model-dir> <out-dir> [--only a,b] [--mix-only] [--cached-only] [--diagnostics] [--dumps dir] [--lead-ms n] [--shard k/n] [--variant name=knob:v,..]... [--report]");
     };
     let (dataset, models, out) = (
         PathBuf::from(dataset),
         PathBuf::from(models),
         PathBuf::from(out),
     );
+    lower_priority();
+    if let Some(dumps) = dumps {
+        drift(Path::new(&dumps), &models, &out, &variants, cached_only);
+        return;
+    }
     let started = Instant::now();
+    let only: Option<Vec<String>> = only.map(|o| o.split(',').map(str::to_string).collect());
     let list: Vec<Song> = songs(&dataset)
         .into_iter()
-        .filter(|s| only.as_ref().is_none_or(|o| s.stem.contains(o.as_str())))
+        .filter(|s| {
+            only.as_ref()
+                .is_none_or(|o| o.iter().any(|o| s.stem.contains(o.as_str())))
+        })
         .collect();
-    let songs_dir = out.join(format!("songs-lead{lead_ms}"));
     if !report_only {
         let run = Run {
             dataset: &dataset,
             models: &models,
             vocals_dir: out.join("vocals"),
-            songs_dir: &songs_dir,
+            emissions_dir: out.join("emissions"),
+            out: &out,
             lead_ms,
+            variants: &variants,
+            diagnostics,
         };
-        for d in [&run.vocals_dir, &songs_dir] {
+        for d in [&run.vocals_dir, &run.emissions_dir] {
             std::fs::create_dir_all(d).unwrap_or_else(|e| die(e));
         }
-        run.process(&list, shard, mix_only);
+        for v in &variants {
+            std::fs::create_dir_all(v.dir(&out, lead_ms)).unwrap_or_else(|e| die(e));
+        }
+        run.process(&list, shard, mix_only, cached_only);
     }
     // A shard only writes its songs; `--report` prints the whole set.
     if shard.is_none() {
-        report(&songs_dir, &list, lead_ms, started.elapsed().as_secs_f64());
+        let wall = started.elapsed().as_secs_f64();
+        let dirs: Vec<(String, PathBuf)> = variants
+            .iter()
+            .map(|v| (v.name.clone(), v.dir(&out, lead_ms)))
+            .collect();
+        for (_, dir) in &dirs {
+            report(dir, &list, lead_ms, wall, dirs.len() > 1);
+        }
+        if dirs.len() > 1 {
+            compare(&dirs, &list, &out.join(format!("compare-lead{lead_ms}.md")));
+        }
     }
 }
 
@@ -414,19 +566,31 @@ struct Run<'a> {
     dataset: &'a Path,
     models: &'a Path,
     vocals_dir: PathBuf,
-    songs_dir: &'a Path,
+    emissions_dir: PathBuf,
+    out: &'a Path,
     lead_ms: i64,
+    variants: &'a [Variant],
+    diagnostics: bool,
 }
 
 impl Run<'_> {
-    fn process(&self, list: &[Song], shard: Option<(usize, usize)>, mix_only: bool) {
-        // Loading the aligner first initializes the ONNX Runtime.
-        let mut aligner = AcousticAligner::load(
+    fn process(
+        &self,
+        list: &[Song],
+        shard: Option<(usize, usize)>,
+        mix_only: bool,
+        cached_only: bool,
+    ) {
+        // Loading the aligner first initializes the ONNX Runtime. No
+        // spinning: idle threads must not burn the desktop's CPU.
+        let mut aligner = AcousticAligner::load_tuned(
             &self.models.join("mms-fa-int8.onnx"),
             &self.models.join("onnxruntime.dll"),
+            2,
+            false,
         )
         .unwrap_or_else(|e| die(e));
-        let mut separator = (!mix_only).then(|| {
+        let mut separator = (!mix_only && !cached_only).then(|| {
             VocalSeparator::load(&self.models.join(MODEL_FILE)).unwrap_or_else(|e| die(e))
         });
         for (k, song) in list.iter().enumerate() {
@@ -434,6 +598,11 @@ impl Run<'_> {
                 continue;
             }
             let progress = format!("[{}/{}] {}", k + 1, list.len(), song.stem);
+            let cache_path = self.vocals_dir.join(format!("{}.i16", song.stem));
+            if cached_only && !mix_only && !cache_path.is_file() {
+                eprintln!("{progress} skipped: no cached vocals");
+                continue;
+            }
             let lines = match lines(self.dataset, &song.stem, self.lead_ms) {
                 Ok(l) => l,
                 Err(e) => {
@@ -466,22 +635,14 @@ impl Run<'_> {
                 })
                 .collect();
             let map = TimeMap::from_origin(0, TARGET_HZ);
-            let mut detail = serde_json::Map::new();
 
-            let t = Instant::now();
-            match aligner.align(&pcm, &timed, &map) {
-                Ok(words) => {
-                    detail.insert("mix".into(), score(&lines, &words));
-                }
-                Err(e) => eprintln!("{progress} mix align failed: {e}"),
-            }
-            let mix_secs = t.elapsed().as_secs_f64();
-
-            let (mut sep_secs, mut voc_secs) = (0.0, 0.0);
-            if let Some(sep) = separator.as_mut() {
-                let cache = self.vocals_dir.join(format!("{}.i16", song.stem));
-                let vocals = match read_i16(&cache).filter(|v| v.len() == pcm.len()) {
+            let mut sep_secs = 0.0;
+            let vocals = if mix_only {
+                None
+            } else {
+                match read_i16(&cache_path).filter(|v| v.len() == pcm.len()) {
                     Some(v) => Some(v),
+                    None if separator.is_none() => None,
                     None if pcm.len() > TARGET_HZ as usize * MAX_SECONDS => {
                         eprintln!("{progress}: longer than the separator's 8-minute bound");
                         None
@@ -492,11 +653,12 @@ impl Run<'_> {
                             interleaved: quantize(&stereo),
                             rate: CAPTURE_HZ,
                         };
+                        let sep = separator.as_mut().expect("checked above");
                         let v = sep.vocals_16k(Some(&input), &pcm, TARGET_HZ);
                         sep_secs = t.elapsed().as_secs_f64();
                         match v {
                             Ok(v) => {
-                                write_i16(&cache, &v);
+                                write_i16(&cache_path, &v);
                                 Some(v)
                             }
                             Err(e) => {
@@ -505,46 +667,285 @@ impl Run<'_> {
                             }
                         }
                     }
-                };
-                if let Some(vocals) = vocals {
-                    let t = Instant::now();
-                    match aligner.align_guided_entries(&vocals, &timed, &map, None) {
+                }
+            };
+            drop(stereo);
+
+            let emissions_path = self.emissions_dir.join(format!("{}.bin", song.stem));
+            let cache = load_emissions(&emissions_path);
+            let cached = cache.len();
+            aligner.set_emission_cache(Some(cache));
+            let audio = pcm.len() as f64 / TARGET_HZ as f64;
+            let mut briefs = Vec::new();
+            for variant in self.variants {
+                let mut detail = serde_json::Map::new();
+                let mut diag = self.diagnostics.then(|| (Vec::new(), Vec::new()));
+                let t = Instant::now();
+                match aligner.align_with_knobs(
+                    &pcm,
+                    &timed,
+                    &map,
+                    false,
+                    variant.knobs(Knobs::MIX),
+                    diag.as_mut().map(|d| &mut d.0),
+                ) {
+                    Ok(words) => {
+                        detail.insert("mix".into(), score(&lines, &words));
+                    }
+                    Err(e) => eprintln!("{progress} {} mix align failed: {e}", variant.name),
+                }
+                let mix_secs = t.elapsed().as_secs_f64();
+                let t = Instant::now();
+                if let Some(vocals) = &vocals {
+                    match aligner.align_with_knobs(
+                        vocals,
+                        &timed,
+                        &map,
+                        true,
+                        variant.knobs(Knobs::TRIAL),
+                        diag.as_mut().map(|d| &mut d.1),
+                    ) {
                         Ok(words) => {
                             detail.insert("vocals".into(), score(&lines, &words));
                         }
-                        Err(e) => eprintln!("{progress} vocal align failed: {e}"),
+                        Err(e) => eprintln!("{progress} {} vocal align failed: {e}", variant.name),
                     }
-                    voc_secs = t.elapsed().as_secs_f64();
+                }
+                let voc_secs = t.elapsed().as_secs_f64();
+                if let Some((mix, vocals)) = diag {
+                    detail.insert(
+                        "diagnostics".into(),
+                        serde_json::json!({"mix": mix, "vocals": vocals}),
+                    );
+                }
+                detail.insert(
+                    "seconds".into(),
+                    serde_json::json!({
+                        "audio": audio, "decode": decode_secs, "separate": sep_secs,
+                        "align_mix": mix_secs, "align_vocals": voc_secs,
+                    }),
+                );
+                let brief = |p: &str| {
+                    detail
+                        .get(p)
+                        .and_then(|rows| summarize(&from_rows(rows).all))
+                        .map_or("–".to_string(), |s| format!("{}/{}", s.median, s.p90))
+                };
+                briefs.push(format!(
+                    "{} mix {} vocals {} ({mix_secs:.0}+{voc_secs:.0}s)",
+                    variant.name,
+                    brief("mix"),
+                    brief("vocals")
+                ));
+                let json = serde_json::to_vec_pretty(&serde_json::Value::Object(detail))
+                    .expect("serializable");
+                let path = variant
+                    .dir(self.out, self.lead_ms)
+                    .join(format!("{}.json", song.stem));
+                if let Err(e) = std::fs::write(&path, json) {
+                    eprintln!("{}: {e}", path.display());
                 }
             }
-            let audio = pcm.len() as f64 / TARGET_HZ as f64;
-            detail.insert(
-                "seconds".into(),
-                serde_json::json!({
-                    "audio": audio, "decode": decode_secs, "separate": sep_secs,
-                    "align_mix": mix_secs, "align_vocals": voc_secs,
-                }),
-            );
-            let brief = |p: &str| {
-                detail
-                    .get(p)
-                    .and_then(|rows| summarize(&from_rows(rows).all))
-                    .map_or("–".to_string(), |s| format!("{}ms", s.median))
-            };
+            let cache = aligner.take_emission_cache().unwrap_or_default();
+            if cache.len() > cached {
+                save_emissions(&emissions_path, &cache);
+            }
             eprintln!(
-                "{progress} ({}) mix {} vocals {} · {audio:.0}s audio, sep {sep_secs:.1}s, align {mix_secs:.1}+{voc_secs:.1}s",
+                "{progress} ({}) {audio:.0}s audio, sep {sep_secs:.0}s · {}",
                 song.language,
-                brief("mix"),
-                brief("vocals"),
+                briefs.join(" · ")
             );
-            let json = serde_json::to_vec_pretty(&serde_json::Value::Object(detail))
-                .expect("serializable");
-            let path = self.songs_dir.join(format!("{}.json", song.stem));
-            if let Err(e) = std::fs::write(&path, json) {
-                eprintln!("{}: {e}", path.display());
+        }
+    }
+}
+
+/// Side by side: overall numbers per variant, and every song a candidate
+/// makes clearly worse than the first variant (the baseline).
+fn compare(dirs: &[(String, PathBuf)], list: &[Song], path: &Path) {
+    let load = |dir: &Path, song: &Song, p: &str| -> Option<Errors> {
+        let raw = std::fs::read(dir.join(format!("{}.json", song.stem))).ok()?;
+        let v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        v.get(p).map(from_rows)
+    };
+    let mut md = String::from("# Variant comparison\n\n");
+    md.push_str(HEADER);
+    md.push('\n');
+    for p in PIPELINES {
+        for (name, dir) in dirs {
+            let mut all = Errors::default();
+            for song in list {
+                if let Some(e) = load(dir, song, p) {
+                    all.extend(&e);
+                }
+            }
+            md.push_str(&fmt_row(
+                &format!("{p} · {name}"),
+                &summarize(&all.all),
+                Some(all.coverage()),
+            ));
+            md.push('\n');
+        }
+    }
+    md.push_str("\n## Songs worse than the baseline (median +10 ms or p90 +50 ms)\n\n");
+    for p in PIPELINES {
+        for (name, dir) in &dirs[1..] {
+            for song in list {
+                let (Some(b), Some(c)) = (load(&dirs[0].1, song, p), load(dir, song, p)) else {
+                    continue;
+                };
+                let (Some(b), Some(c)) = (summarize(&b.all), summarize(&c.all)) else {
+                    continue;
+                };
+                if c.median > b.median + 10 || c.p90 > b.p90 + 50 {
+                    md.push_str(&format!(
+                        "- {p} · {name}: {} median {} → {}, p90 {} → {}\n",
+                        song.stem, b.median, c.median, b.p90, c.p90
+                    ));
+                }
             }
         }
     }
+    print!("{md}");
+    let _ = std::fs::write(path, md);
+}
+
+/// Unlabelled regression check on the app's own evidence dumps
+/// (karaoke-dumps/<key>: pcm.i16, lyrics.lrc, meta.json). There is no truth
+/// here, so this measures how far each variant MOVES words relative to the
+/// first: a candidate that rewrites lines wholesale on songs the public set
+/// cannot represent (Korean, mixed-script K-pop) shows up before it ships.
+fn drift(dumps: &Path, models: &Path, out: &Path, variants: &[Variant], cached_only: bool) {
+    let mut aligner = AcousticAligner::load_tuned(
+        &models.join("mms-fa-int8.onnx"),
+        &models.join("onnxruntime.dll"),
+        2,
+        false,
+    )
+    .unwrap_or_else(|e| die(e));
+    let mut separator = (!cached_only)
+        .then(|| VocalSeparator::load(&models.join(MODEL_FILE)).unwrap_or_else(|e| die(e)));
+    let (vocals_dir, emissions_dir) = (out.join("dump-vocals"), out.join("dump-emissions"));
+    for d in [&vocals_dir, &emissions_dir] {
+        std::fs::create_dir_all(d).unwrap_or_else(|e| die(e));
+    }
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(dumps)
+        .unwrap_or_else(|e| die(format!("{}: {e}", dumps.display())))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("pcm.i16").is_file())
+        .collect();
+    dirs.sort();
+    let mut md = String::from(
+        "# Drift on unlabelled dumps (vs the first variant)\n\n| dump | pipeline | variant | words | moved >300ms | median move of those |\n|---|---|---|---|---|---|\n",
+    );
+    for dir in dirs {
+        let key = dir
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let meta: serde_json::Value = match std::fs::read(dir.join("meta.json"))
+            .ok()
+            .and_then(|r| serde_json::from_slice(&r).ok())
+        {
+            Some(m) => m,
+            None => continue,
+        };
+        let Ok(map) = serde_json::from_value::<TimeMap>(meta["map"].clone()) else {
+            continue;
+        };
+        let (Some(pcm), Ok(lrc)) = (
+            read_i16(&dir.join("pcm.i16")),
+            std::fs::read_to_string(dir.join("lyrics.lrc")),
+        ) else {
+            continue;
+        };
+        let lines = parse_lrc(&lrc);
+        let title = format!(
+            "{} - {}",
+            meta["artist"].as_str().unwrap_or("?"),
+            meta["title"].as_str().unwrap_or("?")
+        );
+        let cache_path = vocals_dir.join(format!("{key}.i16"));
+        let vocals = read_i16(&cache_path)
+            .filter(|v| v.len() == pcm.len())
+            .or_else(|| {
+                let v = separator.as_mut()?.vocals_16k(None, &pcm, TARGET_HZ).ok()?;
+                write_i16(&cache_path, &v);
+                Some(v)
+            });
+        let emissions_path = emissions_dir.join(format!("{key}.bin"));
+        let cache = load_emissions(&emissions_path);
+        let cached = cache.len();
+        aligner.set_emission_cache(Some(cache));
+        for (pipeline, input, base) in [
+            ("mix", Some(&pcm), Knobs::MIX),
+            ("vocals", vocals.as_ref(), Knobs::TRIAL),
+        ] {
+            let Some(input) = input else {
+                continue;
+            };
+            let runs: Vec<Option<Vec<Word>>> = variants
+                .iter()
+                .map(|v| {
+                    aligner
+                        .align_with_knobs(
+                            input,
+                            &lines,
+                            &map,
+                            pipeline == "vocals",
+                            v.knobs(base),
+                            None,
+                        )
+                        .ok()
+                })
+                .collect();
+            let Some(Some(reference)) = runs.first() else {
+                continue;
+            };
+            for (variant, run) in variants.iter().zip(&runs).skip(1) {
+                let Some(run) = run else {
+                    continue;
+                };
+                let mut moved: Vec<i64> = reference
+                    .iter()
+                    .zip(run)
+                    .map(|(a, b)| (a.t - b.t).abs())
+                    .filter(|&d| d > 300)
+                    .collect();
+                moved.sort_unstable();
+                // Each moved word against its own line stamp, so a reader
+                // can judge which placement is plausible.
+                for (a, b) in reference.iter().zip(run) {
+                    if (a.t - b.t).abs() > 300 {
+                        eprintln!(
+                            "  {title} {pipeline} {}: line {} {:?} {} → {}",
+                            variant.name,
+                            a.line_t.unwrap_or(-1),
+                            a.text.trim(),
+                            a.t,
+                            b.t
+                        );
+                    }
+                }
+                md.push_str(&format!(
+                    "| {title} | {pipeline} | {} | {} | {} ({:.1}%) | {} |\n",
+                    variant.name,
+                    reference.len(),
+                    moved.len(),
+                    moved.len() as f64 * 100.0 / reference.len().max(1) as f64,
+                    moved
+                        .get(moved.len() / 2)
+                        .map_or("–".into(), |m| format!("{m} ms")),
+                ));
+            }
+        }
+        let cache = aligner.take_emission_cache().unwrap_or_default();
+        if cache.len() > cached {
+            save_emissions(&emissions_path, &cache);
+        }
+        eprintln!("{title} done");
+    }
+    print!("{md}");
+    let _ = std::fs::write(out.join("drift-dumps.md"), md);
 }
 
 fn fmt_row(label: &str, s: &Option<Summary>, coverage: Option<f64>) -> String {
@@ -566,7 +967,7 @@ fn fmt_row(label: &str, s: &Option<Summary>, coverage: Option<f64>) -> String {
 
 const HEADER: &str = "| | words | median ms | p90 ms | ≤100ms | ≤300ms | bias mean / median | coverage |\n|---|---|---|---|---|---|---|---|";
 
-fn report(songs_dir: &Path, list: &[Song], lead_ms: i64, wall: f64) {
+fn report(songs_dir: &Path, list: &[Song], lead_ms: i64, wall: f64, quiet: bool) {
     let mut overall: BTreeMap<&str, Errors> = BTreeMap::new();
     let mut by_lang: BTreeMap<(&str, &str), Errors> = BTreeMap::new();
     let mut per_song: Vec<(&Song, BTreeMap<&str, Errors>)> = Vec::new();
@@ -677,6 +1078,8 @@ fn report(songs_dir: &Path, list: &[Song], lead_ms: i64, wall: f64) {
         times[4],
         wall
     ));
-    print!("{md}");
+    if !quiet {
+        print!("{md}");
+    }
     let _ = std::fs::write(songs_dir.with_extension("md"), md);
 }
