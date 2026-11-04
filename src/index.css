@@ -1,4 +1,5 @@
 @import "@fontsource-variable/geist";
+@import "pretendard/dist/web/variable/pretendardvariable.css";
 @import "tailwindcss";
 
 /*
@@ -37,11 +38,14 @@
 }
 
 @theme {
-  /* Geist (Vercel, OFL-1.1), bundled via @fontsource-variable/geist.
-     Fallbacks fire only if Geist Variable fails to load. "Segoe UI" (present on
+  /* Geist (Vercel, OFL-1.1), bundled via @fontsource-variable/geist. Geist
+     has no Hangul, so Korean titles and lyrics fall through to Pretendard
+     (OFL-1.1, bundled) instead of Windows' Malgun Gothic. Pretendard sits
+     after Geist, so it only draws the glyphs Geist lacks.
+     The rest fire only if both bundled fonts fail to load. "Segoe UI" (present on
      Win10+11, always a normal weight) — NOT "Segoe UI Variable Display", whose
      large-optical-size cut renders thin/spindly at UI text sizes. */
-  --font-sans: "Geist Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Variable", "Pretendard Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --color-*: initial;
   --color-surface: rgb(var(--surface));
   --color-surface-2: rgb(var(--surface-2));
