@@ -7,7 +7,7 @@ const host = process.env.TAURI_DEV_HOST;
 
 // Worktrees under .claude/worktrees have no node_modules — Node resolves
 // packages from the MAIN checkout, outside Vite's default fs.allow, so the
-// Inter woff2s 403 (the Segoe UI fallback corrupts type feel-checks).
+// Geist woff2s 403 (the Segoe UI fallback corrupts type feel-checks).
 // @ts-expect-error process is a nodejs global
 const mainRoot = /^(.*?)[\\/]\.claude[\\/]worktrees[\\/]/.exec(process.cwd())?.[1];
 

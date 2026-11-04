@@ -1,4 +1,4 @@
-@import "@fontsource-variable/inter";
+@import "@fontsource-variable/geist";
 @import "tailwindcss";
 
 /*
@@ -37,10 +37,11 @@
 }
 
 @theme {
-  /* Fallbacks fire only if Inter Variable fails to load. "Segoe UI" (present on
+  /* Geist (Vercel, OFL-1.1), bundled via @fontsource-variable/geist.
+     Fallbacks fire only if Geist Variable fails to load. "Segoe UI" (present on
      Win10+11, always a normal weight) — NOT "Segoe UI Variable Display", whose
      large-optical-size cut renders thin/spindly at UI text sizes. */
-  --font-sans: "Inter Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --color-*: initial;
   --color-surface: rgb(var(--surface));
   --color-surface-2: rgb(var(--surface-2));
