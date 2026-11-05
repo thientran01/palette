@@ -1,4 +1,5 @@
 @import "@fontsource-variable/geist";
+@import "pretendard/dist/web/variable/pretendardvariable.css";
 @import "tailwindcss";
 
 /*
@@ -38,15 +39,16 @@
 
 @theme {
   /* Geist (Vercel, OFL-1.1), bundled via @fontsource-variable/geist. Geist
-     has no Hangul; Korean titles and lyrics use "Malgun Gothic", Windows'
-     own Korean UI font. It is heavily hinted, so it stays crisp under the
-     grayscale anti-aliasing a transparent WebView2 window is limited to (no
-     ClearType). Bundled Pretendard was tried and read soft: it ships
-     unhinted (Thien, 2026-11-05).
-     "Segoe UI" fires only if Geist fails to load (present on Win10+11,
-     always a normal weight) — NOT "Segoe UI Variable Display", whose
-     large-optical-size cut renders thin/spindly at UI text sizes. */
-  --font-sans: "Geist Variable", "Segoe UI", "Malgun Gothic", ui-sans-serif, system-ui, sans-serif;
+     has no Hangul, so Korean titles and lyrics fall through to Pretendard
+     (OFL-1.1, bundled). Pretendard sits after Geist, so it only draws the
+     glyphs Geist lacks. Malgun Gothic was tried as the crisper, hinted
+     option (Pretendard ships unhinted, and a transparent WebView2 window
+     gets grayscale AA, not ClearType), but Thien preferred Pretendard's
+     look (2026-11-05); it stays as the last-resort Hangul fallback.
+     "Segoe UI" fires only if the bundled fonts fail to load (present on
+     Win10+11, always a normal weight) — NOT "Segoe UI Variable Display",
+     whose large-optical-size cut renders thin/spindly at UI text sizes. */
+  --font-sans: "Geist Variable", "Pretendard Variable", "Segoe UI", "Malgun Gothic", ui-sans-serif, system-ui, sans-serif;
   --font-weight-normal: 430; /* see body */
   --color-*: initial;
   --color-surface: rgb(var(--surface));
@@ -90,13 +92,14 @@ body {
   color: rgb(var(--fg));
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  /* Geist sets tight by default, and on Windows at 100%
+  /* Geist and Pretendard set tight by default, and on Windows at 100%
      scaling the letters read as bunched (Thien, 2026-11-05). A hair of
      tracking opens them up; lyrics take a little more (LyricsPanel SCALE). */
   letter-spacing: 0.015em;
   /* Regular text a touch heavier than 400: grayscale AA (see --font-sans)
-     renders thin stems light and soft at 100% scaling. Variable Geist takes
-     any weight; Malgun Gothic and Segoe UI snap 430 to their Regular.
+     renders thin stems light and soft at 100% scaling. Variable Geist
+     and Pretendard take any weight; Segoe UI and Malgun Gothic snap 430
+     to their Regular.
      Set via --font-weight-normal (@theme) so `font-normal` agrees;
      font-medium (500) and up are unaffected. */
   font-weight: var(--font-weight-normal);
