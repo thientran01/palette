@@ -88,6 +88,10 @@ body {
   color: rgb(var(--fg));
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  /* Geist and Pretendard set tight by default, and on Windows at 100%
+     scaling the letters read as bunched (Thien, 2026-11-05). A hair of
+     tracking opens them up; lyrics take a little more (LyricsPanel SCALE). */
+  letter-spacing: 0.015em;
   /* No -webkit-font-smoothing override: "antialiased" is a macOS-ism that
      forces grayscale AA and visibly degrades ClearType on Windows. */
   user-select: none;

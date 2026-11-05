@@ -306,7 +306,7 @@ export type LyricsScale = "base" | "focus";
  * bottom ramp is what makes the room read "a sentence, not a page". */
 const SCALE = {
   base: {
-    row: "px-3 py-1.5 text-base leading-normal",
+    row: "px-3 py-1.5 text-base leading-normal tracking-[0.025em]",
     marker: "h-4 w-[2px]",
     anchor: 0.4,
     mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
