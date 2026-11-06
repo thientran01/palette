@@ -312,8 +312,9 @@ const SCALE = {
     anchor: 0.4,
     // The compact view stays full: a three-line cut left most of the panel
     // empty (Thien, 2026-11-06), so every line shows and only the
-    // brightness falls off with distance (±3 means "3 or further").
-    recede: { "-3": 0.15, "-2": 0.25, "-1": 0.45, "1": 0.8, "2": 0.55, "3": 0.35 },
+    // brightness falls off with distance (±3 means "3 or further"). Sung and
+    // upcoming lines fade symmetrically (Thien preferred it to a dimmer past).
+    recede: { "-3": 0.25, "-2": 0.45, "-1": 0.7, "1": 0.7, "2": 0.45, "3": 0.25 },
     // Non-current ink is drawn slightly smaller than its layout box
     // (paint-only, so wrapping never changes).
     restScale: 0.97,
@@ -336,7 +337,7 @@ const SCALE = {
     // through the ramp's start).
     // 2026-11-06 redesign: centered (0.5) with ~5 lines visible.
     anchor: 0.5,
-    recede: { "-2": 0.12, "-1": 0.3, "1": 0.7, "2": 0.3 },
+    recede: { "-2": 0.25, "-1": 0.6, "1": 0.6, "2": 0.25 },
     restScale: 0.82,
     // Tuned to the focus lyric box (#104's geometry: mt-[11vh] ladder top,
     // bottom on the art's bottom line at --stack-top + --art â€” Focus.tsx):
@@ -359,9 +360,9 @@ const SCALE = {
   },
 } as const satisfies Record<LyricsScale, unknown>;
 
-/** Recession (2026-11-06 redesign): the current line is bright, the next
- * one readable, the one just sung faint, and everything past SCALE.recede is
- * gone, so the view reads as a performance rather than a page. Distances
+/** Recession (2026-11-06 redesign): the current line is bright and the
+ * lines around it fade evenly with distance, sung and upcoming alike; any
+ * distance SCALE.recede doesn't list is hidden. Distances
  * count SUNG rows only, so a dormant (collapsed) break row never steals the
  * "next line" slot; a current break sits between its neighbors (the line
  * before it is -1, the line after it +1). Clamped to ±3 so a line advance

@@ -10,7 +10,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Changed
 
-- Lyrics are calmer: lines fade the further they are from the current one. Fullscreen centers the current line and shows about five lines.
+- Lyrics are calmer: lines fade evenly the further they are from the current one, above and below. Fullscreen centers the current line and shows about five lines.
+- Lyric lines wrap more cleanly: short ad-libs like "(oh-oh)" stay on one row, and Korean words no longer split between syllables.
 
 ### Fixed
 
