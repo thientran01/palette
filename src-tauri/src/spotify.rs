@@ -44,9 +44,10 @@ const SPOTIFY_CLIENT_ID: &str = "3f82e7a35eea45ddab8625819a79d1de";
 
 const REDIRECT_PORT: u16 = 43117;
 /// read = queue/currently-playing; modify = add-to-queue/skip (play-now and
-/// the up-next feeder). The three READ library scopes feed the Search
+/// the up-next feeder). The four READ library scopes feed the Search
 /// window's Library section (library.rs): `GET /me/playlists`, `GET
-/// /me/tracks` and the items of playlists the user owns or collaborates on —
+/// /me/tracks`, the items of playlists the user owns or collaborates on, and
+/// `GET /me/player/recently-played` (the Recents-style sort) —
 /// all still open to Development Mode apps after Spotify's February 2026
 /// changes. A token consented before they were added lacks them, so
 /// library.rs checks the granted scope string and asks for one reconnect
@@ -57,7 +58,7 @@ const REDIRECT_PORT: u16 = 43117;
 /// this app id (403 with a valid token; since replaced by /me/library). Don't
 /// re-add it without re-verifying the replacement endpoints answer.
 pub(crate) const SCOPES: &str = "user-read-playback-state user-modify-playback-state \
-playlist-read-private playlist-read-collaborative user-library-read";
+playlist-read-private playlist-read-collaborative user-library-read user-read-recently-played";
 const UA: &str = "Palette/0.1 (https://github.com/thientran01/palette)";
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// How long the loopback listener waits for the browser consent round-trip.

@@ -134,6 +134,8 @@ export interface LibraryResult {
   /** Builds the Liked Songs context (`spotify:user:<id>:collection`). */
   user_id: string;
   playlists: PlaylistSummary[];
+  /** Context uris from recently played, newest first (the Recents sort). */
+  recent_contexts: string[];
 }
 
 /** Liked Songs or one playlist's songs (library.rs). */

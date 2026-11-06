@@ -29,11 +29,15 @@ use tauri::AppHandle;
 
 use crate::spotify::{self, QueueTrack};
 
-const LIBRARY_SCOPES: [&str; 3] = [
+const LIBRARY_SCOPES: [&str; 4] = [
     "playlist-read-private",
     "playlist-read-collaborative",
     "user-library-read",
+    "user-read-recently-played",
 ];
+/// Recently-played pages walked for the Recents-style sort (50 tracks each,
+/// Spotify's maximum page).
+const MAX_RECENT_PAGES: usize = 4;
 /// Spotify's page maximum for the library and playlist-item endpoints.
 const PAGE: u32 = 50;
 /// Page caps per load, so one call can't walk an enormous library forever:
@@ -69,6 +73,11 @@ pub struct LibraryResult {
     /// (`spotify:user:<id>:collection`).
     pub user_id: String,
     pub playlists: Vec<PlaylistSummary>,
+    /// Context uris from the recently-played log, most recent first, each
+    /// once — the Library sorts playlists by it (Thien's pick, 2026-11-06:
+    /// "Recently played first", like Spotify's Recents). Empty when the
+    /// read fails; the sort then falls back to A–Z.
+    pub recent_contexts: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -94,6 +103,7 @@ impl LibraryResult {
             status: status.into(),
             user_id: String::new(),
             playlists: Vec::new(),
+            recent_contexts: Vec::new(),
         }
     }
 }
@@ -203,10 +213,42 @@ fn library(app: &AppHandle) -> LibraryResult {
             status: "ok".into(),
             playlists: rows.iter().filter_map(|r| parse_playlist(r, &me)).collect(),
             user_id: me,
+            recent_contexts: recent_contexts(app),
         },
         Err("restricted") => LibraryResult::bare("offline"),
         Err(e) => LibraryResult::bare(e),
     }
+}
+
+/// The play log's contexts, newest first. Best-effort: any failure is an
+/// empty list (the list still loads, sorted A–Z).
+fn recent_contexts(app: &AppHandle) -> Vec<String> {
+    let first = format!("https://api.spotify.com/v1/me/player/recently-played?limit={PAGE}");
+    match walk(app, first, MAX_RECENT_PAGES, "offline") {
+        Ok((_, rows)) => contexts_newest_first(&rows),
+        Err(e) => {
+            log::warn!("spotify recently-played unavailable: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Recently-played rows → their context uris, newest first, deduped. Rows
+/// arrive newest first; `played_at` (ISO-8601 UTC, so it sorts as text)
+/// re-sorts them anyway in case pages overlap.
+pub(crate) fn contexts_newest_first(rows: &[serde_json::Value]) -> Vec<String> {
+    let mut plays: Vec<(&str, &str)> = rows
+        .iter()
+        .filter_map(|r| Some((r["played_at"].as_str()?, r["context"]["uri"].as_str()?)))
+        .collect();
+    plays.sort_by(|a, b| b.0.cmp(a.0));
+    let mut out: Vec<String> = Vec::new();
+    for (_, uri) in plays {
+        if !out.iter().any(|u| u == uri) {
+            out.push(uri.to_string());
+        }
+    }
+    out
 }
 
 fn liked(app: &AppHandle) -> TracksResult {
@@ -415,6 +457,23 @@ mod tests {
             "owner":{"id":"spotify"}});
         assert_eq!(parse_playlist(&editorial, "me"), None);
         assert_eq!(parse_playlist(&serde_json::Value::Null, "me"), None);
+    }
+
+    #[test]
+    fn recent_contexts_are_newest_first_and_unique() {
+        let rows = vec![
+            json!({"played_at":"2026-11-06T02:40:00Z","context":{"uri":"spotify:playlist:b"}}),
+            json!({"played_at":"2026-11-06T02:50:00Z","context":{"uri":"spotify:playlist:a"}}),
+            json!({"played_at":"2026-11-06T02:30:00Z","context":{"uri":"spotify:playlist:a"}}),
+            json!({"played_at":"2026-11-06T02:20:00Z","context":null}),
+        ];
+        assert_eq!(
+            contexts_newest_first(&rows),
+            vec![
+                "spotify:playlist:a".to_string(),
+                "spotify:playlist:b".to_string()
+            ]
+        );
     }
 
     #[test]

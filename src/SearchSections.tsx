@@ -32,6 +32,7 @@ import {
   playlistSubtitle,
   playTime,
   songCount,
+  sortRecent,
 } from "./lib/searchLibrary";
 import type { HistoryEntry, NowContext, PlaylistSummary, QueueTrack } from "./types";
 
@@ -99,6 +100,8 @@ export interface Library {
   status: LibStatus;
   userId: string;
   playlists: PlaylistSummary[];
+  /** Context uris from recently played, newest first. */
+  recent: string[];
   /** null until Liked Songs land (it loads after the playlists). */
   liked: QueueTrack[] | null;
   likedTotal: number | null;
@@ -111,6 +114,7 @@ const EMPTY_LIB: Library = {
   status: "idle",
   userId: "",
   playlists: [],
+  recent: [],
   liked: null,
   likedTotal: null,
   likedFailed: false,
@@ -160,6 +164,7 @@ export function useLibrary(active: boolean): Library {
         status: l.status,
         userId: l.user_id,
         playlists: l.playlists,
+        recent: l.recent_contexts ?? [],
         liked: kept?.liked ?? null,
         likedTotal: kept?.likedTotal ?? null,
         likedFailed: false,
@@ -373,7 +378,7 @@ export function libraryItems(
   now: NowContext | null = null,
 ): Item[] {
   if (lib.status !== "ok") return [];
-  return markPlaying(libraryItemsBase(lib, query, publicHits), now);
+  return markPlaying(libraryItemsBase(lib, query, publicHits, now), now);
 }
 
 /** "Playing" on the playlist Spotify is playing, over its usual label. */
@@ -383,16 +388,19 @@ function markPlaying(items: Item[], now: NowContext | null): Item[] {
   );
 }
 
-function libraryItemsBase(lib: Library, query: string, publicHits: PlaylistSummary[]): Item[] {
+function libraryItemsBase(
+  lib: Library,
+  query: string,
+  publicHits: PlaylistSummary[],
+  now: NowContext | null,
+): Item[] {
   const q = norm(query);
   // "Yours" = owned or collaborative (Spotify lists their songs); followed
   // playlists come after, labeled.
-  // A–Z within each group (Thien found Spotify's own order, roughly newest
-  // first, read as random). Hangul and Latin sort by the user's locale.
-  const byName = (a: PlaylistSummary, b: PlaylistSummary) =>
-    a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
-  const own = lib.playlists.filter((p) => p.mine).sort(byName);
-  const followed = lib.playlists.filter((p) => !p.mine).sort(byName);
+  // Recently played first within each group (Spotify's own order, roughly
+  // newest playlist first, read as random — Thien, 2026-11-06).
+  const own = sortRecent(lib.playlists.filter((p) => p.mine), lib.recent, now);
+  const followed = sortRecent(lib.playlists.filter((p) => !p.mine), lib.recent, now);
   const ordered = [...own, ...followed];
   const items: Item[] = [];
   if (!q) {

@@ -1170,8 +1170,14 @@ export const commands = {
     if (IN_TAURI) return invoke<LibraryResult>("spotify_library");
     await libraryDelay();
     const gate = mockLibraryGate();
-    if (gate) return { status: gate, user_id: "", playlists: [] };
-    return { status: "ok", user_id: "mock-user", playlists: MOCK_PLAYLISTS.map((p) => ({ ...p })) };
+    if (gate) return { status: gate, user_id: "", playlists: [], recent_contexts: [] };
+    return {
+      status: "ok",
+      user_id: "mock-user",
+      playlists: MOCK_PLAYLISTS.map((p) => ({ ...p })),
+      // Gym rotation, then City pop rooms (followed), then 2016 forever.
+      recent_contexts: [MOCK_PLAYLISTS[3].uri, MOCK_PLAYLISTS[6].uri, MOCK_PLAYLISTS[4].uri],
+    };
   },
   /** Liked Songs, newest first (library.rs). */
   async spotifyLiked(): Promise<TracksResult> {

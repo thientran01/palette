@@ -4,7 +4,7 @@
  * grouping, and the right-hand labels. No backend, no React, so they are
  * unit-tested directly (searchLibrary.test.ts).
  */
-import type { HistoryEntry, PlaylistSummary, QueueTrack, SearchSection } from "../types";
+import type { HistoryEntry, NowContext, PlaylistSummary, QueueTrack, SearchSection } from "../types";
 
 /** Tab order of the section strip. */
 export const SECTIONS: readonly SearchSection[] = ["songs", "library", "history"];
@@ -142,4 +142,30 @@ export function groupByDay(
 /** The Liked Songs playback context for an account. */
 export function likedContext(userId: string): string {
   return `spotify:user:${userId}:collection`;
+}
+
+/** Recently played first (Thien's pick, 2026-11-06, like Spotify's
+ * Recents): what's playing now, then the recently-played log's order, then
+ * everything never played in that window A–Z. The library loads once per
+ * session, so the live context keeps the top slot honest between loads. */
+export function sortRecent(
+  playlists: PlaylistSummary[],
+  recent: readonly string[],
+  now: NowContext | null,
+): PlaylistSummary[] {
+  const order = now?.context_uri ? [now.context_uri, ...recent] : [...recent];
+  const rank = new Map<string, number>();
+  order.forEach((uri, i) => {
+    if (!rank.has(uri)) rank.set(uri, i);
+  });
+  return [...playlists].sort((a, b) => {
+    const ra = rank.get(a.uri);
+    const rb = rank.get(b.uri);
+    if (ra !== undefined || rb !== undefined) {
+      if (ra === undefined) return 1;
+      if (rb === undefined) return -1;
+      return ra - rb;
+    }
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
+  });
 }

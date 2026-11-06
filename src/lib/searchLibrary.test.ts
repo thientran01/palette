@@ -10,6 +10,7 @@ import {
   nextSection,
   playlistSubtitle,
   songCount,
+  sortRecent,
 } from "./searchLibrary";
 
 const track = (title: string, artist: string): QueueTrack => ({
@@ -123,5 +124,38 @@ describe("history by day", () => {
       now,
     );
     expect(rows.map((r) => r.header)).toEqual(["Today", null, "Yesterday"]);
+  });
+});
+
+describe("recently played sort", () => {
+  const pl = (name: string): PlaylistSummary => ({
+    uri: `spotify:playlist:${name}`,
+    id: name,
+    name,
+    owner: "me",
+    mine: true,
+    total: 1,
+    art_url: null,
+  });
+  const all = [pl("delta"), pl("alpha"), pl("charlie"), pl("bravo")];
+
+  it("puts recent plays first, then the rest A to Z", () => {
+    const recent = ["spotify:playlist:charlie", "spotify:playlist:delta"];
+    expect(sortRecent(all, recent, null).map((p) => p.name)).toEqual([
+      "charlie",
+      "delta",
+      "alpha",
+      "bravo",
+    ]);
+  });
+
+  it("puts what's playing now on top", () => {
+    const now = { context_uri: "spotify:playlist:bravo", track_uri: null };
+    expect(sortRecent(all, ["spotify:playlist:charlie"], now).map((p) => p.name)).toEqual([
+      "bravo",
+      "charlie",
+      "alpha",
+      "delta",
+    ]);
   });
 });
