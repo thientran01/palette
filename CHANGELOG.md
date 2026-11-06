@@ -20,6 +20,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - While Search's "Something different" picks load, the section's title is a placeholder bar too, instead of a real title over empty rows.
 - Search's selection, section tabs and Play button now move instantly with the arrow and Tab keys instead of fading behind them. Queueing a song still highlights its row, which now fades out instead of blinking off.
 - Holding an arrow key in Search's History now moves one row per key repeat, smoothly. It used to re-format every play time on each press and fall several rows behind.
+- "Something different" suggestions load much faster. Lookups run side by side, connections are reused, and results are remembered on disk, so a song you play often costs no network at all the next time. When suggestions can't load, the search window now says so instead of quietly leaving the section out.
 
 ## [1.0.11] - 2026-10-31
 

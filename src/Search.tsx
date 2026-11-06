@@ -37,6 +37,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { commands, onSearchSection, onSearchShown } from "./lib/backend";
 import { RowThumb, useSpotifyStatus } from "./Queue";
 import { playNowNote } from "./lib/playNowStatus";
+import { browserStorage, createDiscoveryCache } from "./lib/discoveryCache";
 import { nextSection, SECTIONS } from "./lib/searchLibrary";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
 import {
@@ -171,10 +172,33 @@ function pickSeeds(pool: Agg[], seed: number): { title: string; artist: string }
   return seeds;
 }
 
-/** Discovery rows keyed by day-block. The window lives for the whole app
- * session, so a re-summon inside a block is network-free; a new block misses
- * (≤3 fetch rounds/day). Only successful ("ok") fetches are cached. */
-const discoveryCache = new Map<number, SearchRow[]>();
+/** Discovery rows keyed by day-block, kept across restarts (see
+ * lib/discoveryCache), so a re-summon inside a block is network-free; a new
+ * block misses (≤3 fetch rounds/day). Only successful ("ok") fetches are
+ * cached. */
+const discoveryCache = createDiscoveryCache<SearchRow>(browserStorage());
+
+/** Wait before the one automatic retry of a failed discovery fetch. */
+const DISCOVERY_RETRY_MS = 1500;
+
+/** The quiet line a discovery fetch that came back empty-handed leaves, so
+ * the section doesn't just vanish after its skeleton ("sometimes it just
+ * doesn't load", Thien, 2026-11-06). Null = say nothing: the gated statuses
+ * (no key, Spotify disconnected) are already explained elsewhere. */
+function discoveryFailureNote(status: string | null): string | null {
+  switch (status) {
+    case null:
+    case "offline":
+    case "busy":
+      return "Couldn't load suggestions. Press ↑ to try again";
+    case "bad_key":
+      return "Last.fm rejected the API key";
+    case "no_data":
+      return "No new suggestions right now";
+    default:
+      return null;
+  }
+}
 
 /** The "From your history" section: up to four resurfacing picks over the
  * local play log, each a relative measure (the log is young; absolute
@@ -747,15 +771,38 @@ export default function Search() {
     if (discoveryFlight.current) {
       await discoveryFlight.current.catch(() => {});
       if (gen !== resurfaceGen.current) return;
+      // The run we waited on was often fetching this very block (a quick
+      // hide + re-summon). It caches its result even though its gen lost,
+      // so take that instead of paying for a second walk.
+      const hit =
+        refreshN === 0
+          ? discoveryCache.get(seed)?.filter((r) => !playedKeys.has(discoveryKey(r.artist, r.title)))
+          : undefined;
+      if (hit?.length) {
+        remember(hit);
+        setDiscovery(hit);
+        setDiscoveryPending(false);
+        return;
+      }
     }
     refreshBusy.current = gen;
-    let res: Awaited<ReturnType<typeof commands.discoveryPicks>> | null;
-    const flight = commands.discoveryPicks(seeds, exclude);
+    let res: Awaited<ReturnType<typeof commands.discoveryPicks>> | null = null;
+    // A transport hiccup reads as null, the same as a non-ok status.
+    const attempt = () => commands.discoveryPicks(seeds, exclude).catch(() => null);
+    // One quiet retry for a transient failure (a network blip, or the
+    // backend's single-flight still finishing a superseded run) before the
+    // section gives up. The retry is part of the same flight, so a newer run
+    // still waits behind it.
+    const flight = (async () => {
+      const first = await attempt();
+      if (first && first.status !== "offline" && first.status !== "busy") return first;
+      if (gen !== resurfaceGen.current) return first;
+      await new Promise((r) => window.setTimeout(r, DISCOVERY_RETRY_MS));
+      return gen === resurfaceGen.current ? attempt() : first;
+    })();
     discoveryFlight.current = flight;
     try {
       res = await flight;
-    } catch {
-      res = null; // transport hiccup — same silent fallback as a non-ok status
     } finally {
       // Owner-only clears throughout: a superseded run's finally must not
       // free a newer run's token or flight (the same clobber class twice).
@@ -764,7 +811,11 @@ export default function Search() {
       // A stale gen never touches pending — the newer run owns it now.
       if (gen === resurfaceGen.current) setDiscoveryPending(false);
     }
-    if (gen !== resurfaceGen.current || !res || res.status !== "ok") return;
+    if (!res || res.status !== "ok") {
+      const msg = discoveryFailureNote(res ? res.status : null);
+      if (msg && gen === resurfaceGen.current) showNote(msg, 4000);
+      return;
+    }
     const seen = new Set(rows.map((r) => r.uri).filter((u): u is string => !!u));
     const rows2: SearchRow[] = res.picks
       .filter((p) => !seen.has(p.track.uri))
@@ -778,12 +829,14 @@ export default function Search() {
         uri: p.track.uri,
         reason: `Because you played ${p.seed_title}`,
       }));
-    remember(rows2);
-    setDiscovery(rows2);
     // Cache only a NON-EMPTY pristine set: `if (cached)` treats [] as a hit,
     // and one pathological empty post-filter would otherwise pin the section
-    // dead for the whole block (quick-review catch).
+    // dead for the whole block (quick-review catch). Cached even when this
+    // run was superseded, so the newer run waiting on it can reuse it.
     if (refreshN === 0 && rows2.length) discoveryCache.set(seed, rows2);
+    if (gen !== resurfaceGen.current) return;
+    remember(rows2);
+    setDiscovery(rows2);
   }, []);
 
   // Summon signal: refocus, select-all the stale query, fresh empty state.
