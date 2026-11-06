@@ -149,6 +149,13 @@ export interface PlaylistSearchResult {
   playlists: PlaylistSummary[];
 }
 
+/** What Spotify is playing (library.rs spotify_now_context). */
+export interface NowContext {
+  /** Playlist / Liked Songs (`…:collection`) / album; null for loose tracks. */
+  context_uri: string | null;
+  track_uri: string | null;
+}
+
 /** The search window's sections (search.rs section_of). */
 export type SearchSection = "songs" | "library" | "history";
 

@@ -33,7 +33,7 @@ import {
   playTime,
   songCount,
 } from "./lib/searchLibrary";
-import type { HistoryEntry, PlaylistSummary, QueueTrack } from "./types";
+import type { HistoryEntry, NowContext, PlaylistSummary, QueueTrack } from "./types";
 
 /** One playable song row (Songs, Library songs, History). */
 export interface SearchRow {
@@ -79,6 +79,9 @@ export interface Item {
   /** Placeholder tile when there's no art. */
   tile?: "liked" | "playlist";
   right?: string;
+  /** The right label marks what's playing ("Playing" / "Now"): brighter
+   * text, never accent. */
+  rightActive?: boolean;
   /** History rows: the thumb-cache key their art resolves through
    * (useHistoryThumbs), looked up at render. */
   thumbKey?: string;
@@ -253,6 +256,38 @@ export function useOpenedTracks(
   return state.id === id ? state : { status: "loading", tracks: [] };
 }
 
+// ---- what's playing ----
+
+/** A fresh currently-playing read whenever the section opens or the window
+ * is summoned (`tick`), so the "Playing" labels follow changes made in the
+ * Spotify app too. */
+export function useNowContext(active: boolean, tick: number): NowContext | null {
+  const [now, setNow] = useState<NowContext | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    let alive = true;
+    void commands
+      .spotifyNowContext()
+      .then((n) => {
+        if (alive) setNow(n);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [active, tick]);
+  return now;
+}
+
+/** Whether `target` is the context Spotify is playing. Liked Songs can come
+ * back as any `…:collection` spelling. */
+export function isPlayingTarget(target: { uri: string; kind?: string }, now: NowContext | null): boolean {
+  const ctx = now?.context_uri;
+  if (!ctx) return false;
+  if (target.uri.endsWith(":collection")) return ctx.endsWith(":collection");
+  return ctx === target.uri;
+}
+
 // ---- public playlist search ----
 
 const PUBLIC_DEBOUNCE_MS = 300;
@@ -331,13 +366,33 @@ function targetItem(t: OpenTarget, right?: string): Item {
 /** The Library list. No query: Liked Songs, your playlists, then the ones
  * you follow. A query: matching library playlists and songs under "Your
  * library", then public playlists under "Playlists on Spotify". */
-export function libraryItems(lib: Library, query: string, publicHits: PlaylistSummary[]): Item[] {
+export function libraryItems(
+  lib: Library,
+  query: string,
+  publicHits: PlaylistSummary[],
+  now: NowContext | null = null,
+): Item[] {
   if (lib.status !== "ok") return [];
+  return markPlaying(libraryItemsBase(lib, query, publicHits), now);
+}
+
+/** "Playing" on the playlist Spotify is playing, over its usual label. */
+function markPlaying(items: Item[], now: NowContext | null): Item[] {
+  return items.map((it) =>
+    it.open && isPlayingTarget(it.open, now) ? { ...it, right: "Playing", rightActive: true } : it,
+  );
+}
+
+function libraryItemsBase(lib: Library, query: string, publicHits: PlaylistSummary[]): Item[] {
   const q = norm(query);
   // "Yours" = owned or collaborative (Spotify lists their songs); followed
   // playlists come after, labeled.
-  const own = lib.playlists.filter((p) => p.mine);
-  const followed = lib.playlists.filter((p) => !p.mine);
+  // A–Z within each group (Thien found Spotify's own order, roughly newest
+  // first, read as random). Hangul and Latin sort by the user's locale.
+  const byName = (a: PlaylistSummary, b: PlaylistSummary) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
+  const own = lib.playlists.filter((p) => p.mine).sort(byName);
+  const followed = lib.playlists.filter((p) => !p.mine).sort(byName);
   const ordered = [...own, ...followed];
   const items: Item[] = [];
   if (!q) {
@@ -376,16 +431,23 @@ export function libraryItems(lib: Library, query: string, publicHits: PlaylistSu
 }
 
 /** An opened playlist's songs, filtered by the drill-in query. */
-export function drillItems(target: OpenTarget, tracks: QueueTrack[], query: string): Item[] {
+export function drillItems(
+  target: OpenTarget,
+  tracks: QueueTrack[],
+  query: string,
+  now: NowContext | null = null,
+): Item[] {
   const q = query.trim();
   const list = q ? filterRanked(tracks, q, (t) => [t.title, t.artist]) : tracks;
+  const nowUri = now?.track_uri ?? null;
   return list.map((t, i) => ({
     // Playlists can hold the same song twice; the index keeps keys unique.
     key: `${i}:${t.uri}`,
     title: t.title,
     subtitle: t.artist,
     artUrl: t.art_url,
-    right: fmtDuration(t.duration_ms),
+    right: t.uri === nowUri ? "Now" : fmtDuration(t.duration_ms),
+    rightActive: t.uri === nowUri,
     song: trackRow(t),
     context: target.uri,
   }));

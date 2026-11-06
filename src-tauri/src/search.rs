@@ -184,11 +184,3 @@ pub fn hide(app: &AppHandle) {
 pub async fn search_hide(app: AppHandle) {
     hide(&app);
 }
-
-/// Open the window on a section from another window (the queue header's
-/// search button). Creates it first when the first-paint warm hasn't run.
-#[tauri::command]
-pub async fn search_open(app: AppHandle, section: String) {
-    ensure(&app);
-    show(&app, &section);
-}

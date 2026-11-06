@@ -433,16 +433,6 @@ function SparkleGlyph({ size = 13 }: { size?: number }) {
   );
 }
 
-/** Magnifier — opens the search window. The Search pane's own glyph. */
-function SearchHeaderGlyph({ size = 13 }: { size?: number }) {
-  return (
-    <svg viewBox="0 0 16 16" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
-      <circle cx="7" cy="7" r="4.4" />
-      <path d="M 10.4,10.4 L 13.6,13.6" />
-    </svg>
-  );
-}
-
 /** Artist line, with duration packed beside the name (room setlist) so a
  * far-right time column never appears. Duration is omitted at 0 / missing. */
 function RowMeta({
@@ -1198,23 +1188,6 @@ export function QueuePanel({
               Last.fm key (an enabled button whose only answer is "add a key" is a
               dead-end, 1.0 ship-blocker); with a key it disables in place when
               the queue gate is closed or a run is in flight. */}
-          {/* Search: "find me something" lives in its own window (Songs,
-              Library, History); this header answers "what plays next".
-              Base garments only — the focus room keeps its own header. */}
-          {!room && (
-            <button
-              type="button"
-              aria-label="Search songs, your library and history"
-              title="Search · Ctrl+Alt+S"
-              onClick={() => commands.searchOpen("songs")}
-              // Rightmost when more-like-this is hidden (no Last.fm key): it
-              // then takes the sparkle's corner-rail nudge in expanded.
-              data-sparkle={hasKey ? undefined : ""}
-              className={`ml-auto grid ${s.btn} shrink-0 place-items-center rounded-md text-fg [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] hover:bg-fg/10 active:scale-95`}
-            >
-              <SearchHeaderGlyph size={s.glyph} />
-            </button>
-          )}
           {hasKey && (
             <button
               type="button"
@@ -1227,7 +1200,7 @@ export function QueuePanel({
               title={np?.title ? `More like ${np.title}` : "More like this"}
               aria-disabled={!queueLive || !np?.title || seeding || undefined}
               onClick={moreLikeThis}
-              className={`${room ? "ml-auto" : ""} grid ${s.btn} shrink-0 place-items-center rounded-md [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] ${
+              className={`ml-auto grid ${s.btn} shrink-0 place-items-center rounded-md [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),opacity_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] ${
                 !queueLive || !np?.title || seeding
                   ? "pointer-events-none text-muted opacity-30"
                   : "text-fg hover:bg-fg/10 active:scale-95"

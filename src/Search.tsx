@@ -53,7 +53,9 @@ import {
   trackRow,
   useHistoryList,
   useHistoryThumbs,
+  isPlayingTarget,
   useLibrary,
+  useNowContext,
   useOpenedTracks,
   usePublicPlaylists,
   type Item,
@@ -557,15 +559,16 @@ export default function Search() {
   const openedTracks = useOpenedTracks(opened, lib);
   const pub = usePublicPlaylists(libQuery, section === "library" && !opened && spotify.connected);
   const history = useHistoryList(section === "history");
+  const nowCtx = useNowContext(section === "library" && spotify.connected, focusTick);
   const items: Item[] = useMemo(() => {
     if (section === "library") {
       return opened
-        ? drillItems(opened, openedTracks.tracks, drillQuery)
-        : libraryItems(lib, libQuery, pub.playlists);
+        ? drillItems(opened, openedTracks.tracks, drillQuery, nowCtx)
+        : libraryItems(lib, libQuery, pub.playlists, nowCtx);
     }
     if (section === "history") return historyItems(history.entries, histQuery, Date.now());
     return [];
-  }, [section, opened, openedTracks.tracks, drillQuery, lib, libQuery, pub.playlists, history.entries, histQuery]);
+  }, [section, opened, openedTracks.tracks, drillQuery, lib, libQuery, pub.playlists, history.entries, histQuery, nowCtx]);
   const shownItems = section === "history" ? items.slice(0, histRender) : items;
   const thumbs = useHistoryThumbs(
     section === "history" ? shownItems.map((it) => it.thumbKey ?? "").filter(Boolean) : [],
@@ -1133,7 +1136,11 @@ export default function Search() {
             {it.subtitle && <span className="truncate text-[12px] leading-4 text-muted">{it.subtitle}</span>}
           </span>
           {it.right && (
-            <span className="max-w-[45%] shrink-0 truncate text-right text-[11px] tabular-nums text-muted/85">
+            <span
+              className={`max-w-[45%] shrink-0 truncate text-right text-[11px] tabular-nums ${
+                it.rightActive ? "font-medium text-fg" : "text-muted/85"
+              }`}
+            >
               {it.right}
             </span>
           )}
@@ -1159,7 +1166,11 @@ export default function Search() {
         <ItemTile tile={t.kind === "liked" ? "liked" : "playlist"} url={t.artUrl} size={48} />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-[16px] font-medium leading-[22px] text-fg">{t.name}</span>
-          {t.subtitle && <span className="truncate text-[12px] leading-4 text-muted">{t.subtitle}</span>}
+          {(t.subtitle || isPlayingTarget(t, nowCtx)) && (
+            <span className="truncate text-[12px] leading-4 text-muted">
+              {[t.subtitle, isPlayingTarget(t, nowCtx) ? "Playing" : ""].filter(Boolean).join(" · ")}
+            </span>
+          )}
         </span>
         <button
           type="button"

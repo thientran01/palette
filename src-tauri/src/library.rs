@@ -276,7 +276,44 @@ fn search_playlists(app: &AppHandle, query: &str, limit: u32) -> PlaylistSearchR
     }
 }
 
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct NowContext {
+    /// The playing context (playlist, `…:collection` for Liked Songs, an
+    /// album…); None when Spotify plays loose tracks.
+    pub context_uri: Option<String>,
+    pub track_uri: Option<String>,
+}
+
+/// What Spotify is playing right now, for the Library's "Playing" labels.
+/// None = nothing playing, disconnected or offline (labels just don't show).
+fn now_context(app: &AppHandle) -> Option<NowContext> {
+    let v = spotify::api_call(
+        app,
+        "GET",
+        "https://api.spotify.com/v1/me/player/currently-playing",
+    )
+    .ok()??;
+    Some(parse_now_context(&v))
+}
+
+pub(crate) fn parse_now_context(v: &serde_json::Value) -> NowContext {
+    NowContext {
+        context_uri: v["context"]["uri"].as_str().map(String::from),
+        track_uri: v["item"]["uri"].as_str().map(String::from),
+    }
+}
+
 // ---- commands (blocking HTTP on the dedicated pool, like spotify.rs) ----
+
+/// A fresh currently-playing read (one GET) — the Library marks the playlist
+/// and song that are playing. Read fresh on each summon rather than cached,
+/// because the context can change from the Spotify app at any time.
+#[tauri::command]
+pub async fn spotify_now_context(app: AppHandle) -> Option<NowContext> {
+    tauri::async_runtime::spawn_blocking(move || now_context(&app))
+        .await
+        .unwrap_or(None)
+}
 
 /// The user's playlists (owned, collaborative and followed), editorial ones
 /// dropped, in Spotify's own order.
@@ -378,6 +415,20 @@ mod tests {
             "owner":{"id":"spotify"}});
         assert_eq!(parse_playlist(&editorial, "me"), None);
         assert_eq!(parse_playlist(&serde_json::Value::Null, "me"), None);
+    }
+
+    #[test]
+    fn now_context_reads_context_and_item() {
+        let v = json!({"context":{"uri":"spotify:playlist:a"},"item":{"uri":"spotify:track:1"}});
+        assert_eq!(
+            parse_now_context(&v),
+            NowContext {
+                context_uri: Some("spotify:playlist:a".into()),
+                track_uri: Some("spotify:track:1".into()),
+            }
+        );
+        let loose = json!({"context":null,"item":{"uri":"spotify:track:1"}});
+        assert_eq!(parse_now_context(&loose).context_uri, None);
     }
 
     #[test]

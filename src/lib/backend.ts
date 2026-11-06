@@ -8,6 +8,7 @@ import {
   IN_TAURI,
   type HistoryEntry,
   type LibraryResult,
+  type NowContext,
   type NowPlaying,
   type PlaylistSearchResult,
   type PlaylistSummary,
@@ -251,6 +252,9 @@ const MOCK_PUBLIC_PLAYLISTS: PlaylistSummary[] = [
   total: total as number,
   art_url: null,
 }));
+
+/** The mock's playing context (playContext sets it). */
+let mockContext: string | null = null;
 
 async function libraryDelay(): Promise<void> {
   await new Promise((r) => setTimeout(r, LIBRARY_FORCE === "slow" ? 1500 : 200));
@@ -1161,11 +1165,6 @@ export const commands = {
   searchHide(): void {
     if (IN_TAURI) void invoke("search_hide");
   },
-  /** Open the search window on a section (the queue header's button). Mock:
-   * no window system — no-op; the window itself is at /?window=search. */
-  searchOpen(section: SearchSection = "songs"): void {
-    if (IN_TAURI) void invoke("search_open", { section });
-  },
   /** The user's playlists, editorial ones dropped (library.rs). */
   async spotifyLibrary(): Promise<LibraryResult> {
     if (IN_TAURI) return invoke<LibraryResult>("spotify_library");
@@ -1211,6 +1210,17 @@ export const commands = {
       .map((p) => ({ ...p, mine: false }));
     return { status: "ok", playlists };
   },
+  /** What Spotify is playing right now (one fresh read) — the Library's
+   * "Playing" labels. null = nothing / disconnected / offline. Mock: the
+   * last playContext target, else Late drives. */
+  async spotifyNowContext(): Promise<NowContext | null> {
+    if (IN_TAURI) return invoke<NowContext | null>("spotify_now_context");
+    if (!mockSpotifyConnected) return null;
+    return {
+      context_uri: mockContext ?? MOCK_PLAYLISTS[0].uri,
+      track_uri: mockQueueTrack(MOCK_TRACKS[mockTrack]).uri,
+    };
+  },
   /** Play a playlist (or Liked Songs) as the new context, optionally from one
    * of its songs (spotify.rs play_context). Same statuses as playNow plus
    * "forbidden" (Spotify's Premium answer). */
@@ -1222,6 +1232,7 @@ export const commands = {
       });
     }
     if (!mockSpotifyConnected) return "disconnected";
+    mockContext = contextUri;
     const target = offsetUri ?? null;
     const i = target ? MOCK_TRACKS.findIndex((t) => mockQueueTrack(t).uri === target) : 1;
     mockJumpTo(i === -1 ? 0 : i);
