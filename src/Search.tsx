@@ -41,17 +41,23 @@ import { browserStorage, createDiscoveryCache } from "./lib/discoveryCache";
 import { nextSection, SECTIONS } from "./lib/searchLibrary";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
 import {
+  BackIcon,
+  EnterKeyIcon,
+  HistoryIcon,
+  LibraryIcon,
+  PlayIcon,
+  SearchIcon,
+  ShiftKeyIcon,
+  SongsIcon,
+  TabKeyIcon,
+  UpKeyIcon,
+} from "./icons/searchIcons";
+import {
   drillItems,
-  HistoryGlyph,
   historyItems,
   ItemTile,
-  LibraryGlyph,
   libraryItems,
-  BackGlyph,
-  PlayGlyph,
   ReconnectButton,
-  SongsGlyph,
-  TabGlyph,
   trackRow,
   useHistoryList,
   useHistoryThumbs,
@@ -82,9 +88,9 @@ const SECTION_LABEL: Record<SearchSection, string> = {
   history: "History",
 };
 const SECTION_GLYPH: Record<SearchSection, () => React.ReactNode> = {
-  songs: () => <SongsGlyph />,
-  library: () => <LibraryGlyph />,
-  history: () => <HistoryGlyph />,
+  songs: () => <SongsIcon />,
+  library: () => <LibraryIcon />,
+  history: () => <HistoryIcon />,
 };
 const DEBOUNCE_MS = 250;
 /** History pages scanned for the resurfacing picks (3 × 200 entries). */
@@ -395,15 +401,6 @@ function SkeletonRow({ index, reason = false }: { index: number; reason?: boolea
   );
 }
 
-function SearchGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
-      <circle cx="7" cy="7" r="4.4" />
-      <path d="M 10.4,10.4 L 13.6,13.6" />
-    </svg>
-  );
-}
-
 /** One elevated keycap for the search-row hint. The old inline glyphs
  * ("↵ play · ⇧↵ queue") sat in the same 11px muted run as their labels and
  * read as compressed noise — you couldn't tell what to press (Thien,
@@ -424,42 +421,6 @@ function HintKey({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** The three hint glyphs, stroke-drawn (never font arrows — see HintKey). */
-const hintSvg = {
-  viewBox: "0 0 16 16",
-  width: 12,
-  height: 12,
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 1.5,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-  "aria-hidden": true,
-};
-function EnterGlyph() {
-  return (
-    <svg {...hintSvg}>
-      <path d="M 12.5,4 L 12.5,9 L 4.5,9" />
-      <path d="M 7.5,6 L 4.5,9 L 7.5,12" />
-    </svg>
-  );
-}
-function ShiftGlyph() {
-  return (
-    <svg {...hintSvg}>
-      <path d="M 8,3 L 12.8,8.4 L 9.9,8.4 L 9.9,12.5 L 6.1,12.5 L 6.1,8.4 L 3.2,8.4 Z" />
-    </svg>
-  );
-}
-function UpGlyph() {
-  return (
-    <svg {...hintSvg}>
-      <path d="M 8,12.5 L 8,3.5" />
-      <path d="M 4.5,7 L 8,3.5 L 11.5,7" />
-    </svg>
-  );
-}
-
 type HintKeyName = "enter" | "shift" | "esc";
 /** The hint run for Library and History: Raycast's footer grammar, as in
  * the Songs row — verb first, then its key(s), hairlines between groups. */
@@ -467,15 +428,15 @@ function SectionHints({ verbs }: { verbs: [string, HintKeyName][] }) {
   const keys = (k: HintKeyName) =>
     k === "enter" ? (
       <HintKey>
-        <EnterGlyph />
+        <EnterKeyIcon />
       </HintKey>
     ) : k === "shift" ? (
       <span className="flex items-center gap-[3px]">
         <HintKey>
-          <ShiftGlyph />
+          <ShiftKeyIcon />
         </HintKey>
         <HintKey>
-          <EnterGlyph />
+          <EnterKeyIcon />
         </HintKey>
       </span>
     ) : (
@@ -593,6 +554,14 @@ export default function Search() {
   const openedTracks = useOpenedTracks(opened, lib);
   const pub = usePublicPlaylists(libQuery, section === "library" && !opened && spotify.connected);
   const history = useHistoryList(section === "history");
+  // A typed filter searches every play: walk the rest of the log (a local
+  // read, 200 a page) instead of matching only the pages scrolled so far.
+  // Re-checked as pages land, so a scroll page in flight doesn't strand it.
+  const histFiltering = section === "history" && histQuery.trim() !== "";
+  const histLoaded = history.entries.length;
+  useEffect(() => {
+    if (histFiltering && histLoaded > 0) history.loadAll();
+  }, [histFiltering, histLoaded, history.loadAll]);
   const nowCtx = useNowContext(section === "library" && spotify.connected, focusTick);
   const libItems: Item[] = useMemo(() => {
     if (section !== "library") return [];
@@ -1244,7 +1213,7 @@ export default function Search() {
           aria-label="Back to Library"
           className="inline-flex shrink-0 items-center gap-1 uppercase tracking-widest text-muted [transition:color_140ms_var(--ease-out-tk)] hover:text-fg"
         >
-          <BackGlyph />
+          <BackIcon />
           Library
         </button>
         <span aria-hidden="true">/</span>
@@ -1280,7 +1249,7 @@ export default function Search() {
             sel === 0 ? "bg-fg/20 text-fg ring-transparent" : "text-muted ring-fg/15 hover:bg-fg/10 hover:text-fg"
           }`}
         >
-          <PlayGlyph />
+          <PlayIcon />
           Play
         </button>
       </div>
@@ -1344,7 +1313,8 @@ export default function Search() {
     if (history.entries.length === 0) {
       return prose("Songs you play will gather here.");
     }
-    if (shownItems.length === 0) return prose("Nothing in your history matches");
+    if (shownItems.length === 0)
+      return prose(history.filling ? "Searching your history…" : "Nothing in your history matches");
     // One block per day, so its header sticks to the top while that day
     // scrolls by and the next day's header pushes it off: deep in History
     // the time alone didn't say which day you were in (Thien, 2026-11-06).
@@ -1413,7 +1383,7 @@ export default function Search() {
         {/* Search row — the search's one verb. */}
         <div className="flex items-center gap-3 px-5 pb-3 pt-4">
           <span className={searching ? "text-fg" : "text-muted"}>
-            <SearchGlyph />
+            <SearchIcon />
           </span>
           <input
             ref={inputRef}
@@ -1463,14 +1433,14 @@ export default function Search() {
                   hairline, not middots. */}
               <span className="flex items-center gap-1.5">
                 play
-                <HintKey><EnterGlyph /></HintKey>
+                <HintKey><EnterKeyIcon /></HintKey>
               </span>
               <span className="h-3 w-px bg-border/10" />
               <span className="flex items-center gap-1.5">
                 queue
                 <span className="flex items-center gap-[3px]">
-                  <HintKey><ShiftGlyph /></HintKey>
-                  <HintKey><EnterGlyph /></HintKey>
+                  <HintKey><ShiftKeyIcon /></HintKey>
+                  <HintKey><EnterKeyIcon /></HintKey>
                 </span>
               </span>
               {!hasQuery && rows.length > 0 && (
@@ -1478,7 +1448,7 @@ export default function Search() {
                   <span className="h-3 w-px bg-border/10" />
                   <span className="flex items-center gap-1.5">
                     more
-                    <HintKey><UpGlyph /></HintKey>
+                    <HintKey><UpKeyIcon /></HintKey>
                   </span>
                 </>
               )}
@@ -1522,7 +1492,7 @@ export default function Search() {
           <span aria-hidden className="ml-auto flex items-center gap-1.5 text-[11px] text-muted/85">
             next section
             <HintKey>
-              <TabGlyph />
+              <TabKeyIcon />
             </HintKey>
           </span>
         </div>

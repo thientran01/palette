@@ -37,6 +37,7 @@ import {
   sortRecent,
 } from "./lib/searchLibrary";
 import type { HistoryEntry, NowContext, PlaylistSummary, QueueTrack } from "./types";
+import { HeartIcon, LibraryIcon } from "./icons/searchIcons";
 
 /** One playable song row (Songs, Library songs, History). */
 export interface SearchRow {
@@ -470,30 +471,44 @@ export function drillItems(
 const HISTORY_PAGE = 200;
 
 /** The play log, newest first: a fresh first page every time the section
- * opens (a local read), more pages on scroll. */
+ * opens (a local read), more pages on scroll. `loadAll` walks the rest of
+ * the log so a typed filter searches every play, not just the pages loaded
+ * so far; `filling` is true while that walk runs. */
 export function useHistoryList(active: boolean): {
   entries: HistoryEntry[];
   loadMore: () => void;
+  loadAll: () => void;
   exhausted: boolean;
+  filling: boolean;
 } {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [exhausted, setExhausted] = useState(false);
+  const [filling, setFilling] = useState(false);
   const gen = useRef(0);
+  // One page request at a time (seed, loadMore and loadAll share it).
   const loading = useRef(false);
-  const entriesRef = useRef(entries);
-  entriesRef.current = entries;
-  const exhaustedRef = useRef(exhausted);
-  exhaustedRef.current = exhausted;
+  // Updated as each page lands, not on render, so the next request never
+  // re-reads a page from a stale cursor.
+  const cursor = useRef<number | null>(null);
+  const done = useRef(false);
+
+  const land = (page: HistoryEntry[], reset: boolean) => {
+    if (page.length) cursor.current = page[page.length - 1].started_at_ms;
+    done.current = page.length < HISTORY_PAGE;
+    setEntries((prev) => (reset ? page : [...prev, ...page]));
+    setExhausted(done.current);
+  };
 
   const seed = useCallback(() => {
     const g = ++gen.current;
     loading.current = true;
+    cursor.current = null;
+    done.current = false;
+    setFilling(false);
     void commands
       .historyPage(null, HISTORY_PAGE)
       .then((page) => {
-        if (g !== gen.current) return;
-        setEntries(page);
-        setExhausted(page.length < HISTORY_PAGE);
+        if (g === gen.current) land(page, true);
       })
       .catch(() => {})
       .finally(() => {
@@ -513,6 +528,8 @@ export function useHistoryList(active: boolean): {
         if (activeRef.current) seed();
         else {
           gen.current += 1;
+          cursor.current = null;
+          done.current = false;
           setEntries([]);
         }
       }),
@@ -520,23 +537,43 @@ export function useHistoryList(active: boolean): {
   );
 
   const loadMore = useCallback(() => {
-    const cur = entriesRef.current;
-    if (loading.current || exhaustedRef.current || cur.length === 0) return;
+    if (loading.current || done.current || cursor.current === null) return;
     const g = gen.current;
     loading.current = true;
     void commands
-      .historyPage(cur[cur.length - 1].started_at_ms, HISTORY_PAGE)
+      .historyPage(cursor.current, HISTORY_PAGE)
       .then((page) => {
-        if (g !== gen.current) return;
-        setEntries((prev) => [...prev, ...page]);
-        if (page.length < HISTORY_PAGE) setExhausted(true);
+        if (g === gen.current) land(page, false);
       })
       .catch(() => {})
       .finally(() => {
         if (g === gen.current) loading.current = false;
       });
   }, []);
-  return { entries, loadMore, exhausted };
+
+  const loadAll = useCallback(() => {
+    if (loading.current || done.current || cursor.current === null) return;
+    const g = gen.current;
+    loading.current = true;
+    setFilling(true);
+    void (async () => {
+      try {
+        while (g === gen.current && !done.current && cursor.current !== null) {
+          const page = await commands.historyPage(cursor.current, HISTORY_PAGE);
+          if (g !== gen.current) return;
+          land(page, false);
+        }
+      } catch {
+        // A failed read leaves what loaded; the next keystroke retries.
+      } finally {
+        if (g === gen.current) {
+          loading.current = false;
+          setFilling(false);
+        }
+      }
+    })();
+  }, []);
+  return { entries, loadMore, loadAll, exhausted, filling };
 }
 
 /** Thumb data URLs by history key (successes and misses both — a key's
@@ -604,77 +641,6 @@ export function historyItems(
   }));
 }
 
-// ---- glyphs ----
-
-const stroke = {
-  viewBox: "0 0 16 16",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 1.5,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-  "aria-hidden": true,
-};
-
-export function SongsGlyph({ size = 14 }: { size?: number }) {
-  return (
-    <svg {...stroke} width={size} height={size}>
-      <circle cx="7" cy="7" r="4.2" />
-      <path d="M 10.3,10.3 L 13.2,13.2" />
-    </svg>
-  );
-}
-export function LibraryGlyph({ size = 14 }: { size?: number }) {
-  return (
-    <svg {...stroke} width={size} height={size}>
-      <path d="M 3.2,3.2 L 3.2,12.8" />
-      <path d="M 6.4,3.2 L 6.4,12.8" />
-      <path d="M 9.2,3.8 L 12.8,12.2" />
-    </svg>
-  );
-}
-export function HistoryGlyph({ size = 14 }: { size?: number }) {
-  return (
-    <svg {...stroke} width={size} height={size}>
-      <circle cx="8" cy="8" r="5.6" />
-      <path d="M 8,5 L 8,8 L 10.2,9.4" />
-    </svg>
-  );
-}
-/** Tab key: an arrow into a bar. */
-export function TabGlyph() {
-  return (
-    <svg {...stroke} width={12} height={12}>
-      <path d="M 2.5,8 L 11.5,8" />
-      <path d="M 8.5,5 L 11.5,8 L 8.5,11" />
-      <path d="M 13.5,4.5 L 13.5,11.5" />
-    </svg>
-  );
-}
-function HeartGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" aria-hidden>
-      <path d="M8,13 C5.3,11.1 2.7,9 2.7,6.3 C2.7,4.5 4,3.2 5.6,3.2 C6.7,3.2 7.5,3.8 8,4.7 C8.5,3.8 9.3,3.2 10.4,3.2 C12,3.2 13.3,4.5 13.3,6.3 C13.3,9 10.7,11.1 8,13 Z" />
-    </svg>
-  );
-}
-export function PlayGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden>
-      <path d="M 5,3.2 L 12.6,8 L 5,12.8 Z" />
-    </svg>
-  );
-}
-
-/** The drill-in breadcrumb's back chevron. */
-export function BackGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M10,3.5 L5.5,8 L10,12.5" />
-    </svg>
-  );
-}
-
 /** A tile for Liked Songs or a playlist without art — neutral, never accent. */
 export function ItemTile({ tile, url, size }: { tile: "liked" | "playlist"; url: string | null; size: number }) {
   const [failed, setFailed] = useState<string | null>(null);
@@ -689,9 +655,11 @@ export function ItemTile({ tile, url, size }: { tile: "liked" | "playlist"; url:
       {url && url !== failed ? (
         <img src={url} alt="" className="h-full w-full object-cover" draggable={false} onError={() => setFailed(url)} />
       ) : tile === "liked" ? (
-        <HeartGlyph />
+        // 2x on the 48px header tile: an integer scale keeps the edges
+        // on whole pixels (icons/searchIcons).
+        <HeartIcon scale={size >= 48 ? 2 : 1} />
       ) : (
-        <LibraryGlyph size={Math.round(size / 2.3)} />
+        <LibraryIcon scale={size >= 48 ? 2 : 1} />
       )}
     </span>
   );

@@ -19,6 +19,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Palette now asks Spotify for permission to read your playlists, Liked Songs and recently played. Reconnect Spotify once (Search's Library shows the button) to use Library.
 - While Search's "Something different" picks load, the section's title is a placeholder bar too, instead of a real title over empty rows.
 - Search's selection, section tabs and Play button now move instantly with the arrow and Tab keys instead of fading behind them. Queueing a song still highlights its row, which now fades out instead of blinking off.
+- Search's icons are redrawn at the exact size they're shown, so their lines sit on whole pixels and look sharp. Songs now has a music note instead of a second magnifier, and Library a stack of albums.
+- Typing in History searches every song you've played, not just the ones already scrolled into view.
 - Holding an arrow key in Search's History now moves one row per key repeat, smoothly. It used to re-format every play time on each press and fall several rows behind.
 - "Something different" suggestions load much faster. Lookups run side by side, connections are reused, and results are remembered on disk, so a song you play often costs no network at all the next time. When suggestions can't load, the search window now says so instead of quietly leaving the section out.
 
