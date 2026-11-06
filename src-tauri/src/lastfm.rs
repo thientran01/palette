@@ -14,14 +14,18 @@
  * the top of every list is "more by this artist" (match 1.0–0.9), and below
  * ~0.05 the tail degenerates into unrelated filler.
  */
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::settings::{json_capped, JSON_CAP};
 use crate::spotify::urlenc;
 
-const TIMEOUT: Duration = Duration::from_secs(15);
+/// Per request. Discovery stacks a handful of these, so a stalled Last.fm
+/// must fail in seconds, not the 15s it used to take per call.
+const TIMEOUT: Duration = Duration::from_secs(6);
 const UA: &str = "Palette/0.1 (https://github.com/thientran01/palette)";
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SimilarTrack {
     pub title: String,
     pub artist: String,
@@ -41,10 +45,7 @@ pub fn validate_key(key: &str) -> &'static str {
         "https://ws.audioscrobbler.com/2.0/?method=chart.gettopartists&limit=1&api_key={}&format=json",
         urlenc(key),
     );
-    let resp = ureq::get(&url)
-        .set("User-Agent", UA)
-        .timeout(TIMEOUT)
-        .call();
+    let resp = agent().get(&url).set("User-Agent", UA).call();
     let v: serde_json::Value = match resp {
         Ok(r) => match json_capped(r, JSON_CAP) {
             Ok(v) => v,
@@ -69,6 +70,14 @@ pub fn validate_key(key: &str) -> &'static str {
     "ok"
 }
 
+/// One keep-alive agent for every Last.fm call. `ureq::get` builds a fresh
+/// agent (and so a fresh TCP + TLS handshake) per request, which was a large
+/// part of discovery's multi-second wait: a run makes up to a dozen calls.
+fn agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| ureq::AgentBuilder::new().timeout(TIMEOUT).build())
+}
+
 /// One Last.fm GET with the shared error mapping. Statuses: "bad_key" (key
 /// rejected), "no_data" (Last.fm doesn't know the track/artist), "offline"
 /// (transport/5xx/rate limit).
@@ -77,10 +86,7 @@ fn call(api_key: &str, params: &str) -> Result<serde_json::Value, &'static str> 
         "https://ws.audioscrobbler.com/2.0/?{params}&autocorrect=1&api_key={}&format=json",
         urlenc(api_key),
     );
-    let resp = ureq::get(&url)
-        .set("User-Agent", UA)
-        .timeout(TIMEOUT)
-        .call();
+    let resp = agent().get(&url).set("User-Agent", UA).call();
     let v: serde_json::Value = match resp {
         Ok(r) => json_capped(r, JSON_CAP).map_err(|_| "offline")?,
         // Last.fm serves its application errors as 4xx WITH a JSON body —
@@ -171,7 +177,8 @@ pub fn get_similar(
 
 /// Similar artists the artist fallback walks, and top tracks taken from each.
 /// Every artist costs one extra Last.fm call, so this bounds the fallback at
-/// 1 + FALLBACK_ARTISTS calls per seed.
+/// 2 + FALLBACK_ARTISTS calls per seed (one fewer while the track graph is
+/// known dead), and the top-track calls run side by side.
 const FALLBACK_ARTISTS: usize = 4;
 const FALLBACK_TOP_TRACKS: u32 = 3;
 
@@ -195,10 +202,15 @@ pub fn similar_or_artist_fallback(
     artist: &str,
     limit: u32,
 ) -> Result<Vec<SimilarTrack>, &'static str> {
-    match get_similar(api_key, title, artist, limit) {
-        Ok(v) if !v.is_empty() => return Ok(v),
-        Ok(_) | Err("no_data") => {}
-        Err(e) => return Err(e),
+    if !track_graph_dead() {
+        match get_similar(api_key, title, artist, limit) {
+            Ok(v) if !v.is_empty() => {
+                note_track_graph(true);
+                return Ok(v);
+            }
+            Ok(_) | Err("no_data") => note_track_graph(false),
+            Err(e) => return Err(e),
+        }
     }
     let v = call(
         api_key,
@@ -213,27 +225,94 @@ pub fn similar_or_artist_fallback(
         .filter(|(name, _)| name.trim().to_lowercase() != seed)
         .take(FALLBACK_ARTISTS)
         .collect();
-    let mut per_artist: Vec<(String, f64, Vec<String>)> = Vec::new();
-    for (name, match_score) in artists {
-        match call(
-            api_key,
-            &format!(
-                "method=artist.getTopTracks&artist={}&limit={FALLBACK_TOP_TRACKS}",
-                urlenc(&name),
-            ),
-        ) {
-            Ok(v) => per_artist.push((name, match_score, parse_top_titles(&v))),
-            // A dead connection would stack 15s timeouts across the rest.
-            Err("offline") => break,
-            Err(_) => continue,
-        }
-    }
+    // The top-track calls are independent, so they run side by side: one
+    // round trip instead of FALLBACK_ARTISTS back to back. A failed artist
+    // just drops out of the interleave.
+    let per_artist: Vec<(String, f64, Vec<String>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = artists
+            .into_iter()
+            .map(|(name, match_score)| {
+                s.spawn(move || {
+                    call(
+                        api_key,
+                        &format!(
+                            "method=artist.getTopTracks&artist={}&limit={FALLBACK_TOP_TRACKS}",
+                            urlenc(&name),
+                        ),
+                    )
+                    .ok()
+                    .map(|v| (name, match_score, parse_top_titles(&v)))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok().flatten())
+            .collect()
+    });
     let out = interleave(per_artist);
     log::info!(
         "lastfm: no track similars, artist fallback gave {}",
         out.len()
     );
     Ok(out)
+}
+
+/*
+ * Skip the known-empty call. Since Oct 2026 track.getSimilar answers every
+ * seed with nothing, so asking it first only added a round trip to every
+ * seed. After TRACK_GRAPH_DEAD_AFTER empty answers in a row the fallback goes
+ * straight to the artist graph, and re-probes the track graph once
+ * TRACK_GRAPH_RECHECK has passed, so a recovered Last.fm is picked up again
+ * within hours. One empty answer is normal (a fresh release has no similars
+ * yet), which is why it takes a streak.
+ */
+const TRACK_GRAPH_DEAD_AFTER: u32 = 3;
+const TRACK_GRAPH_RECHECK: Duration = Duration::from_secs(6 * 60 * 60);
+
+struct TrackGraph {
+    empty_streak: u32,
+    dead_since: Option<Instant>,
+}
+
+fn track_graph() -> &'static Mutex<TrackGraph> {
+    static G: OnceLock<Mutex<TrackGraph>> = OnceLock::new();
+    G.get_or_init(|| {
+        Mutex::new(TrackGraph {
+            empty_streak: 0,
+            dead_since: None,
+        })
+    })
+}
+
+fn track_graph_dead() -> bool {
+    let mut g = track_graph().lock().unwrap_or_else(|e| e.into_inner());
+    match g.dead_since {
+        Some(t) if t.elapsed() < TRACK_GRAPH_RECHECK => true,
+        Some(_) => {
+            // Time to re-probe: one more empty answer re-marks it dead.
+            g.dead_since = None;
+            g.empty_streak = TRACK_GRAPH_DEAD_AFTER - 1;
+            false
+        }
+        None => false,
+    }
+}
+
+fn note_track_graph(had_results: bool) {
+    let mut g = track_graph().lock().unwrap_or_else(|e| e.into_inner());
+    if had_results {
+        g.empty_streak = 0;
+        g.dead_since = None;
+        return;
+    }
+    g.empty_streak += 1;
+    if g.empty_streak >= TRACK_GRAPH_DEAD_AFTER && g.dead_since.is_none() {
+        log::info!(
+            "lastfm: track.getSimilar keeps answering empty; using the artist graph directly"
+        );
+        g.dead_since = Some(Instant::now());
+    }
 }
 
 /// Rank-interleave each artist's top titles into one candidate list.
