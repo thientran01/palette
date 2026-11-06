@@ -16,7 +16,7 @@ describe("word timing does not replace rows at line activation", () => {
       expect(html).toContain("original lyric text");
       expect(html).not.toContain("aligned text");
       expect(html).toContain('data-current="true"');
-      expect(html).toContain("lyric-strong text-fg");
+      expect(html).toMatch(/data-current="true"[^>]*text-fg/);
       expect(html).toContain('aria-label="Seek to original lyric text"');
     }
   });

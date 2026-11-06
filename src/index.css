@@ -357,17 +357,6 @@ body {
   .lyric-ink { transform: none; transition: none; }
   .lyric-row [data-word] { --word-sheen: var(--word-bright, currentColor) !important; }
 }
-/* Faux medium weight for the current untimed line. A real font-weight change
- * widens the glyphs and can rewrap the line (one row inactive, two rows
- * current); a stroke paints outside the glyph without touching advances, so
- * wrapping is identical in every state. paint-order puts the fill on top,
- * which hides the half of the stroke inside the glyph and the seams where a
- * variable font's contours overlap. 0.013em matched Geist 500 side by side
- * (2026-11-06). Width snaps on, like the weight it replaces did. */
-.lyric-strong {
-  -webkit-text-stroke: 0.013em currentColor;
-  paint-order: stroke fill;
-}
 
 /* A brief onset bloom on the glyphs; the row background stays clear. */
 .lyric-ink { position: relative; }

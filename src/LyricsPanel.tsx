@@ -429,9 +429,10 @@ const LyricLineRow = memo(function LyricLineRow({
   const timed = words && words.length > 0;
   // The current line never changes font-weight: a heavier weight has wider
   // glyphs, so a line that fits on one row inactive could wrap to two the
-  // moment it lit up. Untimed rows emphasize with paint only (lyric-strong,
-  // index.css); timed rows are font-medium in every state already.
-  const tone = current ? (timed ? "text-muted/80" : "lyric-strong text-fg") : "text-muted/80";
+  // moment it lit up. It stands out by brightness alone (a text-stroke faux
+  // bold was tried and read too heavy on Windows, Thien 2026-11-06). Timed
+  // rows are font-medium in every state already.
+  const tone = current ? (timed ? "text-muted/80" : "text-fg") : "text-muted/80";
   const opacity = recedeOpacity(scale, distance, browsing);
   return (
     <Tag
