@@ -814,6 +814,16 @@ fn api_call_body(
     api_call_impl(app, method, url, Some(body), "disconnected")
 }
 
+/// Keep-alive agent for Web API GETs. `ureq::request` builds a fresh agent,
+/// so every call paid a new TCP + TLS handshake; discovery and search make
+/// several GETs in a row. GETs only: ureq retries an idempotent request whose
+/// pooled connection went stale, but not a PUT/POST, so player commands keep
+/// their fresh connection.
+fn get_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| ureq::AgentBuilder::new().build())
+}
+
 fn api_call_impl(
     app: &AppHandle,
     method: &str,
@@ -825,7 +835,12 @@ fn api_call_impl(
     let mut refreshed = false;
     let mut waited_429 = false;
     loop {
-        let req = ureq::request(method, url)
+        let req = if method == "GET" {
+            get_agent().request(method, url)
+        } else {
+            ureq::request(method, url)
+        };
+        let req = req
             .set("User-Agent", UA)
             .set("Authorization", &format!("Bearer {token}"))
             .timeout(TIMEOUT);
