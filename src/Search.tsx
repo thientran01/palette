@@ -1130,12 +1130,14 @@ export default function Search() {
       {text}
     </p>
   );
-  /** One Library / History row — the Songs row's exact geometry. */
-  const renderItem = (it: Item, slot: number) => {
+  /** One Library / History row — the Songs row's exact geometry. History
+   * draws its own sticky day headers (`inlineHeader` false) and keeps rows
+   * clear of them when the selection scrolls into view. */
+  const renderItem = (it: Item, slot: number, inlineHeader = true) => {
     const art = it.artUrl ?? (it.thumbKey ? (thumbs.get(it.thumbKey) ?? null) : null);
     return (
       <Fragment key={it.key}>
-        {it.header && sectionHeader(it.header)}
+        {inlineHeader && it.header && sectionHeader(it.header)}
         <div
           id={`search-opt-${slot}`}
           role="option"
@@ -1145,8 +1147,8 @@ export default function Search() {
           // Selection snaps (no transition): arrows move it many times a
           // second, and a fade made the highlight trail the key.
           className={`relative flex h-[52px] shrink-0 cursor-pointer select-none items-center gap-3 rounded-md px-3.5 ${
-            slot === sel ? "bg-fg/10" : ""
-          }`}
+            inlineHeader ? "" : "scroll-mt-[31px]"
+          } ${slot === sel ? "bg-fg/10" : ""}`}
         >
           {it.song && flashKeys.has(it.song.key) && <RowFlash key={flashSeq} />}
           {it.tile ? <ItemTile tile={it.tile} url={art} size={32} /> : <RowThumb url={art} size={32} />}
@@ -1287,9 +1289,30 @@ export default function Search() {
       return prose("Songs you play will gather here.");
     }
     if (shownItems.length === 0) return prose("Nothing in your history matches");
+    // One block per day, so its header sticks to the top while that day
+    // scrolls by and the next day's header pushes it off: deep in History
+    // the time alone didn't say which day you were in (Thien, 2026-11-06).
+    const days: { label: string; rows: { it: Item; slot: number }[] }[] = [];
+    shownItems.forEach((it, slot) => {
+      if (it.header || days.length === 0) days.push({ label: it.header ?? "", rows: [] });
+      days[days.length - 1].rows.push({ it, slot });
+    });
     return (
       <div id="search-list" role="listbox" aria-label="History">
-        {shownItems.map((it, i) => renderItem(it, i))}
+        {days.map((day) => (
+          <div key={day.rows[0].it.key} role="group" aria-label={day.label}>
+            {/* Sticky, opaque (the card's own surface) so rows pass under
+                it. -top-1.5 cancels the list's p-1.5, so it pins flush to
+                the list's top edge with no sliver of row showing above. */}
+            <p
+              role="presentation"
+              className="sticky -top-1.5 z-10 m-0 bg-surface px-3.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
+            >
+              {day.label}
+            </p>
+            {day.rows.map(({ it, slot }) => renderItem(it, slot, false))}
+          </div>
+        ))}
       </div>
     );
   };
