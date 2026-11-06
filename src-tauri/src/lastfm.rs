@@ -208,7 +208,11 @@ pub fn similar_or_artist_fallback(
                 note_track_graph(true);
                 return Ok(v);
             }
-            Ok(_) | Err("no_data") => note_track_graph(false),
+            // Only an empty list counts toward the dead streak. "no_data" is
+            // Last.fm not knowing this one track, which says nothing about
+            // the track graph as a whole.
+            Ok(_) => note_track_graph(false),
+            Err("no_data") => {}
             Err(e) => return Err(e),
         }
     }
