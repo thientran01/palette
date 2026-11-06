@@ -648,14 +648,19 @@ export function LyricsPanel({
   // the edges). Sized to the anchor: padTop lets the first line rest where
   // every other current line does; padBottom lets the last line reach it. The
   // offset clamp still forbids over-scroll, so the ends stop exactly at the
-  // anchor. Both scales since the 2026-11-06 redesign: with only the
-  // neighbors visible, the compact view's lead-in is empty space anyway, and
-  // the first line should sit centered like every other current line.
-  // Re-measured on resize (the fullscreen room can change monitors). */
+  // anchor. Focus only: the compact view starts with the first line at the
+  // top and the highlight walks down until it reaches the anchor, then
+  // holds there (Thien, 2026-11-06: a centered first line left the top of
+  // the panel empty). Re-measured on resize (the fullscreen room can change
+  // monitors). */
   const [pad, setPad] = useState<{ top: number; bottom: number }>({ top: 16, bottom: 16 });
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
+    if (scale !== "focus") {
+      setPad({ top: 16, bottom: 16 });
+      return;
+    }
     const measure = () => {
       const h = viewport.clientHeight;
       const anchor = h * SCALE[scale].anchor;
