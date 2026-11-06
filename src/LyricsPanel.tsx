@@ -330,26 +330,17 @@ const SCALE = {
   focus: {
     row: "px-6 py-3 text-[44px] leading-[1.27] tracking-[-0.01em]",
     marker: "h-9 w-[5px]",
-    // 0.46: Thien's Figma pass (2026-07-14) zeroed the ladder's top
-    // padding â€” in the room shrunken by the horizon's new mb-[10vh],
-    // that lands the current line back on the original 0.46 seat.
-    // Forward context leans on the next line's brightness (it reads
-    // through the ramp's start).
-    anchor: 0.46,
+    // 0.5 of the full-height lyric box (2026-11-06): the current line sits
+    // mid-room, level with the upper half of the album art.
+    anchor: 0.5,
     // Every line shows, fading evenly with distance like the compact view
     // (a 5-line cut was tried 2026-11-06 and Thien preferred the full ladder).
-    recede: { "-3": 0.25, "-2": 0.45, "-1": 0.7, "1": 0.7, "2": 0.45, "3": 0.25 },
+    recede: { "-3": 0.2, "-2": 0.4, "-1": 0.65, "1": 0.65, "2": 0.4, "3": 0.2 },
     restScale: 0.97,
-    // Tuned to the focus lyric box (#104's geometry: mt-[11vh] ladder top,
-    // bottom on the art's bottom line at --stack-top + --art â€” Focus.tsx):
-    // ~2 strong + 1 faint lines above the current line, ~2 + 1 faint below
-    // â€” Thien's live rounds settled here ("that line is barely visible
-    // anyway, it'd fade cleaner"). The knob if it wants more/less. The
-    // min() guards keep the stops from crossing on short viewports
-    // (26%+34% â‰¤ 60% always orders) â€” the ramps scale instead of
-    // inverting there; below ~925px box height the % terms govern and the
-    // strong-line count drops toward 1.
-    mask: "[mask-image:linear-gradient(transparent,black_min(240px,26%),black_calc(100%-min(320px,34%)),transparent)]",
+    // The focus lyric box spans the whole upper room (2026-11-06), so the
+    // fade is symmetric: lines dissolve into the window's top and into the
+    // horizon below.
+    mask: "[mask-image:linear-gradient(transparent,black_min(260px,28%),black_calc(100%-min(260px,28%)),transparent)]",
     chipTop: "top-64",
     chipBottom: "bottom-84",
     // Break-row dots scaled up for the room â€” bigger dots on a wider gap so

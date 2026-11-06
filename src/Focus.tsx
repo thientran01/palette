@@ -472,7 +472,7 @@ export default function Focus() {
     // no-lyrics cluster can anchor off the SAME geometry (see its seat).
     <div
       key={phase}
-      className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg [--art:min(560px,46vh,100vh_-_660px,40vw_-_390px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)] [--horizon-mb:calc((93vh_-_212px_-_var(--stack-top)_-_var(--art))/2)]"
+      className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg [--art:min(560px,46vh,100vh_-_660px,40vw_-_390px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)] [--horizon-mb:calc((93vh_-_152px_-_var(--stack-top)_-_var(--art))/2)]"
     >
       {/* Corner exit: hover-revealed + the has-[:focus-visible] keyboard
           reveal (the widget's contract). The contract-bracket verb, going
@@ -569,13 +569,14 @@ export default function Focus() {
                       device={remoteDevice}
                     />
                   </div>
-                  {/* The lyric column keeps its own top (the ladder Thien
-                      likes; tops can't align now that the art centers) and
-                      its BOTTOM edge aligns with the album's — the explicit
-                      height ends the box at --stack-top + --art, so the
-                      bottom fade dissolves exactly at the art's bottom line
-                      (Thien, 2026-07-14). */}
-                  <div data-focus-content className="flex h-[calc(var(--stack-top)_+_var(--art)_-_11vh)] min-h-0 min-w-0 flex-1 flex-col mt-[11vh]">
+                  {/* The lyric column fills the room's right side, from the
+                      top of the window down to the horizon (inset so the
+                      fades finish clear of both), and fades out at
+                      both edges (LyricsPanel SCALE.focus.mask). It used to
+                      end on the art's bottom line (2026-07-14), which left
+                      the lines in a short window over a dead band; Thien
+                      asked for it to fill the side (2026-11-06). */}
+                  <div data-focus-content className="flex min-h-0 min-w-0 flex-1 flex-col pb-[3vh] pt-[5vh]">
                     {/* Unmounted while the queue owns the column (not just
                         covered): the queue box is art-width, narrower than
                         this column, so live lyric lines would peek out past
