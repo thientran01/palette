@@ -658,23 +658,20 @@ export function LyricsPanel({
   // the edges). Sized to the anchor: padTop lets the first line rest where
   // every other current line does; padBottom lets the last line reach it. The
   // offset clamp still forbids over-scroll, so the ends stop exactly at the
-  // anchor. Focus only: the compact view starts with the first line at the
-  // top and the highlight walks down until it reaches the anchor, then
-  // holds there (Thien, 2026-11-06: a centered first line left the top of
-  // the panel empty). Re-measured on resize (the fullscreen room can change
-  // monitors). */
+  // anchor. The compact view takes only the tail room: a song starts with
+  // the first line at the top and the highlight walks down to the anchor
+  // (Thien, 2026-11-06: a centered first line left the top of the panel
+  // empty), and at the end the list keeps scrolling so the last line stays
+  // at the anchor instead of sinking to the bottom. Re-measured on resize
+  // (the fullscreen room can change monitors). */
   const [pad, setPad] = useState<{ top: number; bottom: number }>({ top: 16, bottom: 16 });
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
-    if (scale !== "focus") {
-      setPad({ top: 16, bottom: 16 });
-      return;
-    }
     const measure = () => {
       const h = viewport.clientHeight;
       const anchor = h * SCALE[scale].anchor;
-      setPad({ top: Math.round(anchor), bottom: Math.round(h - anchor) });
+      setPad({ top: scale === "focus" ? Math.round(anchor) : 16, bottom: Math.round(h - anchor) });
     };
     measure();
     const ro = new ResizeObserver(measure);
