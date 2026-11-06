@@ -1368,7 +1368,14 @@ export default function Search() {
               <span className="uppercase tracking-widest">{day.label}</span>
               {/* What that day added up to, under the play-time column. A
                   day still cut off at the page edge shows nothing yet. */}
-              {day.summary && <span className="shrink-0 tabular-nums text-muted/85">{day.summary}</span>}
+              {day.summary && (
+                <span
+                  title="Time you actually listened. A skipped song counts only the part you heard."
+                  className="shrink-0 tabular-nums text-muted/85"
+                >
+                  {day.summary}
+                </span>
+              )}
             </p>
             {day.rows.map(({ it, slot }) => renderItem(it, slot, false))}
           </div>

@@ -165,11 +165,13 @@ export function dayTotals(
   return totals;
 }
 
-/** "14 songs · 52 min", "1 song · 3 min", "31 songs · 2 hr 5 min". */
+/** "14 songs · 52 min listened", "31 songs · 2 hr 5 min listened". The
+ * word "listened" is load-bearing: a bare time read as the day's total
+ * song length, not time actually heard (Thien, 2026-11-06). */
 export function daySummary(count: number, ms: number): string {
   const min = Math.max(1, Math.round(ms / 60_000));
   const time = min < 60 ? `${min} min` : `${Math.floor(min / 60)} hr${min % 60 ? ` ${min % 60} min` : ""}`;
-  return `${count} song${count === 1 ? "" : "s"} · ${time}`;
+  return `${count} song${count === 1 ? "" : "s"} · ${time} listened`;
 }
 
 /** The Liked Songs playback context for an account. */

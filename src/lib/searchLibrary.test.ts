@@ -139,11 +139,11 @@ describe("history by day", () => {
   });
 
   it("summarizes a day in songs and listening time", () => {
-    expect(daySummary(1, 170_000)).toBe("1 song · 3 min");
-    expect(daySummary(14, 52 * 60_000)).toBe("14 songs · 52 min");
-    expect(daySummary(31, 125 * 60_000)).toBe("31 songs · 2 hr 5 min");
-    expect(daySummary(20, 120 * 60_000)).toBe("20 songs · 2 hr");
-    expect(daySummary(1, 5_000)).toBe("1 song · 1 min");
+    expect(daySummary(1, 170_000)).toBe("1 song · 3 min listened");
+    expect(daySummary(14, 52 * 60_000)).toBe("14 songs · 52 min listened");
+    expect(daySummary(31, 125 * 60_000)).toBe("31 songs · 2 hr 5 min listened");
+    expect(daySummary(20, 120 * 60_000)).toBe("20 songs · 2 hr listened");
+    expect(daySummary(1, 5_000)).toBe("1 song · 1 min listened");
   });
 });
 
