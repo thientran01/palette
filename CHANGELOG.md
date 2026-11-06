@@ -8,6 +8,17 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Added
+
+- Search has a section strip: Songs, Library and History. Tab moves between them, and `Ctrl+Alt+L` opens Search on Library.
+- Library lists Liked Songs, your playlists and the ones you follow. Typing filters them instantly and finds public playlists on Spotify below. Enter opens a playlist's songs with Play in the header, Shift+Enter plays it, and Esc goes back.
+- History lists everything you've played, grouped by day with play times. Enter plays a song and Shift+Enter queues it.
+- The queue header has a search button next to the sparkle.
+
+### Changed
+
+- Palette now asks Spotify for permission to read your playlists and Liked Songs. Reconnect Spotify once (Search's Library shows the button) to use Library.
+
 ## [1.0.11] - 2026-10-31
 
 ### Changed
