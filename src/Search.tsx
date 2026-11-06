@@ -46,6 +46,7 @@ import {
   ItemTile,
   LibraryGlyph,
   libraryItems,
+  BackGlyph,
   PlayGlyph,
   ReconnectButton,
   SongsGlyph,
@@ -1082,18 +1083,18 @@ export default function Search() {
     section === "songs"
       ? "Play something…"
       : section === "history"
-        ? "Filter your history…"
+        ? "What did you play?"
         : opened
-          ? opened.name
-          : "Filter your library…";
+          ? `Filter ${opened.name}…`
+          : "Find a playlist…";
   const inputLabel =
     section === "songs"
       ? "Search Spotify"
       : section === "history"
-        ? "Filter your history"
+        ? "Search your history"
         : opened
           ? `Filter ${opened.name}`
-          : "Filter your library";
+          : "Find a playlist";
 
   // ---- Library / History rendering ----
 
@@ -1153,6 +1154,26 @@ export default function Search() {
 
   const renderDrill = (t: OpenTarget) => (
     <div id="search-list" role="listbox" aria-label={t.name}>
+      {/* Where you are, in the slot "Your library" held: the input alone
+          (showing the playlist's name) read like a filter that its songs
+          failed. "Library" is the visible back, same as Esc. */}
+      <p
+        role="presentation"
+        className="m-0 flex min-w-0 items-center gap-1.5 px-3.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
+      >
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={closeTarget}
+          aria-label="Back to Library"
+          className="inline-flex shrink-0 items-center gap-1 uppercase tracking-widest text-muted [transition:color_140ms_var(--ease-out-tk)] hover:text-fg"
+        >
+          <BackGlyph />
+          Library
+        </button>
+        <span aria-hidden="true">/</span>
+        <span className="truncate">{t.name}</span>
+      </p>
       {/* The opened playlist: identity + Play. Slot 0, so Up from the first
           song reaches Play and Enter there plays the whole thing. */}
       <div
@@ -1176,8 +1197,10 @@ export default function Search() {
           type="button"
           tabIndex={-1}
           onClick={() => activate(0, false)}
-          className={`inline-flex h-[26px] shrink-0 items-center gap-1.5 rounded-md pl-2 pr-2.5 text-[12px] font-medium text-fg [transition:background-color_140ms_var(--ease-out-tk)] ${
-            sel === 0 ? "bg-fg/20" : "bg-fg/10 hover:bg-fg/15"
+          // Outlined until selected: a filled button out-shouted the
+          // selected song row, which is what Enter actually plays.
+          className={`inline-flex h-[26px] shrink-0 items-center gap-1.5 rounded-md pl-2 pr-2.5 text-[12px] font-medium ring-1 ring-inset [transition:background-color_140ms_var(--ease-out-tk),color_140ms_var(--ease-out-tk)] ${
+            sel === 0 ? "bg-fg/20 text-fg ring-transparent" : "text-muted ring-fg/15 hover:bg-fg/10 hover:text-fg"
           }`}
         >
           <PlayGlyph />
@@ -1531,17 +1554,23 @@ export default function Search() {
                   );
                 })}
                 {/* Discovery in flight, nothing to show yet (summon-fill OR
-                    pull-refresh — same wait): the header appears at once with
-                    three ghost rows holding the exact space the picks will
-                    land in, so a multi-second Last.fm→Spotify walk never
-                    reads as broken and the swap is in-place. */}
+                    pull-refresh — same wait): a ghost header and three ghost
+                    rows hold the exact space the picks will land in, so a
+                    multi-second Last.fm→Spotify walk never reads as broken
+                    and the swap is in-place. The header is a ghost too: the
+                    real "Something different" over empty bars read as a
+                    section that had loaded with nothing in it (Thien,
+                    2026-11-06). Same box as the real header, so the swap doesn't shift. */}
                 {!hasQuery && discoveryPending && discovery.length === 0 && (
                   <>
                     <p
-                      role="presentation"
+                      aria-hidden
+                      data-ghost-header
                       className="m-0 px-3.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
                     >
-                      Something different
+                      {/* Zero-width text keeps the real header's line box. */}
+                      {"\u200b"}
+                      <span className="skeleton-pulse inline-block h-[7px] w-[124px] rounded-full bg-fg/5 align-middle" />
                     </p>
                     {[0, 1, 2].map((i) => (
                       <SkeletonRow key={i} index={i} reason />

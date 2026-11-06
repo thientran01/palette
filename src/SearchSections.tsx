@@ -655,6 +655,15 @@ export function PlayGlyph() {
   );
 }
 
+/** The drill-in breadcrumb's back chevron. */
+export function BackGlyph() {
+  return (
+    <svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M10,3.5 L5.5,8 L10,12.5" />
+    </svg>
+  );
+}
+
 /** A tile for Liked Songs or a playlist without art — neutral, never accent. */
 export function ItemTile({ tile, url, size }: { tile: "liked" | "playlist"; url: string | null; size: number }) {
   const [failed, setFailed] = useState<string | null>(null);
