@@ -308,15 +308,14 @@ const SCALE = {
   base: {
     row: "px-3 py-1.5 text-base leading-normal tracking-[0.025em]",
     marker: "h-4 w-[2px]",
-    // Centered: previous / current / next sit symmetrically in the compact
-    // view (lyrics redesign, 2026-11-06).
-    anchor: 0.5,
-    // Three lines: the one just sung, the current line, the next one. The
-    // rest are gone (see RECEDE / lineDistance).
-    recede: { "-1": 0.3, "1": 0.7 },
-    // Non-current ink is drawn smaller than its layout box (paint-only, so
-    // wrapping never changes); the current line is the only full-size one.
-    restScale: 0.9,
+    anchor: 0.4,
+    // The compact view stays full: a three-line cut left most of the panel
+    // empty (Thien, 2026-11-06), so every line shows and only the
+    // brightness falls off with distance (±3 means "3 or further").
+    recede: { "-3": 0.15, "-2": 0.25, "-1": 0.45, "1": 0.8, "2": 0.55, "3": 0.35 },
+    // Non-current ink is drawn slightly smaller than its layout box
+    // (paint-only, so wrapping never changes).
+    restScale: 0.97,
     mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
     chipTop: "top-8",
     chipBottom: "bottom-8",

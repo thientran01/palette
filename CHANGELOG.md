@@ -10,7 +10,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Changed
 
-- Lyrics are calmer: the current line sits in the middle, the line just sung and the next line fade back, and the rest fall away. The compact player shows three lines and fullscreen about five.
+- Lyrics are calmer: lines fade the further they are from the current one. Fullscreen centers the current line and shows about five lines.
 
 ### Fixed
 
