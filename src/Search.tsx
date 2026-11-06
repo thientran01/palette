@@ -1487,11 +1487,14 @@ export default function Search() {
           )}
         </div>
 
-        {/* The section strip: what the window is finding. Tab walks it. */}
+        {/* The section strip: what the window is finding. Tab walks it.
+            pl-3.5 lines the tab glyphs up with the magnifier; pr-5 matches
+            the input row so "next section" ends on the same edge as the
+            play/queue hints above it. */}
         <div
           role="tablist"
           aria-label="Search sections"
-          className="flex items-center gap-0.5 border-b border-border/10 px-3.5 pb-2.5"
+          className="flex items-center gap-0.5 border-b border-border/10 pb-2.5 pl-3.5 pr-5"
         >
           {SECTIONS.map((sec) => (
             <button
