@@ -308,6 +308,13 @@ async function artForHistory(agg: Agg): Promise<string | null> {
   }
 }
 
+/** The queued-row confirmation: one extra wash over the row (on top of the
+ * selection) that holds, then fades — opacity only (.row-flash). Mounted for
+ * the flash's 900ms; keyed by flash count so a second queue replays it. */
+function RowFlash() {
+  return <span aria-hidden className="row-flash pointer-events-none absolute inset-0 rounded-md bg-fg/10" />;
+}
+
 /** A ghost of one result row — shown where real rows will land while a fetch
  * runs (discovery fill and first search results), so the wait fills its space
  * with the shape of the answer instead of a void. Geometry mirrors the real
@@ -495,6 +502,8 @@ export default function Search() {
   const [selected, setSelected] = useState(0);
   const [note, setNote] = useState<string | null>(null);
   const [flashKeys, setFlashKeys] = useState<ReadonlySet<string>>(new Set());
+  // Bumped per flash so queueing the same row again replays its flash.
+  const [flashSeq, setFlashSeq] = useState(0);
   const spotify = useSpotifyStatus();
   // Live connection for the summon-time discovery fetch (the onSearchShown
   // listener is registered once and must not close over a stale value).
@@ -615,6 +624,7 @@ export default function Search() {
   };
 
   const flash = (key: string) => {
+    setFlashSeq((n) => n + 1);
     setFlashKeys((s) => new Set(s).add(key));
     const prev = flashTimers.current.get(key);
     if (prev !== undefined) window.clearTimeout(prev);
@@ -1127,10 +1137,13 @@ export default function Search() {
           aria-selected={slot === sel}
           onMouseMove={hoverSelect(slot)}
           onClick={(e) => activate(slot, e.shiftKey)}
-          className={`flex h-[52px] shrink-0 cursor-pointer select-none items-center gap-3 rounded-md px-3.5 [transition:background-color_140ms_var(--ease-out-tk)] ${
-            it.song && flashKeys.has(it.song.key) ? "bg-fg/20" : slot === sel ? "bg-fg/10" : ""
+          // Selection snaps (no transition): arrows move it many times a
+          // second, and a fade made the highlight trail the key.
+          className={`relative flex h-[52px] shrink-0 cursor-pointer select-none items-center gap-3 rounded-md px-3.5 ${
+            slot === sel ? "bg-fg/10" : ""
           }`}
         >
+          {it.song && flashKeys.has(it.song.key) && <RowFlash key={flashSeq} />}
           {it.tile ? <ItemTile tile={it.tile} url={art} size={32} /> : <RowThumb url={art} size={32} />}
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate text-[14px] font-medium leading-5 text-fg">{it.title}</span>
@@ -1199,7 +1212,8 @@ export default function Search() {
           onClick={() => activate(0, false)}
           // Outlined until selected: a filled button out-shouted the
           // selected song row, which is what Enter actually plays.
-          className={`inline-flex h-[26px] shrink-0 items-center gap-1.5 rounded-md pl-2 pr-2.5 text-[12px] font-medium ring-1 ring-inset [transition:background-color_140ms_var(--ease-out-tk),color_140ms_var(--ease-out-tk)] ${
+          // No transition: Up/Down select it, so it snaps like a row.
+          className={`inline-flex h-[26px] shrink-0 items-center gap-1.5 rounded-md pl-2 pr-2.5 text-[12px] font-medium ring-1 ring-inset ${
             sel === 0 ? "bg-fg/20 text-fg ring-transparent" : "text-muted ring-fg/15 hover:bg-fg/10 hover:text-fg"
           }`}
         >
@@ -1397,7 +1411,9 @@ export default function Search() {
                 if (sec === section && drilling) closeTarget();
                 else if (sec !== section) goSection(sec);
               }}
-              className={`inline-flex h-[26px] items-center gap-1.5 rounded-md pl-2 pr-2.5 text-[12.5px] font-medium [transition:background-color_140ms_var(--ease-out-tk),color_140ms_var(--ease-out-tk)] ${
+              // No transition: Tab flips the active tab, so it snaps like
+              // the row selection.
+              className={`inline-flex h-[26px] items-center gap-1.5 rounded-md pl-2 pr-2.5 text-[12.5px] font-medium ${
                 sec === section ? "bg-fg/10 text-fg" : "text-muted hover:text-fg"
               }`}
             >
@@ -1516,8 +1532,10 @@ export default function Search() {
                       if (prev) setSelected(i);
                     }}
                     onClick={() => void playRow(row)}
-                    className={`flex h-[52px] cursor-pointer select-none items-center gap-3 rounded-md px-3.5 [transition:background-color_140ms_var(--ease-out-tk)] ${
-                      flashKeys.has(row.key) ? "bg-fg/20" : i === sel ? "bg-fg/10" : ""
+                    // Selection snaps, as in renderItem: no trailing fade
+                    // behind the arrow keys.
+                    className={`relative flex h-[52px] cursor-pointer select-none items-center gap-3 rounded-md px-3.5 ${
+                      i === sel ? "bg-fg/10" : ""
                     } ${!hasQuery && swapTick > 0 ? "row-swap-in" : ""}`}
                     style={
                       // Stagger is LOCAL to each section's landing moment:
@@ -1532,6 +1550,7 @@ export default function Search() {
                         : undefined
                     }
                   >
+                    {flashKeys.has(row.key) && <RowFlash key={flashSeq} />}
                     <RowThumb url={row.artUrl} size={32} />
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="truncate text-[14px] font-medium leading-5 text-fg">{row.title}</span>

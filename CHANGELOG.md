@@ -18,6 +18,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 - Palette now asks Spotify for permission to read your playlists, Liked Songs and recently played. Reconnect Spotify once (Search's Library shows the button) to use Library.
 - While Search's "Something different" picks load, the section's title is a placeholder bar too, instead of a real title over empty rows.
+- Search's selection, section tabs and Play button now move instantly with the arrow and Tab keys instead of fading behind them. Queueing a song still highlights its row, which now fades out instead of blinking off.
 
 ## [1.0.11] - 2026-10-31
 
