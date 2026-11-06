@@ -24,6 +24,7 @@ import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
 import { driveWordRows, type WordRow } from "./lib/wordWipeDriver";
+import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
  * next line boundary, recomputed on every kernel anchor event (seek, pause,
@@ -460,7 +461,7 @@ const LyricLineRow = memo(function LyricLineRow({
           "--lyric-rest-scale": SCALE[scale].restScale,
         } as React.CSSProperties
       }
-      className={`lyric-row relative whitespace-pre-wrap rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${timed ? "font-medium" : ""} ${tone} ${
+      className={`lyric-row relative whitespace-pre-wrap ${keepHangulWords(text) ? "break-keep" : ""} rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${timed ? "font-medium" : ""} ${tone} ${
         // A faded-out row is not a click target: no hover wash over
         // empty space, and the click goes nowhere you can't see.
         opacity === 0 ? "pointer-events-none" : seekable ? "cursor-pointer hover:bg-fg/5" : ""
@@ -489,7 +490,15 @@ const LyricLineRow = memo(function LyricLineRow({
               {w.text}
             </span>
           ))
-        : text}
+        : lyricWrapSegments(text).map((seg, si) =>
+            seg.keep ? (
+              <span key={si} className="whitespace-nowrap">
+                {seg.text}
+              </span>
+            ) : (
+              seg.text
+            ),
+          )}
       </span>
     </Tag>
   );
