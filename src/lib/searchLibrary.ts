@@ -144,6 +144,34 @@ export function groupByDay(
   });
 }
 
+/** Plays and listening time per History day header, keyed by its label.
+ * `complete` false (more pages to load) drops the oldest day: it may be
+ * cut off at the page edge, and a short count would be wrong. */
+export function dayTotals(
+  entries: readonly HistoryEntry[],
+  now: number,
+  complete: boolean,
+): Map<string, { count: number; ms: number }> {
+  const totals = new Map<string, { count: number; ms: number }>();
+  let last = "";
+  for (const e of entries) {
+    last = dayLabel(e.started_at_ms, now);
+    const t = totals.get(last) ?? { count: 0, ms: 0 };
+    t.count += 1;
+    t.ms += Math.max(0, e.ms_listened);
+    totals.set(last, t);
+  }
+  if (!complete && last) totals.delete(last);
+  return totals;
+}
+
+/** "14 songs · 52 min", "1 song · 3 min", "31 songs · 2 hr 5 min". */
+export function daySummary(count: number, ms: number): string {
+  const min = Math.max(1, Math.round(ms / 60_000));
+  const time = min < 60 ? `${min} min` : `${Math.floor(min / 60)} hr${min % 60 ? ` ${min % 60} min` : ""}`;
+  return `${count} song${count === 1 ? "" : "s"} · ${time}`;
+}
+
 /** The Liked Songs playback context for an account. */
 export function likedContext(userId: string): string {
   return `spotify:user:${userId}:collection`;

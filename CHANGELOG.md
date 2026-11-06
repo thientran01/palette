@@ -12,7 +12,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 - Search has a section strip: Songs, Library and History. Tab moves between them, and `Ctrl+Alt+L` opens Search on Library.
 - Library lists Liked Songs, then your playlists and the ones you follow, recently played first. The playlist that's playing says Playing, and inside it the current song says Now. Typing filters them instantly and finds public playlists on Spotify below. Enter opens a playlist's songs with Play in the header, Shift+Enter plays it, and Esc or the Library link above it goes back.
-- History lists everything you've played, grouped by day with play times. The day's header stays pinned at the top as you scroll until the next day replaces it. Enter plays a song and Shift+Enter queues it.
+- History lists everything you've played, grouped by day with play times. The day's header stays pinned at the top as you scroll until the next day replaces it. Each day's header also shows how many songs you played that day and how long you listened. Enter plays a song and Shift+Enter queues it.
 
 ### Changed
 

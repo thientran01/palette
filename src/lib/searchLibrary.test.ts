@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { HistoryEntry, PlaylistSummary, QueueTrack } from "../types";
 import {
   dayLabel,
+  daySummary,
+  dayTotals,
   filterRanked,
   fmtDuration,
   groupByDay,
@@ -124,6 +126,24 @@ describe("history by day", () => {
       now,
     );
     expect(rows.map((r) => r.header)).toEqual(["Today", null, "Yesterday"]);
+  });
+
+  it("totals each day, and leaves out a day that may be cut off", () => {
+    const at = (h: number, m: number, d = 6) => ({ ...entry(new Date(2026, 10, d, h, m).getTime()), ms_listened: 180_000 });
+    const list = [at(17, 58), at(17, 55), at(23, 20, 5)];
+    expect([...dayTotals(list, now, true)]).toEqual([
+      ["Today", { count: 2, ms: 360_000 }],
+      ["Yesterday", { count: 1, ms: 180_000 }],
+    ]);
+    expect([...dayTotals(list, now, false).keys()]).toEqual(["Today"]);
+  });
+
+  it("summarizes a day in songs and listening time", () => {
+    expect(daySummary(1, 170_000)).toBe("1 song · 3 min");
+    expect(daySummary(14, 52 * 60_000)).toBe("14 songs · 52 min");
+    expect(daySummary(31, 125 * 60_000)).toBe("31 songs · 2 hr 5 min");
+    expect(daySummary(20, 120 * 60_000)).toBe("20 songs · 2 hr");
+    expect(daySummary(1, 5_000)).toBe("1 song · 1 min");
   });
 });
 

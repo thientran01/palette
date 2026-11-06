@@ -580,8 +580,11 @@ export default function Search() {
   // press rebuild (and re-format the play time of) every history row,
   // because a Library input changes identity on each render.
   const histItems: Item[] = useMemo(
-    () => (section === "history" ? historyItems(history.entries, histQuery, Date.now()) : []),
-    [section, history.entries, histQuery],
+    () =>
+      section === "history"
+        ? historyItems(history.entries, histQuery, Date.now(), history.exhausted)
+        : [],
+    [section, history.entries, histQuery, history.exhausted],
   );
   const items = section === "history" ? histItems : libItems;
   const shownItems = section === "history" ? items.slice(0, histRender) : items;
@@ -1292,9 +1295,10 @@ export default function Search() {
     // One block per day, so its header sticks to the top while that day
     // scrolls by and the next day's header pushes it off: deep in History
     // the time alone didn't say which day you were in (Thien, 2026-11-06).
-    const days: { label: string; rows: { it: Item; slot: number }[] }[] = [];
+    const days: { label: string; summary: string | null; rows: { it: Item; slot: number }[] }[] = [];
     shownItems.forEach((it, slot) => {
-      if (it.header || days.length === 0) days.push({ label: it.header ?? "", rows: [] });
+      if (it.header || days.length === 0)
+        days.push({ label: it.header ?? "", summary: it.headerRight ?? null, rows: [] });
       days[days.length - 1].rows.push({ it, slot });
     });
     return (
@@ -1306,9 +1310,12 @@ export default function Search() {
                 the list's top edge with no sliver of row showing above. */}
             <p
               role="presentation"
-              className="sticky -top-1.5 z-10 m-0 bg-surface px-3.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
+              className="sticky -top-1.5 z-10 m-0 flex items-baseline justify-between gap-3 bg-surface px-3.5 pb-1.5 pt-2 text-[11px] text-muted"
             >
-              {day.label}
+              <span className="uppercase tracking-widest">{day.label}</span>
+              {/* What that day added up to, under the play-time column. A
+                  day still cut off at the page edge shows nothing yet. */}
+              {day.summary && <span className="shrink-0 tabular-nums text-muted/85">{day.summary}</span>}
             </p>
             {day.rows.map(({ it, slot }) => renderItem(it, slot, false))}
           </div>

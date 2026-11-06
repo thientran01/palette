@@ -24,6 +24,8 @@ import { commands, onHistoryCleared, onSpotifyStatus } from "./lib/backend";
 import {
   filterRanked,
   fmtDuration,
+  dayTotals,
+  daySummary,
   groupByDay,
   likedContext,
   matchRank,
@@ -74,6 +76,8 @@ export interface Item {
   key: string;
   /** A section header rendered above this row. */
   header?: string | null;
+  /** History: the day's "14 songs · 52 min", right side of its header. */
+  headerRight?: string | null;
   title: string;
   subtitle: string;
   artUrl: string | null;
@@ -569,14 +573,21 @@ export function useHistoryThumbs(keys: string[]): Map<string, string | null> {
 
 /** History rows: filtered by the query (kept chronological, so the day
  * headers stay true), grouped by day, the play time on the right. */
-export function historyItems(entries: HistoryEntry[], query: string, now: number): Item[] {
+export function historyItems(
+  entries: HistoryEntry[],
+  query: string,
+  now: number,
+  complete: boolean,
+): Item[] {
   const q = norm(query);
   const list = q
     ? entries.filter((e) => matchRank(e.title, q) !== null || matchRank(e.artist, q) !== null)
     : entries;
+  const totals = dayTotals(list, now, complete);
   return groupByDay(list, now).map(({ entry, header }) => ({
     key: `${entry.key}:${entry.started_at_ms}`,
     header,
+    headerRight: header && totals.has(header) ? daySummary(totals.get(header)!.count, totals.get(header)!.ms) : null,
     title: entry.title,
     subtitle: entry.artist,
     artUrl: null,
