@@ -2,7 +2,7 @@
  * The preferences window (Milestone C) — a NORMAL 720×560 opaque, frameless,
  * non-resizable window (src-tauri/src/prefs.rs), not the widget's transparent
  * click-through model. Rebuilt from the design handoff (PulsePrefs.dc.html) on
- * the repo's house tokens + bundled Inter.
+ * the repo's house tokens + bundled Geist.
  *
  * Doctrine (hard rules, from CLAUDE.md + the handoff):
  * - Dark-only, monochrome chrome on semantic tokens (fg/muted on
