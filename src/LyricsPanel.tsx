@@ -335,10 +335,11 @@ const SCALE = {
     // that lands the current line back on the original 0.46 seat.
     // Forward context leans on the next line's brightness (it reads
     // through the ramp's start).
-    // 2026-11-06 redesign: centered (0.5) with ~5 lines visible.
-    anchor: 0.5,
-    recede: { "-2": 0.25, "-1": 0.6, "1": 0.6, "2": 0.25 },
-    restScale: 0.82,
+    anchor: 0.46,
+    // Every line shows, fading evenly with distance like the compact view
+    // (a 5-line cut was tried 2026-11-06 and Thien preferred the full ladder).
+    recede: { "-3": 0.25, "-2": 0.45, "-1": 0.7, "1": 0.7, "2": 0.45, "3": 0.25 },
+    restScale: 0.97,
     // Tuned to the focus lyric box (#104's geometry: mt-[11vh] ladder top,
     // bottom on the art's bottom line at --stack-top + --art â€” Focus.tsx):
     // ~2 strong + 1 faint lines above the current line, ~2 + 1 faint below
