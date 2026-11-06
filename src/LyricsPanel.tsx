@@ -308,7 +308,15 @@ const SCALE = {
   base: {
     row: "px-3 py-1.5 text-base leading-normal tracking-[0.025em]",
     marker: "h-4 w-[2px]",
-    anchor: 0.4,
+    // Centered: previous / current / next sit symmetrically in the compact
+    // view (lyrics redesign, 2026-11-06).
+    anchor: 0.5,
+    // Three lines: the one just sung, the current line, the next one. The
+    // rest are gone (see RECEDE / lineDistance).
+    recede: { "-1": 0.3, "1": 0.7 },
+    // Non-current ink is drawn smaller than its layout box (paint-only, so
+    // wrapping never changes); the current line is the only full-size one.
+    restScale: 0.9,
     mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
     chipTop: "top-8",
     chipBottom: "bottom-8",
@@ -324,9 +332,12 @@ const SCALE = {
     // 0.46: Thien's Figma pass (2026-07-14) zeroed the ladder's top
     // padding â€” in the room shrunken by the horizon's new mb-[10vh],
     // that lands the current line back on the original 0.46 seat.
-    // Forward context leans on tier-1's brightness (the next line reads
+    // Forward context leans on the next line's brightness (it reads
     // through the ramp's start).
-    anchor: 0.46,
+    // 2026-11-06 redesign: centered (0.5) with ~5 lines visible.
+    anchor: 0.5,
+    recede: { "-2": 0.12, "-1": 0.3, "1": 0.7, "2": 0.3 },
+    restScale: 0.82,
     // Tuned to the focus lyric box (#104's geometry: mt-[11vh] ladder top,
     // bottom on the art's bottom line at --stack-top + --art â€” Focus.tsx):
     // ~2 strong + 1 faint lines above the current line, ~2 + 1 faint below
@@ -348,15 +359,37 @@ const SCALE = {
   },
 } as const satisfies Record<LyricsScale, unknown>;
 
-/** Focus-scale recession: opacity tiers by clamped distance from the current
- * line. Tiers (not raw distance) keep the row memo effective â€” a line
- * advance re-renders only the rows whose tier changed. While the user
- * wheel-browses, every non-current row relaxes to the base muted/80 (you
- * scrolled to READ â€” the falloff would gray out exactly what you came for)
- * and the tiers re-settle on re-latch. */
-function focusTone(tier: number, browsing: boolean): string {
-  if (browsing) return "text-muted/80";
-  return tier <= 1 ? "text-muted/85" : tier === 2 ? "text-muted/50" : "text-muted/30";
+/** Recession (2026-11-06 redesign): the current line is bright, the next
+ * one readable, the one just sung faint, and everything past SCALE.recede is
+ * gone, so the view reads as a performance rather than a page. Distances
+ * count SUNG rows only, so a dormant (collapsed) break row never steals the
+ * "next line" slot; a current break sits between its neighbors (the line
+ * before it is -1, the line after it +1). Clamped to ±3 so a line advance
+ * re-renders only the rows whose distance actually changed (row memo). */
+export function lineDistances(lines: LyricLine[], idx: number): number[] {
+  const sungBefore: number[] = [];
+  let n = 0;
+  for (const l of lines) {
+    sungBefore.push(n);
+    if (l.end === undefined) n++;
+  }
+  const cur = idx < 0 ? 0 : sungBefore[idx] ?? 0;
+  const between = idx < 0 || lines[idx]?.end !== undefined;
+  return lines.map((_, i) => {
+    let d = sungBefore[i] - cur;
+    if (between && i > idx) d += 1;
+    return Math.max(-3, Math.min(3, d));
+  });
+}
+
+/** Opacity for a row at `distance` from the current line; 0 = hidden. While
+ * the user wheel-browses every row comes back (you scrolled to READ — the
+ * falloff would hide exactly what you came for) and the falloff re-settles
+ * on re-latch. */
+function recedeOpacity(scale: LyricsScale, distance: number, browsing: boolean): number {
+  if (distance === 0 || browsing) return 1;
+  const table = SCALE[scale].recede as Record<string, number | undefined>;
+  return table[String(distance)] ?? 0;
 }
 
 /** One lyric line. Memoized so a line advance reconciles the two rows whose
@@ -370,7 +403,7 @@ const LyricLineRow = memo(function LyricLineRow({
   cascadeDelayMs,
   anchor,
   scale,
-  tier,
+  distance,
   browsing,
   words,
 }: {
@@ -387,20 +420,20 @@ const LyricLineRow = memo(function LyricLineRow({
    * instantly â€” no JS disarm, no engine-dependent delay retargeting. */
   anchor: boolean;
   scale: LyricsScale;
-  /** Clamped distance from the current line (focus recession); null at base. */
-  tier: number | null;
+  /** Signed distance in sung lines from the current one, clamped to ±3
+   * (lineDistances). */
+  distance: number;
   browsing: boolean;
   words?: LyricWord[];
 }) {
   const Tag = seekable ? "button" : "div";
   const timed = words && words.length > 0;
-  const tone = current
-    ? timed
-      ? "font-medium text-muted/80"
-      : "font-medium text-fg"
-    : scale === "base" || tier === null
-      ? "text-muted/80"
-      : focusTone(tier, browsing);
+  // The current line never changes font-weight: a heavier weight has wider
+  // glyphs, so a line that fits on one row inactive could wrap to two the
+  // moment it lit up. Untimed rows emphasize with paint only (lyric-strong,
+  // index.css); timed rows are font-medium in every state already.
+  const tone = current ? (timed ? "text-muted/80" : "lyric-strong text-fg") : "text-muted/80";
+  const opacity = recedeOpacity(scale, distance, browsing);
   return (
     <Tag
       {...(seekable
@@ -416,13 +449,21 @@ const LyricLineRow = memo(function LyricLineRow({
         : {})}
       data-word-row={timed ? index : undefined}
       data-current={current ? "true" : undefined}
-      data-distance={tier ?? 0}
+      data-distance={distance}
       data-browsing={browsing ? "true" : undefined}
       data-cascade
       {...(anchor ? { "data-anchor": true } : {})}
-      style={{ "--cascade-delay": `${cascadeDelayMs}ms` } as React.CSSProperties}
+      style={
+        {
+          "--cascade-delay": `${cascadeDelayMs}ms`,
+          "--lyric-recede": opacity,
+          "--lyric-rest-scale": SCALE[scale].restScale,
+        } as React.CSSProperties
+      }
       className={`lyric-row relative whitespace-pre-wrap rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${timed ? "font-medium" : ""} ${tone} ${
-        seekable ? "cursor-pointer hover:bg-fg/5" : ""
+        // A faded-out row is not a click target: no hover wash over
+        // empty space, and the click goes nowhere you can't see.
+        opacity === 0 ? "pointer-events-none" : seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
       <span
@@ -607,20 +648,17 @@ export function LyricsPanel({
   // the edges). Sized to the anchor: padTop lets the first line rest where
   // every other current line does; padBottom lets the last line reach it. The
   // offset clamp still forbids over-scroll, so the ends stop exactly at the
-  // anchor. Focus only â€” the compact expanded view (â‰ˆ296px) is too short to
-  // spend ~46% of itself on lead-in; it keeps the tight 16px ends. Re-measured
-  // on resize (the fullscreen room can change monitors). */
+  // anchor. Both scales since the 2026-11-06 redesign: with only the
+  // neighbors visible, the compact view's lead-in is empty space anyway, and
+  // the first line should sit centered like every other current line.
+  // Re-measured on resize (the fullscreen room can change monitors). */
   const [pad, setPad] = useState<{ top: number; bottom: number }>({ top: 16, bottom: 16 });
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
-    if (scale !== "focus") {
-      setPad({ top: 16, bottom: 16 });
-      return;
-    }
     const measure = () => {
       const h = viewport.clientHeight;
-      const anchor = h * SCALE.focus.anchor;
+      const anchor = h * SCALE[scale].anchor;
       setPad({ top: Math.round(anchor), bottom: Math.round(h - anchor) });
     };
     measure();
@@ -680,6 +718,7 @@ export function LyricsPanel({
   }, [lines]);
 
   const browsing = manualOffset !== null;
+  const distances = lineDistances(lines, idx);
   const offset = manualOffset ?? autoOffset;
   const band = (viewportRef.current?.clientHeight ?? 0) * RELATCH_BAND;
   // Where "now" sits relative to the browse â€” drives the chip's edge/arrow.
@@ -755,7 +794,7 @@ export function LyricsPanel({
               current={i === idx}
               seekable={seekable}
               scale={scale}
-              tier={Math.min(Math.abs(i - Math.max(idx, 0)), 3)}
+              distance={distances[i]}
               browsing={browsing}
               anchor={anchor}
               cascadeDelayMs={cascadeDelayMs}

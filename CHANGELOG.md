@@ -8,6 +8,14 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Changed
+
+- Lyrics are calmer: the current line sits in the middle, the line just sung and the next line fade back, and the rest fall away. The compact player shows three lines and fullscreen about five.
+
+### Fixed
+
+- A lyric line no longer jumps from one row to two when it becomes the current line.
+
 ## [1.0.11] - 2026-10-31
 
 ### Changed
