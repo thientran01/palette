@@ -570,15 +570,20 @@ export default function Search() {
   const pub = usePublicPlaylists(libQuery, section === "library" && !opened && spotify.connected);
   const history = useHistoryList(section === "history");
   const nowCtx = useNowContext(section === "library" && spotify.connected, focusTick);
-  const items: Item[] = useMemo(() => {
-    if (section === "library") {
-      return opened
-        ? drillItems(opened, openedTracks.tracks, drillQuery, nowCtx)
-        : libraryItems(lib, libQuery, pub.playlists, nowCtx);
-    }
-    if (section === "history") return historyItems(history.entries, histQuery, Date.now());
-    return [];
-  }, [section, opened, openedTracks.tracks, drillQuery, lib, libQuery, pub.playlists, history.entries, histQuery, nowCtx]);
+  const libItems: Item[] = useMemo(() => {
+    if (section !== "library") return [];
+    return opened
+      ? drillItems(opened, openedTracks.tracks, drillQuery, nowCtx)
+      : libraryItems(lib, libQuery, pub.playlists, nowCtx);
+  }, [section, opened, openedTracks.tracks, drillQuery, lib, libQuery, pub.playlists, nowCtx]);
+  // History gets its own memo: sharing one with Library made every arrow
+  // press rebuild (and re-format the play time of) every history row,
+  // because a Library input changes identity on each render.
+  const histItems: Item[] = useMemo(
+    () => (section === "history" ? historyItems(history.entries, histQuery, Date.now()) : []),
+    [section, history.entries, histQuery],
+  );
+  const items = section === "history" ? histItems : libItems;
   const shownItems = section === "history" ? items.slice(0, histRender) : items;
   const thumbs = useHistoryThumbs(
     section === "history" ? shownItems.map((it) => it.thumbKey ?? "").filter(Boolean) : [],

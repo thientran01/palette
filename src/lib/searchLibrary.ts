@@ -105,23 +105,28 @@ function dayStart(ms: number): number {
 
 /** The History day header: "Today", "Yesterday", then "Mon, Nov 3" (with
  * the year once it isn't this year). */
+// toLocale*String builds a new Intl formatter on every call, which is slow
+// across hundreds of history rows; these are built once and reused.
+const DAY_FMT = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" });
+const DAY_YEAR_FMT = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+
 export function dayLabel(ms: number, now: number): string {
   const days = Math.round((dayStart(now) - dayStart(ms)) / 86_400_000);
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
-  const d = new Date(ms);
-  const sameYear = d.getFullYear() === new Date(now).getFullYear();
-  return d.toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    ...(sameYear ? {} : { year: "numeric" }),
-  });
+  const sameYear = new Date(ms).getFullYear() === new Date(now).getFullYear();
+  return (sameYear ? DAY_FMT : DAY_YEAR_FMT).format(ms);
 }
 
 /** "5:58 PM" in the user's locale. */
 export function playTime(ms: number): string {
-  return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return TIME_FMT.format(ms);
 }
 
 /** A history entry with the day header it opens (null = same day as the
