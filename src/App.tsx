@@ -765,7 +765,7 @@ function Art({ url: rawUrl, size, radiusPx }: { url: string | null; size: number
   const incoming = url !== null && url !== settled ? url : null;
   return (
     <div
-      className="relative grid shrink-0 place-items-center overflow-hidden bg-surface-2 text-muted"
+      className="art-edge grid shrink-0 place-items-center overflow-hidden bg-surface-2 text-muted"
       style={{ width: size, height: size, borderRadius: radiusPx }}
     >
       {settled ? (

@@ -145,7 +145,7 @@ function IdentityStack({
     // width, and the lyric column's bottom-alignment all derive from the
     // same value, which is what makes the aligned edges exact.
     <div className={`flex w-(--art) flex-col ${align}`}>
-      <div className="grid aspect-square w-full place-items-center overflow-hidden rounded-3xl bg-surface-2 text-muted">
+      <div className="art-edge grid aspect-square w-full place-items-center overflow-hidden rounded-3xl bg-surface-2 text-muted">
         {showArt ? (
           <img
             src={artUrl}
@@ -571,13 +571,14 @@ export default function Focus() {
                       device={remoteDevice}
                     />
                   </div>
-                  {/* The lyric column keeps its own top (the ladder Thien
-                      likes; tops can't align now that the art centers) and
-                      its BOTTOM edge aligns with the album's — the explicit
-                      height ends the box at --stack-top + --art, so the
-                      bottom fade dissolves exactly at the art's bottom line
-                      (Thien, 2026-07-14). */}
-                  <div data-focus-content className="flex h-[calc(var(--stack-top)_+_var(--art)_-_11vh)] min-h-0 min-w-0 flex-1 flex-col mt-[11vh]">
+                  {/* The lyric column fills the room's right side, from the
+                      top of the window down to the horizon (inset so the
+                      fades finish clear of both), and fades out at
+                      both edges (LyricsPanel SCALE.focus.mask). It used to
+                      end on the art's bottom line (2026-07-14), which left
+                      the lines in a short window over a dead band; Thien
+                      asked for it to fill the side (2026-11-06). */}
+                  <div data-focus-content className="flex min-h-0 min-w-0 flex-1 flex-col pb-[3vh] pt-[5vh]">
                     {/* Unmounted while the queue owns the column (not just
                         covered): the queue box is art-width, narrower than
                         this column, so live lyric lines would peek out past
