@@ -158,6 +158,8 @@ export function useLibrary(active: boolean): Library {
       // Both start now; playlists land first so the list paints before a
       // big Liked Songs walk finishes.
       const likedP = commands.spotifyLiked();
+      // Settled even on the early returns below (no unhandled rejection).
+      likedP.catch(() => {});
       const l = await commands.spotifyLibrary();
       const kept = libCache.status === "ok" ? libCache : null;
       if (l.status !== "ok" && kept) {

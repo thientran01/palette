@@ -1065,11 +1065,6 @@ pub fn play_now(app: &AppHandle, uri: &str) -> &'static str {
     outcome
 }
 
-/// Start playback of `uri` from SILENCE. play_now's never-PUT-play-uris rule
-/// exists to protect a live playlist context — from no_playback there is no
-/// context to kill, and the bare-uris PUT on the best available device is
-/// exactly right (the search window's headline case: summon, type, play, with
-/// nothing running). "ok" | "no_device" | "disconnected" | "offline".
 /// The device a PUT play should target: the active one — but never a
 /// restricted one (Connect hardware that rejects Web API commands with a
 /// 403) — else the first commandable device. Err("no_device") = Spotify
@@ -1092,6 +1087,11 @@ pub(crate) fn pick_device(app: &AppHandle) -> Result<String, &'static str> {
         .ok_or("no_device")
 }
 
+/// Start playback of `uri` from SILENCE. play_now's never-PUT-play-uris rule
+/// exists to protect a live playlist context — from no_playback there is no
+/// context to kill, and the bare-uris PUT on the best available device is
+/// exactly right (the search window's headline case: summon, type, play, with
+/// nothing running). "ok" | "no_device" | "disconnected" | "offline".
 fn start_playback(app: &AppHandle, uri: &str) -> &'static str {
     let id = match pick_device(app) {
         Ok(id) => id,
@@ -1188,8 +1188,11 @@ pub fn play_context(app: &AppHandle, context_uri: &str, offset_uri: Option<&str>
         };
         let ctx = v["context"]["uri"].as_str().unwrap_or_default();
         let ctx_ok = ctx == context_uri || (collection && ctx.ends_with(":collection"));
+        // Track relinking: Spotify may play a market-specific copy of the
+        // requested song and report the original under `linked_from`.
         let item = v["item"]["uri"].as_str();
-        let item_ok = offset_uri.is_none_or(|o| item == Some(o));
+        let linked = v["item"]["linked_from"]["uri"].as_str();
+        let item_ok = offset_uri.is_none_or(|o| item == Some(o) || linked == Some(o));
         if ctx_ok && item_ok {
             if let Some(t) = parse_track(&v["item"]) {
                 update_now(app, &t);
