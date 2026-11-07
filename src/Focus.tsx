@@ -54,7 +54,7 @@ import { useArt, useArtAccent } from "./lib/artAccent";
 import { VOCAL_LEAD_MS } from "./lib/lrc";
 import * as posClock from "./lib/posClock";
 import { initReactive } from "./lib/reactive";
-import { DUR, EASE } from "./lib/tokens";
+import { DUR, EASE, SLIDE_REST, slideX } from "./lib/tokens";
 import { DeviceTag } from "./DeviceTag";
 import { LyricsPanel, lyricsKeyOf, lyricsVerdictOf, useLyrics, useSeatHold } from "./LyricsPanel";
 import { useCredits } from "./Credits";
@@ -424,16 +424,18 @@ export default function Focus() {
   const slideInT = { duration: reducedMotion ? 0 : DUR[1] / 1000, ease: slideEase };
   const slideOutT = { duration: reducedMotion ? 0 : DUR[1] / 1000, ease: slideEase };
   const compositionOutT = { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: slideEase };
+  // Transform strings, not `x`: compositor-run (lib/tokens.ts slideX).
   const seatVariants = {
-    enter: (dx: number) => ({ opacity: 0, x: dx }),
+    enter: (dx: number) => ({ opacity: 0, transform: slideX(dx) }),
     center: (dx: number) => ({
       opacity: 1,
-      x: 0,
+      transform: slideX(0),
+      transitionEnd: SLIDE_REST,
       transition: dx !== 0 ? slideInT : swapTiming,
     }),
     exit: (dx: number) => ({
       opacity: 0,
-      x: -dx,
+      transform: slideX(-dx),
       pointerEvents: "none" as const,
       transition: dx !== 0 ? slideOutT : compositionOutT,
     }),

@@ -25,6 +25,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Typing in History searches every song you've played, not just the ones already scrolled into view.
 - Holding an arrow key in Search's History now moves one row per key repeat, smoothly. It used to re-format every play time on each press and fall several rows behind.
 - Album covers in the player, queue and Search are sharper. Palette now shrinks each cover to the exact pixels of its box with a high-quality filter instead of leaving it to the browser, and Spotify rows load the 300px cover instead of the 64px one, which was blurry at any Windows scaling above 100%.
+- Skipping songs, seeking and switching sizes animate more smoothly. The song-change slide and the button presses now run on the graphics card, so they no longer stutter while the new song loads. Queue rows highlight under the cursor right away instead of fading in slowly. The queue panel, the right-click menu and the welcome bubble now grow slightly out of the widget, the cursor and the bubble's pointer as they fade in.
 
 ## [1.0.11] - 2026-11-07
 

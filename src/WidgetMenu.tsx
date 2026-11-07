@@ -112,10 +112,11 @@ export function WidgetMenu({
       onMouseDown={(e) => e.stopPropagation()}
       // The popover recipe verbatim (rounded-xl border-border/10 shadow-xl
       // shadow-black/40, App.tsx) — this menu had drifted into a third
-      // floating-surface recipe (10px/0.11/black-50). caption-in on mount =
-      // the family's 140ms reveal (it copied the surface but entered at
-      // 0ms); close stays instant — dismissing menus don't linger.
-      className="absolute z-40 w-[204px] animate-[caption-in_140ms_var(--ease-out-tk)_both] rounded-xl border border-border/10 bg-surface-2 p-1.5 shadow-xl shadow-black/40"
+      // floating-surface recipe (10px/0.11/black-50). .pop-in on mount = the
+      // family's 140ms reveal, grown from the cursor (App sets
+      // transform-origin there); close stays instant — dismissing menus
+      // don't linger.
+      className="pop-in absolute z-40 w-[204px] rounded-xl border border-border/10 bg-surface-2 p-1.5 shadow-xl shadow-black/40"
       style={style}
     >
       {/* tabIndex indices = DOM order of [role="menuitem"] (Sep isn't one), so

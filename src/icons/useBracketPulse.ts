@@ -1,8 +1,9 @@
-import { useAnimate, useReducedMotion } from "motion/react";
-import { DUR, EASE } from "../lib/tokens";
+import { useRef } from "react";
+import { useReducedMotion } from "motion/react";
+import { cssEase, DUR, EASE } from "../lib/tokens";
 
-const OUT = [...EASE.out] as [number, number, number, number];
-const IN_OUT = [...EASE.inOut] as [number, number, number, number];
+const OUT = cssEase(EASE.out);
+const IN_OUT = cssEase(EASE.inOut);
 
 /** Mode-bracket press feedback: the glyph pulses in the direction of its
  * verb — expand's corner brackets burst apart, contract's pull together —
@@ -11,20 +12,28 @@ const IN_OUT = [...EASE.inOut] as [number, number, number, number];
  * center), so no extra geometry poses. Fast attack (EASE.out to the peak),
  * settled return (EASE.inOut) — the press registers instantly, the recovery
  * is calm. Rides inside the button's own 90ms 0.95 press scale; for expand
- * the two oppose deliberately: the chrome dips while the verb grows. */
+ * the two oppose deliberately: the chrome dips while the verb grows.
+ *
+ * WAAPI on the CSS `scale` property, not Motion's `scale`: the press lands
+ * just as the mode change re-renders the widget, and Motion 12 would tick
+ * the pulse on that same busy main thread. Per-keyframe easing gives the
+ * two segments their own curves. */
 export function useBracketPulse(verb: "expand" | "contract") {
-  const [scope, animate] = useAnimate();
+  const scope = useRef<HTMLSpanElement>(null);
   const reduced = useReducedMotion() ?? false;
   const peak = verb === "expand" ? 1.2 : 0.8;
-
   const pulse = () => {
-    if (reduced || !scope.current) return;
-    void animate(
-      scope.current,
-      { scale: [1, peak, 1] },
-      { duration: DUR[3] / 1000, times: [0, 0.4, 1], ease: [OUT, IN_OUT] },
+    const el = scope.current;
+    if (reduced || !el) return;
+    el.getAnimations().forEach((a) => a.cancel());
+    el.animate(
+      [
+        { scale: 1, easing: OUT },
+        { scale: peak, offset: 0.4, easing: IN_OUT },
+        { scale: 1 },
+      ],
+      { duration: DUR[3] },
     );
   };
-
   return { scope, pulse };
 }

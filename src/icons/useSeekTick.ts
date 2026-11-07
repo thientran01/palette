@@ -1,8 +1,8 @@
 import { useRef } from "react";
-import { useAnimate, useReducedMotion } from "motion/react";
-import { DUR, EASE } from "../lib/tokens";
+import { useReducedMotion } from "motion/react";
+import { cssEase, DUR, EASE } from "../lib/tokens";
 
-const IN_OUT = [...EASE.inOut] as [number, number, number, number];
+const IN_OUT = cssEase(EASE.inOut);
 
 /** Seek press feedback: the glyph is a rotation arrow, so each press spins it
  * one FULL revolution in the seek direction (260ms; a ±12° kick read as a
@@ -16,24 +16,38 @@ const IN_OUT = [...EASE.inOut] as [number, number, number, number];
  * to 0 invisibly afterwards. Mashing accumulates turns mid-flight —
  * repeated seeks read as the dial whirring. The glyph carries no numeral:
  * the spin plus the visible time jump are the feedback; the amount lives in
- * the tooltip/aria-label. */
+ * the tooltip/aria-label.
+ *
+ * WAAPI on the CSS `rotate` property, not Motion's `rotate`, so the spin runs
+ * on the compositor (Motion 12 ticks it on the main thread). The computed
+ * `rotate` reads back unwrapped degrees mid-flight (450deg, not a matrix), so
+ * a mash can extend the spin from exactly where the arrow is. No fill: a
+ * finished spin is a whole number of turns, so dropping back to none is the
+ * same frame. */
 export function useSeekTick(dir: -1 | 1) {
-  const [scope, animate] = useAnimate();
+  const scope = useRef<HTMLSpanElement>(null);
   const reduced = useReducedMotion() ?? false;
-  const turns = useRef(0);
-  const seq = useRef(0);
-
-  const tick = async () => {
-    if (reduced || !scope.current) return;
-    const id = ++seq.current;
-    turns.current += dir * 360;
-    await animate(scope.current, { rotate: turns.current }, { duration: DUR[5] / 1000, ease: IN_OUT });
-    if (id !== seq.current) return; // a newer press extended the spin
-    // N·360 ≡ 0 — normalize instantly (visually identical) so the value
-    // can't grow without bound across a session.
-    turns.current = 0;
-    await animate(scope.current, { rotate: 0 }, { duration: 0 });
+  const flight = useRef<Animation | null>(null);
+  // Where the running spin will come to rest, in degrees (0 when idle).
+  const target = useRef(0);
+  const tick = () => {
+    const el = scope.current;
+    if (reduced || !el) return;
+    // Read BEFORE cancelling; "none" at rest parses to NaN → 0.
+    const from = parseFloat(getComputedStyle(el).rotate) || 0;
+    // Mashing accumulates turns mid-flight; a fresh press starts from 0.
+    target.current = (flight.current ? target.current : 0) + dir * 360;
+    flight.current?.cancel();
+    const a = el.animate([{ rotate: `${from}deg` }, { rotate: `${target.current}deg` }], {
+      duration: DUR[5],
+      easing: IN_OUT,
+    });
+    flight.current = a;
+    a.onfinish = () => {
+      if (flight.current !== a) return; // a newer press extended the spin
+      flight.current = null;
+      target.current = 0;
+    };
   };
-
   return { scope, tick };
 }

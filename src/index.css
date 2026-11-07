@@ -275,6 +275,28 @@ body {
   }
 }
 
+/* Pop-out surfaces that mount on demand (the right-click menu, the first-run
+ * bubble): the 140ms family reveal plus a 0.97 → 1 scale, grown from where
+ * they come from. The element sets transform-origin (the cursor, the
+ * tether). The native `scale` property, so nothing it does fights an inline
+ * transform. Never from 0: a surface that starts at nothing reads as coming
+ * from nowhere. The queue popover does the same with transitions (App.tsx),
+ * since it stays mounted. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    scale: 0.97;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+.pop-in {
+  animation: pop-in 140ms var(--ease-out-tk) both;
+}
+
 /* The persistent widget shell (App.tsx): mode changes tween the box out of
  * the docked corner (a morph of an on-screen element → EASE.inOut); a
  * dock-corner change FLIPs `translate` back to 0 (a drag-release response →
