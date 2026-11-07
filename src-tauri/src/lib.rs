@@ -1302,6 +1302,7 @@ pub fn run() {
             quit_app,
             spotify::spotify_status,
             spotify::spotify_device,
+            spotify::spotify_now_cover,
             spotify::spotify_disconnect,
             spotify::spotify_play_now,
             spotify::spotify_resolve_uri,
