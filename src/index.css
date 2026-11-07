@@ -1,5 +1,5 @@
 @import "@fontsource-variable/geist";
-@import "pretendard/dist/web/variable/pretendardvariable.css";
+@import "pretendard-jp/dist/web/variable/pretendardvariable-jp.css";
 @import "tailwindcss";
 
 /*
@@ -39,16 +39,20 @@
 
 @theme {
   /* Geist (Vercel, OFL-1.1), bundled via @fontsource-variable/geist. Geist
-     has no Hangul, so Korean titles and lyrics fall through to Pretendard
-     (OFL-1.1, bundled). Pretendard sits after Geist, so it only draws the
+     has no CJK, so Korean and Japanese titles and lyrics fall through to
+     Pretendard JP (OFL-1.1, bundled, ~5 MB). It is plain Pretendard plus
+     Japanese: the same Hangul and kana, and 7k JIS kanji drawn in the
+     Japanese style. Plain Pretendard has kana but NO kanji, so Japanese
+     lines mixed Pretendard kana with Malgun Gothic's Korean-style kanji
+     (Thien, 2026-11-06). Pretendard sits after Geist, so it only draws the
      glyphs Geist lacks. Malgun Gothic was tried as the crisper, hinted
-     option (Pretendard ships unhinted, and a transparent WebView2 window
-     gets grayscale AA, not ClearType), but Thien preferred Pretendard's
-     look (2026-11-05); it stays as the last-resort Hangul fallback.
+     Hangul option (Pretendard ships unhinted, and a transparent WebView2
+     window gets grayscale AA, not ClearType), but Thien preferred
+     Pretendard's look (2026-11-05); it stays as the last-resort fallback.
      "Segoe UI" fires only if the bundled fonts fail to load (present on
      Win10+11, always a normal weight) — NOT "Segoe UI Variable Display",
      whose large-optical-size cut renders thin/spindly at UI text sizes. */
-  --font-sans: "Geist Variable", "Pretendard Variable", "Segoe UI", "Malgun Gothic", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Variable", "Pretendard JP Variable", "Segoe UI", "Malgun Gothic", ui-sans-serif, system-ui, sans-serif;
   --font-weight-normal: 430; /* see body */
   --color-*: initial;
   --color-surface: rgb(var(--surface));
