@@ -51,6 +51,7 @@ import {
   onSpotifyJumpCancel,
 } from "./lib/backend";
 import { useArt, useArtAccent } from "./lib/artAccent";
+import { useFullCover } from "./lib/fullCover";
 import { VOCAL_LEAD_MS } from "./lib/lrc";
 import * as posClock from "./lib/posClock";
 import { initReactive } from "./lib/reactive";
@@ -241,6 +242,9 @@ export default function Focus() {
   useEffect(() => initTrackDir(), []);
   const artUrl = useArt(np?.art_id ?? null);
   useArtAccent(artUrl);
+  // Spotify's 640px cover when connected (lib/fullCover); the accent above
+  // keeps reading the GSMTC cover, a local data URL.
+  const coverUrl = useFullCover(np, artUrl);
   const lyrics = useLyrics(np);
   const credits = useCredits(np);
   useEffect(() => initReactive(), []);
@@ -564,7 +568,7 @@ export default function Focus() {
                   <div className="flex min-h-0 shrink-0 flex-col pt-(--stack-top)">
                     <IdentityStack
                       np={np}
-                      artUrl={artUrl}
+                      artUrl={coverUrl}
                       caption={caption}
                       captionExpired={captionExpired}
                       centered={false}
@@ -648,7 +652,7 @@ export default function Focus() {
                   <div className="mb-[calc(var(--horizon-mb)_+_1vh_-_32px)]">
                     <IdentityStack
                       np={np}
-                      artUrl={artUrl}
+                      artUrl={coverUrl}
                       caption={caption}
                       captionExpired={captionExpired}
                       centered
