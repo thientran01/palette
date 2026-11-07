@@ -311,18 +311,19 @@ const SCALE = {
   base: {
     row: "px-3 py-1.5 text-base leading-normal tracking-[0.025em]",
     anchor: 0.4,
+    anchorMaxPx: Infinity,
     // The compact view stays full: a three-line cut left most of the panel
     // empty (Thien, 2026-11-06), so every line shows and only the
-    // brightness falls off with distance (±3 means "3 or further"). Sung and
+    // brightness falls off with distance (±4 means "4 or further"). Sung and
     // upcoming lines fade symmetrically (Thien preferred it to a dimmer past).
-    recede: { "-3": 0.25, "-2": 0.45, "-1": 0.7, "1": 0.7, "2": 0.45, "3": 0.25 },
+    recede: { "-4": 0.25, "-3": 0.25, "-2": 0.45, "-1": 0.7, "1": 0.7, "2": 0.45, "3": 0.25, "4": 0.25 },
     // Depth of field (2026-11-07, replacing the accent bar): non-current
     // ink is drawn smaller than its layout box and goes out of focus with
     // distance, so the current line is the only sharp, full-size one. The
     // next/previous line stays sharp so you can read ahead. Paint-only, so
     // wrapping never changes.
     restScale: 0.95,
-    blur: { "-3": 1.2, "-2": 0.6, "2": 0.6, "3": 1.2 },
+    blur: { "-4": 1.2, "-3": 1.2, "-2": 0.6, "2": 0.6, "3": 1.2, "4": 1.2 },
     mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
     chipTop: "top-8",
     chipBottom: "bottom-8",
@@ -337,17 +338,21 @@ const SCALE = {
     // compact lyrics "look like a spotlight"): rows ~2.25× the type size,
     // normal line height, letters slightly open instead of pulled together.
     row: "px-6 py-4 text-[44px] leading-normal tracking-[0.01em]",
-    // 0.5 of the full-height lyric box (2026-11-06): the current line sits
-    // mid-room, level with the upper half of the album art.
+    // Mid-room (0.5 of the full-height lyric box, 2026-11-06), but never
+    // more than 420px down: on a tall room that left four lines above the
+    // current one, and Thien wants three (2026-11-07). 420px is three
+    // 102px rows plus the 72px top fade and a little air.
     anchor: 0.5,
-    // Every line shows (a 5-line cut was tried 2026-11-06 and Thien
-    // preferred the full ladder), but darker than the compact view: on a
-    // whole screen the lit line should read like a theatre spotlight with
-    // the rest in the dark (Thien, 2026-11-07).
-    recede: { "-3": 0.1, "-2": 0.2, "-1": 0.38, "1": 0.38, "2": 0.2, "3": 0.1 },
+    anchorMaxPx: 420,
+    // Every upcoming line shows (a 5-line cut was tried 2026-11-06 and
+    // Thien preferred the full ladder), but darker than the compact view: on
+    // a whole screen the lit line should read like a theatre spotlight with
+    // the rest in the dark (Thien, 2026-11-07). At most three sung lines
+    // show above it (no "-4"), Thien 2026-11-07.
+    recede: { "-3": 0.1, "-2": 0.2, "-1": 0.38, "1": 0.38, "2": 0.2, "3": 0.1, "4": 0.1 },
     // Blur scales with the 44px type: ±1 is soft but readable.
     restScale: 0.94,
-    blur: { "-3": 4, "-2": 2.5, "-1": 1, "1": 1, "2": 2.5, "3": 4 },
+    blur: { "-3": 4, "-2": 2.5, "-1": 1, "1": 1, "2": 2.5, "3": 4, "4": 4 },
     // Same lighting as the compact view: the per-line fade (recede) does
     // the dimming, and the mask only softens the very edges of the box
     // (2026-11-07; the old 260px ramps left most lines half-masked).
@@ -363,12 +368,18 @@ const SCALE = {
   },
 } as const satisfies Record<LyricsScale, unknown>;
 
+/** Where the current line's center sits, in px from the top of a lyric
+ * box `h` tall (SCALE.anchor, capped at SCALE.anchorMaxPx). */
+function anchorPx(scale: LyricsScale, h: number): number {
+  return Math.min(h * SCALE[scale].anchor, SCALE[scale].anchorMaxPx);
+}
+
 /** Recession (2026-11-06 redesign): the current line is bright and the
  * lines around it fade evenly with distance, sung and upcoming alike; any
  * distance SCALE.recede doesn't list is hidden. Distances
  * count SUNG rows only, so a dormant (collapsed) break row never steals the
  * "next line" slot; a current break sits between its neighbors (the line
- * before it is -1, the line after it +1). Clamped to ±3 so a line advance
+ * before it is -1, the line after it +1). Clamped to ±4 so a line advance
  * re-renders only the rows whose distance actually changed (row memo). */
 export function lineDistances(lines: LyricLine[], idx: number): number[] {
   const sungBefore: number[] = [];
@@ -382,7 +393,7 @@ export function lineDistances(lines: LyricLine[], idx: number): number[] {
   return lines.map((_, i) => {
     let d = sungBefore[i] - cur;
     if (between && i > idx) d += 1;
-    return Math.max(-3, Math.min(3, d));
+    return Math.max(-4, Math.min(4, d));
   });
 }
 
@@ -432,7 +443,7 @@ const LyricLineRow = memo(function LyricLineRow({
    * JS disarm and no engine-dependent delay retargeting. */
   anchor: boolean;
   scale: LyricsScale;
-  /** Signed distance in sung lines from the current one, clamped to ±3
+  /** Signed distance in sung lines from the current one, clamped to ±4
    * (lineDistances). */
   distance: number;
   browsing: boolean;
@@ -710,7 +721,7 @@ export function LyricsPanel({
     if (!viewport) return;
     const measure = () => {
       const h = viewport.clientHeight;
-      const anchor = h * SCALE[scale].anchor;
+      const anchor = anchorPx(scale, h);
       setPad({ top: scale === "focus" ? Math.round(anchor) : 16, bottom: Math.round(h - anchor) });
     };
     measure();
@@ -735,7 +746,7 @@ export function LyricsPanel({
     if (!viewport || !list) return;
     const line = list.children[Math.max(idx, 0)] as HTMLElement | undefined;
     if (!line) return;
-    const anchor = viewport.clientHeight * SCALE[scale].anchor;
+    const anchor = anchorPx(scale, viewport.clientHeight);
     const raw = idx < 0 ? 0 : line.offsetTop + line.offsetHeight / 2 - anchor;
     setAutoOffset(Math.round(Math.min(Math.max(raw, 0), maxOffset())));
   };

@@ -67,10 +67,11 @@ describe("depth of field", () => {
 describe("lineDistances", () => {
   const sung = (t: number) => ({ t, text: `l${t}` });
   const brk = (t: number) => ({ t, text: "", end: t + 5000 });
-  it("counts signed distance from the current line, clamped to ±3", () => {
+  it("counts signed distance from the current line, clamped to ±4", () => {
     const lines = [sung(0), sung(1), sung(2), sung(3), sung(4), sung(5), sung(6)];
     expect(lineDistances(lines, 3)).toEqual([-3, -2, -1, 0, 1, 2, 3]);
-    expect(lineDistances(lines, 0)).toEqual([0, 1, 2, 3, 3, 3, 3]);
+    expect(lineDistances(lines, 0)).toEqual([0, 1, 2, 3, 4, 4, 4]);
+    expect(lineDistances(lines, 6)).toEqual([-4, -4, -4, -3, -2, -1, 0]);
   });
   it("skips a dormant break so the next sung line stays next", () => {
     const lines = [sung(0), sung(1), brk(2), sung(3)];
