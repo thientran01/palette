@@ -24,6 +24,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Search's icons are redrawn at the exact size they're shown, so their lines sit on whole pixels and look sharp. Songs now has a music note instead of a second magnifier, and Library a stack of albums.
 - Typing in History searches every song you've played, not just the ones already scrolled into view.
 - Holding an arrow key in Search's History now moves one row per key repeat, smoothly. It used to re-format every play time on each press and fall several rows behind.
+- Album covers in the player, queue and Search are sharper. Palette now shrinks each cover to the exact pixels of its box with a high-quality filter instead of leaving it to the browser, and Spotify rows load the 300px cover instead of the 64px one, which was blurry at any Windows scaling above 100%.
 
 ## [1.0.11] - 2026-11-07
 

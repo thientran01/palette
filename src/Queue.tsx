@@ -27,6 +27,7 @@ import {
   onUpNextChanged,
 } from "./lib/backend";
 import { playNowNote } from "./lib/playNowStatus";
+import { useCrispArt } from "./lib/crispArt";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
 import { fmt } from "./Transport";
 import type {
@@ -334,6 +335,9 @@ export function RowThumb({ url, size = 26 }: { url: string | null; size?: number
   // would flash the glyph a frame; a NEW url simply stops matching and retries.
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const showImg = url !== null && url !== failedUrl;
+  // Resampled to the box's device pixels (lib/crispArt); failure stays keyed
+  // to the source url.
+  const src = useCrispArt(showImg ? url : null, size);
   return (
     <span
       className="art-edge grid shrink-0 place-items-center overflow-hidden rounded-md bg-surface-2 text-muted"
@@ -341,7 +345,7 @@ export function RowThumb({ url, size = 26 }: { url: string | null; size?: number
     >
       {showImg ? (
         <img
-          src={url}
+          src={src ?? url}
           alt=""
           className="h-full w-full object-cover"
           draggable={false}

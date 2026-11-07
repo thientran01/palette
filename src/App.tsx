@@ -35,6 +35,7 @@ import {
 } from "./LyricsPanel";
 import { useCredits } from "./Credits";
 import { useArt, useArtAccent } from "./lib/artAccent";
+import { crispCanvas, useCrispArt } from "./lib/crispArt";
 import * as posClock from "./lib/posClock";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
 import { initReactive } from "./lib/reactive";
@@ -116,15 +117,21 @@ function useHistoryThumb(artId: string | null): void {
       img.onerror = unlatch;
       img.onload = () => {
         const side = 96;
-        const c = document.createElement("canvas");
-        c.width = side;
-        c.height = side;
-        const ctx = c.getContext("2d");
-        if (!ctx || img.width === 0 || img.height === 0) return;
-        // Cover-crop the (usually already square) art into the square thumb.
-        const s = Math.min(img.width, img.height);
-        ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, side, side);
-        commands.historyThumb(artId.split(":")[0], c.toDataURL("image/jpeg", 0.8));
+        if (img.width === 0 || img.height === 0) return;
+        // Cover-crop the (usually already square) art into the square thumb,
+        // Lanczos-resampled (a one-step drawImage shrink aliases); a cover
+        // already ≤96px falls back to the plain draw.
+        let c = crispCanvas(img, side);
+        if (!c) {
+          c = document.createElement("canvas");
+          c.width = side;
+          c.height = side;
+          const ctx = c.getContext("2d");
+          if (!ctx) return;
+          const s = Math.min(img.width, img.height);
+          ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, side, side);
+        }
+        commands.historyThumb(artId.split(":")[0], c.toDataURL("image/jpeg", 0.85));
       };
       img.src = url;
     });
@@ -739,7 +746,10 @@ const ART_XFADE_MS = DUR[1];
  * art never moves. Covers track-change swaps, the pref=art view, and
  * media.rs's stale-art rev-bump heals. Timer, not transitionend — the
  * outgoing top layer unmounts, so it can't report its own end. */
-function Art({ url, size, radiusPx }: { url: string | null; size: number; radiusPx: number }) {
+function Art({ url: rawUrl, size, radiusPx }: { url: string | null; size: number; radiusPx: number }) {
+  // Resampled to this box's device pixels (lib/crispArt) — the crossfade
+  // below runs on the crisp copy, so a track change fades once.
+  const url = useCrispArt(rawUrl, size);
   const [settled, setSettled] = useState(url);
   useEffect(() => {
     if (url === settled) return;

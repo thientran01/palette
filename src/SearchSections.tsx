@@ -21,6 +21,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, onHistoryCleared, onSpotifyStatus } from "./lib/backend";
+import { useCrispArt } from "./lib/crispArt";
 import {
   filterRanked,
   fmtDuration,
@@ -646,6 +647,7 @@ export function historyItems(
 /** A tile for Liked Songs or a playlist without art — neutral, never accent. */
 export function ItemTile({ tile, url, size }: { tile: "liked" | "playlist"; url: string | null; size: number }) {
   const [failed, setFailed] = useState<string | null>(null);
+  const src = useCrispArt(url && url !== failed ? url : null, size);
   return (
     <span
       aria-hidden
@@ -655,7 +657,13 @@ export function ItemTile({ tile, url, size }: { tile: "liked" | "playlist"; url:
       style={{ width: size, height: size, borderRadius: size >= 48 ? 8 : 6 }}
     >
       {url && url !== failed ? (
-        <img src={url} alt="" className="h-full w-full object-cover" draggable={false} onError={() => setFailed(url)} />
+        <img
+          src={src ?? url}
+          alt=""
+          className="h-full w-full object-cover"
+          draggable={false}
+          onError={() => setFailed(url)}
+        />
       ) : tile === "liked" ? (
         // 2x on the 48px header tile: an integer scale keeps the edges
         // on whole pixels (icons/searchIcons).
