@@ -37,7 +37,7 @@ import { useCredits } from "./Credits";
 import { useArt, useArtAccent } from "./lib/artAccent";
 import * as posClock from "./lib/posClock";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
-import { initReactive } from "./lib/reactive";
+import { Envelope, initReactive, subscribeBands } from "./lib/reactive";
 import { MODE_SIZES, WINDOW_MAX, type Mode } from "./lib/sizes";
 import { DUR, EASE } from "./lib/tokens";
 import {
@@ -734,6 +734,46 @@ function PillTime({ np }: { np: NowPlaying }) {
  * convention — change both together.) */
 const ART_XFADE_MS = DUR[1];
 
+/** Beat edge's resting and peak opacity. The floor is what a paused or
+ * silent track shows, so a near-black cover keeps a readable edge without
+ * any audio; the peak stays well short of solid so a kick drum reads as a
+ * breath of the line, not a flash. */
+const BEAT_EDGE_FLOOR = 0.4;
+const BEAT_EDGE_PEAK = 0.9;
+
+/** A 1px accent hairline drawn over the player art that brightens on the
+ * bass (Thien, 2026-11-07: dark covers melted into the chrome, and he asked
+ * for an accent outline that pulses with the beat). It rides the same band
+ * stream as the Waveform through subscribeBands, so the reactive pref and
+ * reduced motion both stop it: with the stream off it sits still at the
+ * floor. Opacity only, written straight to the node at the band rate (no
+ * React render per frame). The accent comes from the cover (palette.ts
+ * floors it to a readable tone against the surface, so a black cover gets
+ * a gray line, not an invisible one). */
+function ArtBeatEdge() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const env = new Envelope(45, 380);
+    let last = performance.now();
+    return subscribeBands((b) => {
+      const now = performance.now();
+      const v = env.step(Math.min(1, b.bass), Math.min(100, now - last));
+      last = now;
+      if (ref.current) {
+        ref.current.style.opacity = String(BEAT_EDGE_FLOOR + (BEAT_EDGE_PEAK - BEAT_EDGE_FLOOR) * v);
+      }
+    });
+  }, []);
+  return (
+    <div
+      ref={ref}
+      aria-hidden
+      className="pointer-events-none absolute inset-0 shadow-[inset_0_0_0_1px_rgb(var(--accent))]"
+      style={{ borderRadius: "inherit", opacity: BEAT_EDGE_FLOOR }}
+    />
+  );
+}
+
 /** Album cover with an opacity-only crossfade on identity change: the
  * incoming art fades in OVER the settled one, then becomes the base — the
  * art never moves. Covers track-change swaps, the pref=art view, and
@@ -755,7 +795,7 @@ function Art({ url, size, radiusPx }: { url: string | null; size: number; radius
   const incoming = url !== null && url !== settled ? url : null;
   return (
     <div
-      className="art-edge grid shrink-0 place-items-center overflow-hidden bg-surface-2 text-muted"
+      className="relative grid shrink-0 place-items-center overflow-hidden bg-surface-2 text-muted"
       style={{ width: size, height: size, borderRadius: radiusPx }}
     >
       {settled ? (
@@ -772,6 +812,7 @@ function Art({ url, size, radiusPx }: { url: string | null; size: number; radius
           className="absolute inset-0 h-full w-full animate-[caption-in_90ms_var(--ease-out-tk)_both] object-cover"
         />
       )}
+      {settled && <ArtBeatEdge />}
     </div>
   );
 }
