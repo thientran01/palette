@@ -18,6 +18,7 @@ import {
   type SearchResult,
   type SearchSection,
   type SpotifyDevice,
+  type NowCover,
   type SpotifyStatus,
   type TracksResult,
 } from "../types";
@@ -390,6 +391,27 @@ export function onSpotifyDevice(cb: (d: SpotifyDevice | null) => void): () => vo
     };
   }
   cb(DEVICE_MOCK);
+  return () => {};
+}
+
+/** The playing Spotify track's full-size cover (null = none / not connected)
+ *  — seed + event pairing, same shape as onSpotifyDevice. Focus shows it in
+ *  place of the ~300px GSMTC thumbnail. The mock has none. */
+export function onSpotifyNowCover(cb: (c: NowCover | null) => void): () => void {
+  if (IN_TAURI) {
+    let gotEvent = false;
+    const un = listen<NowCover | null>("spotify-now-cover", (e) => {
+      gotEvent = true;
+      cb(e.payload);
+    });
+    void invoke<NowCover | null>("spotify_now_cover").then((c) => {
+      if (!gotEvent) cb(c);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }
+  cb(null);
   return () => {};
 }
 
