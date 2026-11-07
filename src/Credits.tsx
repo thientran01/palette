@@ -66,33 +66,29 @@ export function useCredits(np: NowPlaying | null): Credits {
 
 const NO_ROWS: CreditRow[] = [];
 
+/** One size per scale and two tones: muted for roles (and asides and the
+ * source line), fg for names. Thien found a third style (small caps section
+ * titles over sentence-case roles over bold names) confusing to read
+ * (2026-11-07), so sections are separated by space alone. */
 const CLOTHES = {
   base: {
-    box: "px-3 pb-3 pt-8",
+    box: "px-3 pb-3 pt-8 text-[13px] leading-[19px]",
     rule: "mb-5 w-8",
-    section: "mb-5",
-    title: "mb-2 text-[10.5px] tracking-[0.08em]",
+    section: "mb-7",
     lines: "gap-y-2.5",
-    roles: "text-[11.5px] leading-4",
-    names: "text-[13.5px] leading-[19px]",
-    source: "text-[11px]",
   },
   focus: {
-    box: "px-6 pb-6 pt-14",
+    box: "px-6 pb-6 pt-14 text-[20px] leading-[29px]",
     rule: "mb-8 w-12",
-    section: "mb-8",
-    title: "mb-3 text-[13px] tracking-[0.1em]",
+    section: "mb-12",
     lines: "gap-y-4",
-    roles: "text-[15px] leading-[22px]",
-    names: "text-[22px] leading-[30px]",
-    source: "text-[14px]",
   },
 } as const satisfies Record<LyricsScale, unknown>;
 
 /** The credits block, rendered as the lyric list's last child: a short
- * hairline, then Production / Songwriting / Performers / Engineering. Each
- * line is a role set (muted) over the people who share it. No data-line, so
- * a click on it never seeks. */
+ * hairline, then the sections (production, songwriting, performers,
+ * engineering) as runs of lines. Each line is a role set in muted over the
+ * people who share it. No data-line, so a click on it never seeks. */
 export function CreditsBlock({ credits, scale = "base" }: { credits: Credits; scale?: LyricsScale }) {
   const { groups, url } = credits;
   if (groups.length === 0) return null;
@@ -101,31 +97,28 @@ export function CreditsBlock({ credits, scale = "base" }: { credits: Credits; sc
     <section aria-label="Song credits" className={`select-text text-left ${c.box}`}>
       <div aria-hidden className={`h-px bg-fg/15 ${c.rule}`} />
       {groups.map((g) => (
-        <div key={g.title} className={c.section}>
-          <h3 className={`font-medium uppercase text-muted ${c.title}`}>{g.title}</h3>
-          <dl className={`grid ${c.lines}`}>
-            {g.lines.map((l) => (
-              <div key={l.roles.join("|")} className="min-w-0">
-                <dt className={`text-muted ${c.roles}`}>{l.roles.join(" · ")}</dt>
-                <dd className={`break-words font-medium text-fg/90 ${c.names}`}>
-                  {l.names.map((n, i) => (
-                    <span key={`${n.main}|${n.aside ?? ""}`}>
-                      {n.main}
-                      {n.aside && <span className="font-normal text-muted"> {n.aside}</span>}
-                      {i < l.names.length - 1 && ", "}
-                    </span>
-                  ))}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </div>
+        <dl key={g.title} aria-label={g.title} className={`grid ${c.lines} ${c.section}`}>
+          {g.lines.map((l) => (
+            <div key={l.roles.join("|")} className="min-w-0">
+              <dt className="text-muted">{l.roles.join(" · ")}</dt>
+              <dd className="break-words text-fg/90">
+                {l.names.map((n, i) => (
+                  <span key={`${n.main}|${n.aside ?? ""}`}>
+                    {n.main}
+                    {n.aside && <span className="text-muted"> {n.aside}</span>}
+                    {i < l.names.length - 1 && ", "}
+                  </span>
+                ))}
+              </dd>
+            </div>
+          ))}
+        </dl>
       ))}
       {url ? (
         <button
           type="button"
           onClick={() => commands.openLink(url)}
-          className={`inline-flex items-center gap-1 text-muted underline decoration-fg/20 underline-offset-[3px] [transition:color_var(--transition-duration-2)_var(--ease-out-tk)] hover:text-fg ${c.source}`}
+          className={`inline-flex items-center gap-1 text-muted underline decoration-fg/20 underline-offset-[3px] [transition:color_var(--transition-duration-2)_var(--ease-out-tk)] hover:text-fg`}
         >
           Credits from Genius
           <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden>
@@ -133,7 +126,7 @@ export function CreditsBlock({ credits, scale = "base" }: { credits: Credits; sc
           </svg>
         </button>
       ) : (
-        <p className={`text-muted ${c.source}`}>Credits from Genius</p>
+        <p className="text-muted">Credits from Genius</p>
       )}
     </section>
   );

@@ -29,6 +29,11 @@ describe("groupCredits", () => {
     expect(groups[0].lines[0].names).toEqual([n("Gawon"), n("Sooin"), n("구종필", "JongPil Gu"), n("NARIN", "나린")]);
   });
 
+  it("mutes every trailing parenthetical, not just the last", () => {
+    const groups = groupCredits([{ role: "Arrangement", names: ["진동욱 (the orchard) (KOR)", "HeeJin (HeeJin)"] }], "HeeJin");
+    expect(groups[0].lines[0].names).toEqual([n("진동욱", "the orchard KOR"), n("HeeJin")]);
+  });
+
   it("files pass-through roles by keyword, instruments under Performers", () => {
     const groups = groupCredits([
       { role: "Digital editor", names: ["Noh Min-ji"] },

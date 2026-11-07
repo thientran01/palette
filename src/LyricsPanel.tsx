@@ -21,7 +21,7 @@ import {
 } from "./lib/lrc";
 import { commands, onKaraokeReady, onSyncLibraryChanged } from "./lib/backend";
 import { CreditsBlock, NO_CREDITS, type Credits } from "./Credits";
-import { planRoll, rollOffsetAt, singingEndMs } from "./lib/creditsRoll";
+import { planRoll, rollOffsetAt, singingEndMs, type RollPlan } from "./lib/creditsRoll";
 import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
@@ -719,49 +719,91 @@ export function LyricsPanel({
   const offset = manualOffset ?? autoOffset;
 
   // Credits roll: once the singing is over, playback position drives the
-  // list's transform directly (one style write per frame, like the word
-  // wipe) instead of the line anchor. A wheel browse pauses it.
+  // list's transform instead of the line anchor. The roll itself is ONE
+  // linear CSS transition to the end of the credits, so the compositor
+  // animates it at full frame rate (per-frame whole-pixel writes looked
+  // stepped at 14-40 px/s: Thien, 2026-11-07). It is re-planned only on a
+  // clock anchor event (pause, seek, resume) or a resize. A wheel browse
+  // pauses it.
   const creditsRef = useRef<HTMLDivElement>(null);
   const singingEnd = useMemo(() => singingEndMs(lines), [lines]);
   const hasCredits = credits.groups.length > 0;
   const rolling = usePastPosition(hasCredits ? singingEnd : null) && !browsing;
-  const rollOffset = useRef(0);
+  const rollPlan = useRef<RollPlan | null>(null);
   useLayoutEffect(() => {
     const list = listRef.current;
     const viewport = viewportRef.current;
     const box = creditsRef.current;
     if (!rolling || singingEnd === null || !list || !viewport || !box) return;
-    let raf = 0;
-    const frame = () => {
-      cancelAnimationFrame(raf);
-      // Re-measured each frame: offsetTop ignores the transform, and the
-      // fullscreen room can resize mid-roll. The edges clear the mask fades.
+    let startTimer: number | undefined;
+    let running = false; // a linear roll transition is in flight
+    let parkedAt: number | null = null; // parked at the credits' top, here
+    const shownY = (): number => {
+      const t = getComputedStyle(list).transform;
+      return t && t !== "none" ? -new DOMMatrixReadOnly(t).m42 : 0;
+    };
+    const plan = (): RollPlan => {
+      // offsetTop ignores the transform. The edges clear the mask fades.
       const h = viewport.clientHeight;
       const top = scale === "focus" ? Math.min(240, h * 0.26) : 28;
       const bottom = scale === "focus" ? Math.min(320, h * 0.34) : 28;
       const max = maxOffset();
       const from = Math.min(Math.max(box.offsetTop - top, 0), max);
       const to = Math.min(Math.max(box.offsetTop + box.offsetHeight + bottom - h, from), max);
-      const plan = planRoll(singingEnd, durationMs, from, to);
-      const pos = posClock.now();
-      const y = Math.round(rollOffsetAt(plan, pos));
-      rollOffset.current = y;
-      // The arrival glides on the house 220ms ease like a line advance;
-      // the roll itself is per-frame, so no transition fights it.
-      list.style.transition =
-        pos < plan.start ? "transform var(--transition-duration-4, 220ms) var(--ease-in-out-tk)" : "none";
-      list.style.transform = `translateY(${-y}px)`;
-      if (posClock.isPlaying() && y < plan.to) raf = requestAnimationFrame(frame);
+      return planRoll(singingEnd, durationMs, from, to);
     };
-    frame();
-    const unsubscribe = posClock.subscribe(frame);
+    const sync = (arrive: boolean) => {
+      window.clearTimeout(startTimer);
+      const p = plan();
+      rollPlan.current = p;
+      const pos = posClock.now();
+      const y = rollOffsetAt(p, pos);
+      const playing = posClock.isPlaying();
+      // A player's routine position correction lands within a few px of
+      // where the roll already is: re-pinning for it would read as a hitch.
+      if (running && playing && pos >= p.start && Math.abs(shownY() - y) < 8) return;
+      running = false;
+      if (pos < p.start) {
+        // Parked at the credits' top: arrive on the house 220ms glide, then
+        // start the roll when its time comes. Re-syncs while parked in the
+        // same spot (the observer's first call) must not cut the glide.
+        if (parkedAt === null || Math.abs(parkedAt - y) >= 1) {
+          list.style.transition = arrive || parkedAt === null
+            ? "transform var(--transition-duration-4, 220ms) var(--ease-in-out-tk)"
+            : "none";
+          list.style.transform = `translateY(${-y}px)`;
+          parkedAt = y;
+        }
+        if (playing) startTimer = window.setTimeout(() => sync(false), p.start - pos);
+        return;
+      }
+      parkedAt = null;
+      // Pin the current spot with no transition, then (when playing) hand the
+      // remaining distance to one linear transition.
+      list.style.transition = "none";
+      list.style.transform = `translateY(${-y}px)`;
+      if (!playing || y >= p.to) return;
+      void list.offsetHeight; // commit the pinned spot before transitioning
+      list.style.transition = `transform ${Math.round((p.to - y) / p.speed)}ms linear`;
+      list.style.transform = `translateY(${-p.to}px)`;
+      running = true;
+    };
+    sync(true);
+    const unsubscribe = posClock.subscribe(() => sync(false));
+    const ro = new ResizeObserver(() => sync(false));
+    ro.observe(viewport);
+    ro.observe(box);
     return () => {
       unsubscribe();
-      cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.clearTimeout(startTimer);
       list.style.transition = "";
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rolling, singingEnd, durationMs, scale, credits]);
+  /** Where the roll is right now (for a wheel browse to start from). */
+  const rollNow = (): number =>
+    rollPlan.current ? Math.round(rollOffsetAt(rollPlan.current, posClock.now())) : autoOffset;
   const band = (viewportRef.current?.clientHeight ?? 0) * RELATCH_BAND;
   // Where "now" sits relative to the browse â€” drives the chip's edge/arrow.
   const nowBelow = browsing && autoOffset > (manualOffset as number);
@@ -773,7 +815,7 @@ export function LyricsPanel({
   };
 
   const onWheel = (e: React.WheelEvent) => {
-    const prev = manualOffset ?? (rolling ? rollOffset.current : autoOffset);
+    const prev = manualOffset ?? (rolling ? rollNow() : autoOffset);
     const next = Math.round(Math.min(Math.max(prev + e.deltaY, 0), maxOffset()));
     // Magnetic re-latch: arriving inside the band while closing on the live
     // line IS the resume gesture â€” no idle wait. (When not browsing, prev is

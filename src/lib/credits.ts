@@ -58,17 +58,21 @@ function sectionOf(role: string): CreditSection {
 
 const fold = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
-/** "구종필 (JongPil Gu)" → main "구종필", aside "JongPil Gu". A tag that only
- * repeats the playing artist ("Gawon (MEOVV)" while MEOVV plays) is
- * dropped. */
+/** "구종필 (JongPil Gu)" → main "구종필", aside "JongPil Gu". Every
+ * trailing parenthetical goes to the aside ("진동욱 (the orchard) (KOR)" →
+ * "the orchard KOR"), except a tag that only repeats the playing artist
+ * ("Gawon (MEOVV)" while MEOVV plays), which is dropped. */
 export function splitName(name: string, artist: string): CreditName {
-  const m = /^(.+?)\s*\(([^()]+)\)$/.exec(name.trim());
+  const m = /^([^()]*[^()\s])\s*((?:\([^()]*\)\s*)+)$/.exec(name.trim());
   if (!m) return { main: name.trim(), aside: null };
-  const aside = m[2].trim();
   const a = fold(artist);
-  const f = fold(aside);
-  if (a && f && (a === f || a.includes(f) || f.includes(a))) return { main: m[1], aside: null };
-  return { main: m[1], aside };
+  const tags = [...m[2].matchAll(/\(([^()]*)\)/g)]
+    .map((t) => t[1].trim())
+    .filter((t) => {
+      const f = fold(t);
+      return f && !(a && (a === f || a.includes(f) || f.includes(a)));
+    });
+  return { main: m[1], aside: tags.length ? tags.join(" ") : null };
 }
 
 export function groupCredits(rows: CreditRow[], artist = ""): CreditGroup[] {

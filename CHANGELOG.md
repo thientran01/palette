@@ -10,7 +10,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Added
 
-- Song credits after the lyrics: who wrote, produced, arranged, recorded, mixed and mastered the song, from Genius. They're grouped into Production, Songwriting, Performers and Engineering, and people with the same roles share a line. Once the singing ends, the lyrics glide up to the credits and roll through them at a reading pace, timed to the outro; pausing stops the roll and scrolling takes over. Korean names show their romanization in a quieter tone, and "Credits from Genius" opens the song's Genius page. Paste a free Genius client access token in Preferences → Connectors to turn it on. Songs without a confident match show nothing.
+- Song credits after the lyrics: who wrote, produced, arranged, recorded, mixed and mastered the song, from Genius. They're grouped by kind (production, songwriting, performers, engineering), with people who share roles on one line, in one type size and two tones: roles in gray, names in white. Once the singing ends, the lyrics glide up to the credits and roll through them at a reading pace, timed to the outro; pausing stops the roll and scrolling takes over. Korean names show their romanization in a quieter tone, and "Credits from Genius" opens the song's Genius page. Paste a free Genius client access token in Preferences → Connectors to turn it on. Songs without a confident match show nothing.
 - Each connector in Preferences now links to the page where you create its key (Last.fm, Genius) or manage the app (Spotify dashboard).
 
 ### Changed
