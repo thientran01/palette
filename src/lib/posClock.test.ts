@@ -1,10 +1,11 @@
 /*
  * posClock kernel tests — the monotonic-clock filter is the one place a
  * regression ships as a visible flash (lyric highlight snapping backward),
- * and every rule here was bought with a live repro. The five suites mirror
- * the 1.0 audit's ranked risk list: the AM pause-era stamp, the small-seek
- * straggler hole (A5-1), AM 1s-floor monotonicity, the pause-freeze /
- * paused-scrub band edges, and the identity/seq edges.
+ * and every rule here was bought with a live repro. The first five suites
+ * mirror the 1.0 audit's ranked risk list: the AM pause-era stamp, the
+ * small-seek straggler hole (A5-1), AM 1s-floor monotonicity, the
+ * pause-freeze / paused-scrub band edges, and the identity/seq edges. The
+ * sixth covers Spotify's track-start lead (the per-play karaoke offset).
  *
  * The kernel is module-level state by design (it outlives React remounts),
  * so every test gets a virgin module via vi.resetModules + dynamic import.
@@ -244,6 +245,19 @@ describe("Spotify track-start lead (per-play karaoke offset)", () => {
     clock.ingest(pay({ status: "paused", position_ms: 29_700 }));
     tick(2_000);
     expect(clock.now()).toBe(29_900); // frozen at the max, no slew while paused
+  });
+
+  it("a sub-band seek's straggler is held, not slewed onto", () => {
+    clock.ingest(pay({ position_ms: 60_000 }));
+    const preSeekStamp = wallNow;
+    tick(100);
+    // A lyric click just ahead: 300ms, under the band.
+    expect(clock.seekTo(60_400)).toBe(60_400);
+    tick(200);
+    // Re-pushed pre-seek pair: projects to 60_300, 300ms behind the clock.
+    clock.ingest(pay({ position_ms: 60_000, position_at_ms: preSeekStamp }));
+    tick(1_000);
+    expect(clock.now()).toBe(61_600); // held at 1x; the seek is not undone
   });
 
   it("Apple Music never slews: its floored pairs sit below the truth", () => {

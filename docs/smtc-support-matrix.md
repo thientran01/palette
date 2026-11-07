@@ -75,7 +75,7 @@ sync with this matrix if a player update changes its push profile:
 
 | Constant | Where | apple_music | spotify | Meaning |
 |---|---|---|---|---|
-| `JITTER_BAND_MS` | `src/lib/posClock.ts` | 2000 | 400 | Backward deltas under this are quantization jitter — held, not adopted (AM sized from the #22 soak's measured ~1.5s tail, finding 9) |
+| `JITTER_BAND_MS` | `src/lib/posClock.ts` | 2000 | 400 | Backward deltas under this are quantization jitter — held, not adopted (AM sized from the #22 soak's measured ~1.5s tail, finding 9). Spotify steady-play pairs under it are not held: the clock slews onto them at 0.75x (`SLEWS`, `SLEW_RATE`), because its track-start pair runs up to ~540ms ahead (#216) |
 | `VOCAL_LEAD_MS` | `src/lib/lrc.ts` | 0* | 50* | Lyric highlight leads the reported position by this much |
 
 \* AM starts at 0 because the #22 soak showed its clock rides ~0.5–1s HOT

@@ -21,7 +21,7 @@
  * clock stayed early by whatever that play's start happened to be, and word
  * karaoke looked like it needed a different offset per song. So on Spotify
  * a sub-band backward pair is not ignored: the clock SLEWS onto it (runs at
- * 1 − SLEW_RATE until it has given the lead back). It never steps backward,
+ * 1 − SLEW_RATE until it has given the lead back). It doesn't step backward,
  * and it still lands on the player's own timeline within a couple of seconds.
  *
  * All monotonicity lives HERE, in one layer. The backend must never filter or
@@ -106,6 +106,10 @@ let seekGraceUntil = 0;
  * pre-seek clock's anchor, projected forward by ingest's straggler guard. */
 let seekFrom = 0;
 let seekFromAt = 0;
+/** |target − seekFrom| of the last local seek: a seek within one band of
+ * where the clock was can't tell a re-pushed pre-seek pair from the player's
+ * confirmation, so its grace window holds instead of slewing. */
+let seekSpan = 0;
 const subs = new Set<() => void>();
 
 function notify(): void {
@@ -118,18 +122,22 @@ function rebase(pos: number, debt = 0): void {
   slewDebt = debt;
 }
 
-/** Elapsed playing time since the anchor and how much of the debt it paid. */
-function sinceAnchor(): { elapsed: number; paid: number } {
-  const elapsed = playing ? performance.now() - anchorAt : 0;
-  return { elapsed, paid: Math.min(elapsed * SLEW_RATE, slewDebt) };
+/** Debt paid back over `elapsed` ms of play since the anchor. */
+function paid(elapsed: number): number {
+  return Math.min(elapsed * SLEW_RATE, slewDebt);
+}
+
+/** Playing time since the anchor (0 while paused). */
+function sinceAnchor(): number {
+  return playing ? performance.now() - anchorAt : 0;
 }
 
 /** Display position in ms: advances at 1x from the last accepted anchor while
  * playing (slower while a slew pays back a lead), frozen while paused. Pure
  * read — safe at any frequency. */
 export function now(): number {
-  const { elapsed, paid } = sinceAnchor();
-  const raw = anchorPos + elapsed - paid;
+  const elapsed = sinceAnchor();
+  const raw = anchorPos + elapsed - paid(elapsed);
   return Math.min(Math.max(raw, 0), durationMs || Infinity);
 }
 
@@ -162,7 +170,7 @@ export function ingest(np: NowPlaying): boolean {
   lastSeq = np.seq;
 
   const shown = now(); // BEFORE mutating state — the clock's previous value
-  const owed = slewDebt - sinceAnchor().paid; // lead still to give back; holds keep it
+  const owed = slewDebt - paid(sinceAnchor()); // lead still to give back; the stale hold keeps it
   const wasPlaying = playing;
   const isPlaying = np.status === "playing";
   // duration_ms is deliberately NOT part of track identity: a transient
@@ -208,7 +216,7 @@ export function ingest(np: NowPlaying): boolean {
   if (seekTarget !== null) {
     const inGrace = performance.now() < seekGraceUntil;
     if (inGrace && (!usable || Math.abs(projected - seekTarget) > SEEK_CONFIRM_MS)) {
-      rebase(shown, owed);
+      rebase(shown);
       notify();
       return true;
     }
@@ -236,7 +244,7 @@ export function ingest(np: NowPlaying): boolean {
           projected <= ghost + band &&
           Math.abs(projected - seekTarget) > band
         ) {
-          rebase(shown, owed);
+          rebase(shown);
           notify();
           return true;
         }
@@ -267,12 +275,21 @@ export function ingest(np: NowPlaying): boolean {
     // to a band above the player's quantized report, and stepping back onto
     // that report is the flash.
     next = projected - shown > PAUSED_SCRUB_MS || shown - projected >= band ? projected : shown;
-  } else if (wasPlaying && SLEWS[np.player] && shown - projected > 0 && shown - projected < band) {
+  } else if (
+    wasPlaying &&
+    SLEWS[np.player] &&
+    shown - projected > 0 &&
+    shown - projected < band &&
+    !(performance.now() < seekGraceUntil && seekSpan <= band)
+  ) {
     // Steady play on a precise player, a little behind the clock: the clock
     // is early (see the header — Spotify's track-start pair), not the pair.
     // Don't step back; slew onto it. Only steady pairs: a resume pair's raw
     // position is unprojected and can sit behind the truth by its delivery
     // lag, so resumes keep the hold below and the next push settles them.
+    // Not inside a sub-band seek's grace either: there a pair a little behind
+    // may be a re-pushed pre-seek straggler, and slewing onto it would undo
+    // the seek. The first push after the grace settles any real lag.
     rebase(shown, shown - projected);
     notify();
     return true;
@@ -305,6 +322,7 @@ export function seekTo(targetMs: number): number | null {
   // pre-seek pair that lands inside the confirm radius of a small seek.
   seekFrom = now();
   seekFromAt = performance.now();
+  seekSpan = Math.abs(target - seekFrom);
   rebase(target);
   seekTarget = target;
   seekGraceUntil = performance.now() + SEEK_GRACE_MS;
