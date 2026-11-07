@@ -336,7 +336,7 @@ export function RowThumb({ url, size = 26 }: { url: string | null; size?: number
   const showImg = url !== null && url !== failedUrl;
   return (
     <span
-      className="grid shrink-0 place-items-center overflow-hidden rounded-md bg-surface-2 text-muted"
+      className="art-edge grid shrink-0 place-items-center overflow-hidden rounded-md bg-surface-2 text-muted"
       style={{ width: size, height: size }}
     >
       {showImg ? (
