@@ -14,7 +14,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 - Karaoke word sync is more accurate at the end of songs, before instrumental breaks, on lines that repeat a phrase, and on "ooh"/"ah" adlib lines. Saved syncs keep showing and quietly relearn the next time each song is played in full.
 - "Something different" suggestions load much faster. Lookups run side by side, connections are reused, and results are remembered on disk, so a song you play often costs no network at all the next time. When suggestions can't load, the search window now says so instead of quietly leaving the section out.
-- Text uses Geist, with Pretendard for Korean, and reads a little firmer on the see-through window.
+- Text uses Geist, with Pretendard for Korean and Japanese (so Japanese lyrics no longer mix two fonts), and reads a little firmer on the see-through window.
 
 ## [1.0.10] - 2026-10-28
 
