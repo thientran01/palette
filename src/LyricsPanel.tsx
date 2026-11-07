@@ -336,9 +336,11 @@ const SCALE = {
     // 0.5 of the full-height lyric box (2026-11-06): the current line sits
     // mid-room, level with the upper half of the album art.
     anchor: 0.5,
-    // Every line shows, with exactly the compact view's fade (a 5-line cut
-    // was tried 2026-11-06 and Thien preferred the full ladder).
-    recede: { "-3": 0.25, "-2": 0.45, "-1": 0.7, "1": 0.7, "2": 0.45, "3": 0.25 },
+    // Every line shows (a 5-line cut was tried 2026-11-06 and Thien
+    // preferred the full ladder), but darker than the compact view: on a
+    // whole screen the lit line should read like a theatre spotlight with
+    // the rest in the dark (Thien, 2026-11-07).
+    recede: { "-3": 0.1, "-2": 0.2, "-1": 0.38, "1": 0.38, "2": 0.2, "3": 0.1 },
     restScale: 0.97,
     // Same lighting as the compact view: the per-line fade (recede) does
     // the dimming, and the mask only softens the very edges of the box
