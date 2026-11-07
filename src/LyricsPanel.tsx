@@ -328,19 +328,22 @@ const SCALE = {
     breakGap: "gap-1",
   },
   focus: {
-    row: "px-6 py-3 text-[44px] leading-[1.27] tracking-[-0.01em]",
+    // The compact view's proportions scaled up (Thien, 2026-11-07: the
+    // compact lyrics "look like a spotlight"): rows ~2.25× the type size,
+    // normal line height, letters slightly open instead of pulled together.
+    row: "px-6 py-4 text-[44px] leading-normal tracking-[0.01em]",
     marker: "h-9 w-[5px]",
     // 0.5 of the full-height lyric box (2026-11-06): the current line sits
     // mid-room, level with the upper half of the album art.
     anchor: 0.5,
-    // Every line shows, fading evenly with distance like the compact view
-    // (a 5-line cut was tried 2026-11-06 and Thien preferred the full ladder).
-    recede: { "-3": 0.2, "-2": 0.4, "-1": 0.65, "1": 0.65, "2": 0.4, "3": 0.2 },
+    // Every line shows, with exactly the compact view's fade (a 5-line cut
+    // was tried 2026-11-06 and Thien preferred the full ladder).
+    recede: { "-3": 0.25, "-2": 0.45, "-1": 0.7, "1": 0.7, "2": 0.45, "3": 0.25 },
     restScale: 0.97,
-    // The focus lyric box spans the whole upper room (2026-11-06), so the
-    // fade is symmetric: lines dissolve into the window's top and into the
-    // horizon below.
-    mask: "[mask-image:linear-gradient(transparent,black_min(260px,28%),black_calc(100%-min(260px,28%)),transparent)]",
+    // Same lighting as the compact view: the per-line fade (recede) does
+    // the dimming, and the mask only softens the very edges of the box
+    // (2026-11-07; the old 260px ramps left most lines half-masked).
+    mask: "[mask-image:linear-gradient(transparent,black_72px,black_calc(100%-72px),transparent)]",
     chipTop: "top-64",
     chipBottom: "bottom-84",
     // Break-row dots scaled up for the room â€” bigger dots on a wider gap so
