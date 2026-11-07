@@ -1331,13 +1331,15 @@ function ExpandedView({
       {/* Hoisted chrome: one seat for both states. Progress sits ABOVE the
           transport (handoff order) so the transport is the very-bottom row —
           the anchored cluster shares its vertical band at the corner.
-          One group with its own gap-1, not the column's gap-2: at gap-2 the
-          bar floated nearer the lyrics than the buttons it scrubs (Thien,
-          2026-11-07). The transport row never moves (it is pinned by pb-0.5
-          to the control centerline), so tightening only lowers the bar and
-          gives the content 4px more; the column's gap-2 still separates the
-          bar from the lyrics. */}
-      <div className="flex flex-col gap-1">
+          One group with NO gap, not the column's gap-2: at gap-2 the bar
+          floated nearer the lyrics than the buttons it scrubs, and Thien
+          picked flush over the card's 28px rhythm (2026-11-07). Flush is
+          safe: the md buttons' hover box meets the 16px progress row's
+          bottom edge, 5.5px clear of the live 5px rail. The transport row
+          never moves (pb-0.5 pins it to the control centerline), so this
+          only lowers the bar and gives the content 8px more; the column's
+          gap-2 still separates the bar from the lyrics. */}
+      <div className="flex flex-col">
         <ProgressBar np={np} />
         {/* outline-offset 0: the md buttons fill this h-8 row, leaving only
             the pb-0.5 (2px) between their bottom edge and the shell's overflow
