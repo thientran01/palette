@@ -113,4 +113,52 @@ export interface SearchResult {
   tracks: QueueTrack[];
 }
 
+/** One playlist from the user's library or a playlist search (library.rs). */
+export interface PlaylistSummary {
+  uri: string;
+  id: string;
+  name: string;
+  /** Owner display name. */
+  owner: string;
+  /** Owned or collaborative — the only playlists whose songs Spotify lists.
+   * Everything else is play-only. Search hits always carry false; the
+   * window resolves ownership against the cached library. */
+  mine: boolean;
+  total: number | null;
+  art_url: string | null;
+}
+
+/** The user's playlists (library.rs spotify_library). */
+export interface LibraryResult {
+  status: "ok" | "needs_reconnect" | "disconnected" | "offline";
+  /** Builds the Liked Songs context (`spotify:user:<id>:collection`). */
+  user_id: string;
+  playlists: PlaylistSummary[];
+  /** Context uris from recently played, newest first (the Recents sort). */
+  recent_contexts: string[];
+}
+
+/** Liked Songs or one playlist's songs (library.rs). */
+export interface TracksResult {
+  status: "ok" | "needs_reconnect" | "restricted" | "disconnected" | "offline";
+  tracks: QueueTrack[];
+  total: number | null;
+}
+
+/** Public playlists by search ("Playlists on Spotify"). */
+export interface PlaylistSearchResult {
+  status: "ok" | "disconnected" | "offline";
+  playlists: PlaylistSummary[];
+}
+
+/** What Spotify is playing (library.rs spotify_now_context). */
+export interface NowContext {
+  /** Playlist / Liked Songs (`…:collection`) / album; null for loose tracks. */
+  context_uri: string | null;
+  track_uri: string | null;
+}
+
+/** The search window's sections (search.rs section_of). */
+export type SearchSection = "songs" | "library" | "history";
+
 export const IN_TAURI = "__TAURI_INTERNALS__" in window;

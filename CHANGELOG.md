@@ -10,18 +10,28 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Added
 
+- Search has a section strip: Songs, Library and History. Tab moves between them, and `Ctrl+Alt+L` opens Search on Library.
+- Library lists Liked Songs, then your playlists and the ones you follow, recently played first. The playlist that's playing says Playing, and inside it the current song says Now. Typing filters them instantly and finds public playlists on Spotify below. Enter opens a playlist's songs with Play in the header, Shift+Enter plays it, and Esc or the Library link above it goes back.
+- History lists everything you've played, grouped by day with play times. The day's header stays pinned at the top as you scroll until the next day replaces it. Each day's header also shows how many songs you played that day and how long you listened. Enter plays a song and Shift+Enter queues it.
 - Song credits after the lyrics: who wrote, produced, arranged, recorded, mixed and mastered the song, from Genius. They're grouped by kind (production, songwriting, performers, engineering), with people who share roles on one line, in one type size and two tones: roles in gray, names in white. Once the singing ends, the lyrics glide up to the credits and roll through them at a reading pace, timed to the outro; pausing stops the roll and scrolling takes over. Korean names show their romanization in a quieter tone, and "Credits from Genius" opens the song's Genius page. Paste a free Genius client access token in Preferences → Connectors to turn it on. Songs without a confident match show nothing.
 - Each connector in Preferences now links to the page where you create its key (Last.fm, Genius) or manage the app (Spotify dashboard).
 
 ### Changed
 
-- "Something different" suggestions load much faster. Lookups run side by side, connections are reused, and results are remembered on disk, so a song you play often costs no network at all the next time. When suggestions can't load, the search window now says so instead of quietly leaving the section out.
+- Palette now asks Spotify for permission to read your playlists, Liked Songs and recently played. Reconnect Spotify once (Search's Library shows the button) to use Library.
+- While Search's "Something different" picks load, the section's title is a placeholder bar too, instead of a real title over empty rows.
+- Search's selection, section tabs and Play button now move instantly with the arrow and Tab keys instead of fading behind them. Queueing a song still highlights its row, which now fades out instead of blinking off.
+- Search's icons are redrawn at the exact size they're shown, so their lines sit on whole pixels and look sharp. Songs now has a music note instead of a second magnifier, and Library a stack of albums.
+- Typing in History searches every song you've played, not just the ones already scrolled into view.
+- Holding an arrow key in Search's History now moves one row per key repeat, smoothly. It used to re-format every play time on each press and fall several rows behind.
 
-## [1.0.11] - 2026-10-31
+## [1.0.11] - 2026-11-07
 
 ### Changed
 
 - Karaoke word sync is more accurate at the end of songs, before instrumental breaks, on lines that repeat a phrase, and on "ooh"/"ah" adlib lines. Saved syncs keep showing and quietly relearn the next time each song is played in full.
+- "Something different" suggestions load much faster. Lookups run side by side, connections are reused, and results are remembered on disk, so a song you play often costs no network at all the next time. When suggestions can't load, the search window now says so instead of quietly leaving the section out.
+- Text uses Geist, with Pretendard for Korean and Japanese (so Japanese lyrics no longer mix two fonts), and reads a little firmer on the see-through window.
 
 ## [1.0.10] - 2026-10-28
 

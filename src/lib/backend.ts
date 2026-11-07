@@ -7,13 +7,19 @@ import { listen } from "@tauri-apps/api/event";
 import {
   IN_TAURI,
   type HistoryEntry,
+  type LibraryResult,
+  type NowContext,
   type NowPlaying,
+  type PlaylistSearchResult,
+  type PlaylistSummary,
   type PresenceDebug,
   type PresenceState,
   type QueueTrack,
   type SearchResult,
+  type SearchSection,
   type SpotifyDevice,
   type SpotifyStatus,
+  type TracksResult,
 } from "../types";
 import type { LyricWord } from "./lrc";
 import * as posClock from "./posClock";
@@ -182,15 +188,83 @@ function pushMockSpotify(connected: boolean): void {
   mockSpotifyListeners.forEach((cb) => cb(mockStatus()));
 }
 
-/** The search window was just summoned (search.rs show) — the webview
- * refocuses its input and recomputes the resurfacing rows. Mock: never fires
- * (a plain-browser search window is always "shown"). */
-export function onSearchShown(cb: () => void): () => void {
+/** The search window was just summoned (search.rs show) on `section` — the
+ * webview refocuses its input, switches section, and recomputes the
+ * resurfacing rows. Mock: never fires (a plain-browser search window is
+ * always "shown"; `?section=library` picks the starting section). */
+export function onSearchShown(cb: (section: SearchSection) => void): () => void {
   if (!IN_TAURI) return () => {};
-  const un = listen("search-shown", () => cb());
+  const un = listen<SearchSection>("search-shown", (e) => cb(e.payload ?? "songs"));
   return () => {
     un.then((f) => f());
   };
+}
+
+/** A summon hotkey fired while the search window was already up
+ * (search.rs toggle): the same section hides, another switches. */
+export function onSearchSection(cb: (section: SearchSection) => void): () => void {
+  if (!IN_TAURI) return () => {};
+  const un = listen<SearchSection>("search-section", (e) => cb(e.payload ?? "songs"));
+  return () => {
+    un.then((f) => f());
+  };
+}
+
+// ---- Spotify library (library.rs seam) ----
+
+/** `?library=reconnect` forces the missing-scopes state (a token consented
+ * before the library scopes), `?library=offline` a transport failure, and
+ * `?library=slow` a 1.5s load so the skeleton is preview-visible. */
+const LIBRARY_FORCE = IN_TAURI
+  ? null
+  : new URLSearchParams(window.location.search).get("library");
+
+const MOCK_PLAYLISTS: PlaylistSummary[] = [
+  ["Late drives", 53, true, "Thien"],
+  ["Focus, no vocals", 118, true, "Thien"],
+  ["새벽 드라이브", 31, true, "Thien"],
+  ["Gym rotation", 64, true, "Thien"],
+  ["2016 forever", 203, true, "Thien"],
+  ["Road trip (shared)", 41, true, "jun.h"],
+  ["City pop rooms", 88, false, "andy"],
+].map(([name, total, mine, owner], i) => ({
+  uri: `spotify:playlist:mock-${i}`,
+  id: `mock-${i}`,
+  name: name as string,
+  owner: owner as string,
+  mine: mine as boolean,
+  total: total as number,
+  art_url: null,
+}));
+
+const MOCK_PUBLIC_PLAYLISTS: PlaylistSummary[] = [
+  ["late night drive", "mara.k", 74],
+  ["too late to sleep", "jun.h", 112],
+  ["k-pop gym", "sora", 90],
+  ["rainy day indie", "lee.min", 57],
+  ["city pop for driving", "kenji", 66],
+].map(([name, owner, total], i) => ({
+  uri: `spotify:playlist:public-${i}`,
+  id: `public-${i}`,
+  name: name as string,
+  owner: owner as string,
+  mine: false,
+  total: total as number,
+  art_url: null,
+}));
+
+/** The mock's playing context (playContext sets it). */
+let mockContext: string | null = null;
+
+async function libraryDelay(): Promise<void> {
+  await new Promise((r) => setTimeout(r, LIBRARY_FORCE === "slow" ? 1500 : 200));
+}
+
+function mockLibraryGate(): "needs_reconnect" | "offline" | "disconnected" | null {
+  if (!mockSpotifyConnected) return "disconnected";
+  if (LIBRARY_FORCE === "reconnect") return "needs_reconnect";
+  if (LIBRARY_FORCE === "offline") return "offline";
+  return null;
 }
 
 /** The focus takeover was just shown (focus.rs open) — a warmed realm
@@ -749,6 +823,7 @@ const MOCK_HOTKEYS: HotkeyInfo[] = [
   { id: "prev", label: "Previous track", chord: "ctrl+alt+p", registered: true },
   { id: "showhide", label: "Show / hide Palette", chord: "ctrl+alt+m", registered: true },
   { id: "search", label: "Summon search", chord: "ctrl+alt+s", registered: true },
+  { id: "library", label: "Open your library", chord: "ctrl+alt+l", registered: true },
   { id: "wordsearlier", label: "Nudge lyric words earlier", chord: "ctrl+alt+[", registered: true },
   { id: "wordslater", label: "Nudge lyric words later", chord: "ctrl+alt+]", registered: true },
 ];
@@ -1120,6 +1195,85 @@ export const commands = {
   /** Dismiss the search window (Esc / background click / post-play). */
   searchHide(): void {
     if (IN_TAURI) void invoke("search_hide");
+  },
+  /** The user's playlists, editorial ones dropped (library.rs). */
+  async spotifyLibrary(): Promise<LibraryResult> {
+    if (IN_TAURI) return invoke<LibraryResult>("spotify_library");
+    await libraryDelay();
+    const gate = mockLibraryGate();
+    if (gate) return { status: gate, user_id: "", playlists: [], recent_contexts: [] };
+    return {
+      status: "ok",
+      user_id: "mock-user",
+      playlists: MOCK_PLAYLISTS.map((p) => ({ ...p })),
+      // Gym rotation, then City pop rooms (followed), then 2016 forever.
+      recent_contexts: [MOCK_PLAYLISTS[3].uri, MOCK_PLAYLISTS[6].uri, MOCK_PLAYLISTS[4].uri],
+    };
+  },
+  /** Liked Songs, newest first (library.rs). */
+  async spotifyLiked(): Promise<TracksResult> {
+    if (IN_TAURI) return invoke<TracksResult>("spotify_liked");
+    await libraryDelay();
+    const gate = mockLibraryGate();
+    if (gate) return { status: gate, tracks: [], total: null };
+    const tracks = [...MOCK_TRACKS, ...MOCK_SEARCH_EXTRAS].map(mockQueueTrack);
+    return { status: "ok", tracks, total: tracks.length };
+  },
+  /** One playlist's songs; "restricted" for playlists the user doesn't own. */
+  async spotifyPlaylistTracks(id: string): Promise<TracksResult> {
+    if (IN_TAURI) return invoke<TracksResult>("spotify_playlist_tracks", { id });
+    await libraryDelay();
+    const gate = mockLibraryGate();
+    if (gate) return { status: gate, tracks: [], total: null };
+    const p = MOCK_PLAYLISTS.find((x) => x.id === id);
+    if (!p || !p.mine) return { status: "restricted", tracks: [], total: null };
+    const pool = [...MOCK_TRACKS, ...MOCK_SEARCH_EXTRAS];
+    const n = Number(id.replace(/\D/g, "")) || 0;
+    const tracks = pool
+      .filter((_, i) => (i + n) % 2 === 0 || i < 3)
+      .map(mockQueueTrack);
+    return { status: "ok", tracks, total: tracks.length };
+  },
+  /** Public playlists by name ("Playlists on Spotify"), at most 10. */
+  async spotifySearchPlaylists(query: string, limit = 5): Promise<PlaylistSearchResult> {
+    if (IN_TAURI) return invoke<PlaylistSearchResult>("spotify_search_playlists", { query, limit });
+    if (!mockSpotifyConnected) return { status: "disconnected", playlists: [] };
+    await new Promise((r) => setTimeout(r, 450));
+    const q = query.trim().toLowerCase();
+    const words = q.split(/\s+/).filter(Boolean);
+    const playlists = [...MOCK_PUBLIC_PLAYLISTS, ...MOCK_PLAYLISTS]
+      .filter((p) => words.some((w) => p.name.toLowerCase().includes(w)))
+      .slice(0, limit)
+      .map((p) => ({ ...p, mine: false }));
+    return { status: "ok", playlists };
+  },
+  /** What Spotify is playing right now (one fresh read) — the Library's
+   * "Playing" labels. null = nothing / disconnected / offline. Mock: the
+   * last playContext target, else Late drives. */
+  async spotifyNowContext(): Promise<NowContext | null> {
+    if (IN_TAURI) return invoke<NowContext | null>("spotify_now_context");
+    if (!mockSpotifyConnected) return null;
+    return {
+      context_uri: mockContext ?? MOCK_PLAYLISTS[0].uri,
+      track_uri: mockQueueTrack(MOCK_TRACKS[mockTrack]).uri,
+    };
+  },
+  /** Play a playlist (or Liked Songs) as the new context, optionally from one
+   * of its songs (spotify.rs play_context). Same statuses as playNow plus
+   * "forbidden" (Spotify's Premium answer). */
+  async playContext(contextUri: string, offsetUri?: string): Promise<string> {
+    if (IN_TAURI) {
+      return invoke<string>("spotify_play_context", {
+        contextUri,
+        offsetUri: offsetUri ?? null,
+      });
+    }
+    if (!mockSpotifyConnected) return "disconnected";
+    mockContext = contextUri;
+    const target = offsetUri ?? null;
+    const i = target ? MOCK_TRACKS.findIndex((t) => mockQueueTrack(t).uri === target) : 1;
+    mockJumpTo(i === -1 ? 0 : i);
+    return "ok";
   },
   /** Open the fullscreen focus takeover (focus.rs — creates the window,
    * hides the widget via VisIntent). Mock: no window system — no-op; the

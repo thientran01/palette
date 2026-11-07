@@ -34,14 +34,11 @@ static ASSETS: OnceLock<Option<PathBuf>> = OnceLock::new();
 pub fn configure(dir: PathBuf) {
     let enabled = dir.join("enabled").is_file();
     let _ = ASSETS.set(enabled.then_some(dir));
-    log::info!(
-        "karaoke: acoustic model {}",
-        if enabled {
-            "enabled (mms-int8/2)"
-        } else {
-            "not installed"
-        }
-    );
+    if enabled {
+        log::info!("karaoke: acoustic model enabled ({RECIPE})");
+    } else {
+        log::info!("karaoke: acoustic model not installed");
+    }
 }
 
 pub fn assets() -> Option<&'static Path> {
@@ -409,7 +406,12 @@ fn connected_entry_retry(
     first: usize,
     frame_ms: f64,
 ) -> bool {
-    let Some(following) = candidate.get(first + 1) else {
+    // The last target is the trailing wildcard, which follows any entrance
+    // by construction: a one-letter line has nothing to connect to.
+    let Some(following) = candidate
+        .get(first + 1)
+        .filter(|_| first + 2 < candidate.len())
+    else {
         return false;
     };
     candidate[first].start < original[first].start
@@ -479,6 +481,17 @@ impl Knobs {
         connected_retry: true,
     };
     pub const TRIAL: Knobs = Knobs::MIX;
+    /// The decoder before 2026-10-31 (recipe mms-int8/1), for offline
+    /// comparison only.
+    pub const BASELINE: Knobs = Knobs {
+        guide: false,
+        guide_late_ms: 1500,
+        guide_last: false,
+        cap_per_syllable_ms: 0,
+        cap_base_ms: 0,
+        vocable_tolerance_ms: 0,
+        connected_retry: false,
+    };
 
     /// Where a line's window stops looking: the next stamp, or sooner when
     /// that stamp is farther than the line could plausibly take to sing.
@@ -490,18 +503,22 @@ impl Knobs {
     }
 }
 
-/// Vowel groups in Latin spelling, one per CJK or Hangul character, and at
-/// least one per token: a rough sung-syllable count for the window cap.
-fn sung_syllables(tokens: &[String]) -> usize {
-    const VOWELS: &str = "aeiouyàáâãäåæèéêëìíîïòóôõöøœùúûüýÿ";
+/// Vowel groups in each token's romanization (the same uroman the decoder
+/// spells targets with), at least one per token: a rough sung-syllable
+/// count for the window cap that holds for Cyrillic, Hangul or kana alike.
+fn sung_syllables(tokens: &[String], romanizer: &uroman::Uroman) -> usize {
     tokens
         .iter()
         .map(|token| {
+            let latin = romanizer
+                .romanize_string::<uroman::rom_format::Str>(token, None)
+                .to_string()
+                .to_lowercase();
             let mut count = 0;
             let mut in_vowel = false;
-            for c in token.chars().flat_map(char::to_lowercase) {
-                let vowel = VOWELS.contains(c);
-                if (vowel && !in_vowel) || crate::align::is_syllable_char(c) {
+            for c in latin.chars() {
+                let vowel = "aeiouy".contains(c);
+                if vowel && !in_vowel {
                     count += 1;
                 }
                 in_vowel = vowel;
@@ -598,7 +615,8 @@ impl AcousticAligner {
         Ok(words)
     }
 
-    /// Offline evidence seam. Production always uses the 500ms window above.
+    /// Offline evidence seam on the shipped decoder (`Knobs::MIX`, the same
+    /// path as `align`). Production always uses the 500ms window above.
     /// Token confidence is acoustic path support, not a calibrated timing probability.
     pub fn align_probe(
         &mut self,
@@ -619,20 +637,29 @@ impl AcousticAligner {
         )
     }
 
+    /// Offline comparison baseline: the vocal path on the pre-2026-10-31
+    /// decoder (`Knobs::BASELINE`), with entry refinement but no retry.
     pub fn align_entries(
         &mut self,
         pcm: &[i16],
         lines: &[TimedLine],
         map: &TimeMap,
     ) -> Result<Vec<Word>> {
-        let mut words =
-            self.align_inner(pcm, lines, map, 500.0, None, EntryMode::Refine, Knobs::MIX)?;
+        let mut words = self.align_inner(
+            pcm,
+            lines,
+            map,
+            500.0,
+            None,
+            EntryMode::Refine,
+            Knobs::BASELINE,
+        )?;
         entry_timing::refine(pcm, map, &mut words);
         Ok(words)
     }
 
     /// Source-guidance trial: retries the decoder on the same emissions.
-    /// Existing align/align_entries remain unchanged comparison baselines.
+    /// align_entries is the same path without the retry, for comparison.
     pub fn align_guided_entries(
         &mut self,
         pcm: &[i16],
@@ -685,7 +712,7 @@ impl AcousticAligner {
             let capped = if tokens.iter().all(|t| is_vocable(t)) {
                 next
             } else {
-                knobs.window_next(line.t, next, sung_syllables(&tokens))
+                knobs.window_next(line.t, next, sung_syllables(&tokens, &self.romanizer))
             };
             let Some(window) = recorded_window_margin(pcm.len(), map, line.t, capped, margin_ms)
             else {
@@ -816,10 +843,15 @@ impl AcousticAligner {
             }
             if knobs.vocable_tolerance_ms > 0 {
                 if let Some(next_line) = lines.get(li + 1) {
+                    // Never spread past what was decoded or recorded.
+                    let bound = next_line
+                        .t
+                        .min(line.t + 20_000)
+                        .min(to_time(pcm.len() as f64));
                     vocable_fallback(
                         &mut words[line_start..],
                         line.t,
-                        next_line.t,
+                        bound,
                         knobs.vocable_tolerance_ms,
                     );
                 }
@@ -1357,7 +1389,15 @@ mod tests {
         // 34 frames of 20ms after the entrance: not the same phrase.
         assert!(!connected_entry_retry(&original, &far, 1, 20.0));
         far[2].start = 50;
-        assert!(connected_entry_retry(&original, &far, 1, 20.0));
+        // Index 2 is the trailing wildcard here: nothing sung follows.
+        assert!(!connected_entry_retry(&original, &far, 1, 20.0));
+        let mut sung = far.to_vec();
+        sung.push(TokenSpan {
+            start: 900,
+            end: 910,
+            confidence: 0.9,
+        });
+        assert!(connected_entry_retry(&original, &sung, 1, 20.0));
     }
 
     fn vocable_line(texts: &[&str], onsets: &[i64]) -> Vec<Word> {
@@ -1405,13 +1445,16 @@ mod tests {
 
     #[test]
     fn sung_syllables_count_vowel_groups_and_characters() {
-        let count = |text: &str| sung_syllables(&tokenize(text));
+        let romanizer = uroman::Uroman::new();
+        let count = |text: &str| sung_syllables(&tokenize(text), &romanizer);
         assert_eq!(count("intentando destacar"), 7);
         assert_eq!(count("will burn"), 2);
         assert_eq!(count("rhythm"), 1);
         assert_eq!(count("mmm"), 1);
         assert_eq!(count("canción él"), 3);
         assert_eq!(count("사랑해"), 3);
+        assert_eq!(count("здравствуйте"), 3);
+        assert_eq!(count("καλημέρα"), 4);
     }
 
     #[test]
@@ -1453,10 +1496,18 @@ mod tests {
 
     #[test]
     fn both_paths_run_the_tuned_decoder() {
-        assert_eq!(Knobs::MIX, Knobs::TRIAL);
-        let k = Knobs::MIX;
-        assert!(k.guide && k.guide_last && k.connected_retry);
-        assert_eq!(k.window_next(0, 99_000, 9), 6600);
+        // These values ARE recipe mms-int8/2; changing one changes RECIPE.
+        let tuned = Knobs {
+            guide: true,
+            guide_late_ms: 700,
+            guide_last: true,
+            cap_per_syllable_ms: 400,
+            cap_base_ms: 3000,
+            vocable_tolerance_ms: 1500,
+            connected_retry: true,
+        };
+        assert_eq!(Knobs::MIX, tuned);
+        assert_eq!(Knobs::TRIAL, tuned);
         assert_eq!(RECIPE, "mms-int8/2");
     }
 

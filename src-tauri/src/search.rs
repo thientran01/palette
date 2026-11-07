@@ -37,11 +37,14 @@ pub const LABEL: &str = "search";
 /// Search.tsx steps up with it. Height seats the empty state EXACTLY — 7
 /// rows (4 history + 3 discovery) + 2 section headers, no clipped 7th row
 /// (Thien's live call, 2026-07-16); measured chrome: 24 gutter + 2 border +
-/// 60 search row + 12 list padding + 2×31 headers + 7×52 rows + 30 note =
-/// 554. Search results (8×52 = 416 + 12) fit inside the same 438px list
-/// budget. Re-derive if Search.tsx row/header/chrome sizes change.
+/// 56 search row + 37 section strip (26 tabs + 10 + 1 border) + 12 list
+/// padding + 2×31 headers + 7×52 rows + 30 note = 586 (554 before the
+/// Songs | Library | History strip; measured in the browser mock: the Songs
+/// list is exactly 438px with no overflow). Search results (8×52 = 416 + 12)
+/// fit inside the same 438px list budget; Library and History scroll.
+/// Re-derive if Search.tsx row/header/chrome sizes change.
 const W: f64 = 680.0;
-const H: f64 = 554.0;
+const H: f64 = 586.0;
 
 /// Create-once-hidden. Idempotent under CREATE: two callers (first-paint
 /// warm and an early summon) converge on one window. A failure downgrades
@@ -117,19 +120,33 @@ pub fn schedule_warm(app: &AppHandle) {
     crate::defer_main_action(app, ensure);
 }
 
-pub fn toggle(app: &AppHandle) {
+/// The sections of the window (Search.tsx's strip). Anything else from the
+/// webview maps to Songs.
+fn section_of(s: &str) -> &'static str {
+    match s {
+        "library" => "library",
+        "history" => "history",
+        _ => "songs",
+    }
+}
+
+/// A summon hotkey for `section` (Ctrl+Alt+S → songs, Ctrl+Alt+L →
+/// library). Hidden → show on that section. Already up → the webview decides:
+/// the same section hides (the toggle), another section switches to it — only
+/// the webview knows which section it is on.
+pub fn toggle(app: &AppHandle, section: &str) {
     ensure(app);
     let Some(win) = app.get_webview_window(LABEL) else {
         return;
     };
     if win.is_visible().unwrap_or(false) {
-        hide(app);
+        let _ = app.emit_to(LABEL, "search-section", section_of(section));
     } else {
-        show(app);
+        show(app, section);
     }
 }
 
-pub fn show(app: &AppHandle) {
+pub fn show(app: &AppHandle, section: &str) {
     let Some(win) = app.get_webview_window(LABEL) else {
         return;
     };
@@ -150,9 +167,10 @@ pub fn show(app: &AppHandle) {
     }
     let _ = win.show();
     let _ = win.set_focus();
-    // The webview re-focuses its input, select-alls the stale query, and
-    // recomputes the resurfacing rows on this signal.
-    let _ = app.emit_to(LABEL, "search-shown", ());
+    // The webview re-focuses its input, select-alls the stale query,
+    // switches to `section`, and recomputes the resurfacing rows on this
+    // signal.
+    let _ = app.emit_to(LABEL, "search-shown", section_of(section));
 }
 
 pub fn hide(app: &AppHandle) {
