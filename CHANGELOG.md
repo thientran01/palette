@@ -32,6 +32,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 ### Fixed
 
 - A lyric line no longer jumps from one row to two when it becomes the current line.
+- With karaoke words on, the lyrics move to the next line as soon as its first word starts lighting up. Long lines used to stay highlighted after they finished while the next line was already filling.
 
 ## [1.0.11] - 2026-11-07
 

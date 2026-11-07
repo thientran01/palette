@@ -16,6 +16,7 @@ import {
   msUntilNextDot,
   msUntilNextLine,
   parseLrc,
+  wordTimedStarts,
   type LyricLine,
   type LyricWord,
 } from "./lib/lrc";
@@ -34,7 +35,15 @@ import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
  * clock â€” never blind-incremented â€” so throttled webview timers can only
  * delay a transition, never derail it. Transitions land with timer precision
  * instead of on a 250ms sampling grid. */
-export function useLyricIndex(lines: LyricLine[], leadMs: number): number {
+export function useLyricIndex(
+  source: LyricLine[], leadMs: number, wordLeadMs: number | null = null,
+): number {
+  // With word wipes on, a row goes current when its first word starts to
+  // paint, not only at its LRC stamp (lib/lrc.ts wordTimedStarts).
+  const lines = useMemo(
+    () => (wordLeadMs === null ? source : wordTimedStarts(source, wordLeadMs)),
+    [source, wordLeadMs],
+  );
   const [idx, setIdx] = useState(() => currentLineIndex(lines, posClock.now(), leadMs));
   useEffect(() => {
     let timer: number | undefined;
@@ -643,11 +652,11 @@ export function LyricsPanel({
   /** Track length, for pacing the credits roll (lib/creditsRoll.ts). */
   durationMs?: number;
 }) {
-  const idx = useLyricIndex(lines, leadMs);
   // Words fire ahead of their aligned onset by the nudgeable word lead
   // (on top of the per-player line lead). A nudge shows a short caption;
   // the seed never does.
   const wordLead = useWordLead();
+  const idx = useLyricIndex(lines, leadMs, karaoke ? wordLead.leadMs : null);
   const [leadCaption, setLeadCaption] = useState<string | null>(null);
   useEffect(() => {
     if (wordLead.nudges === 0) return;
