@@ -44,6 +44,26 @@ describe("word timing does not replace rows at line activation", () => {
   });
 });
 
+describe("depth of field", () => {
+  const lines = [0, 1, 2, 3, 4, 5, 6].map(i => ({ t: 1000 + i * 2000, text: `line ${i}` }));
+  const filters = (scale: "base" | "focus", seek: number) => {
+    const html = renderToStaticMarkup(<LyricsPanel scale={scale} seekable={true} leadMs={-seek} lines={lines} />);
+    return [...html.matchAll(/--lyric-rest-filter:([^;"]+)/g)].map(m => m[1]);
+  };
+  it("keeps the current and next lines sharp in the compact view and blurs further ones", () => {
+    // posClock is mocked at 1000ms, so line 0 is current.
+    expect(filters("base", 0)).toEqual(["none", "none", "blur(0.6px)", "blur(1.2px)", "blur(1.2px)", "blur(1.2px)", "blur(1.2px)"]);
+  });
+  it("softens even the next line in focus mode, where the type is 44px", () => {
+    expect(filters("focus", 0).slice(0, 4)).toEqual(["none", "blur(1px)", "blur(2.5px)", "blur(4px)"]);
+  });
+  it("has no accent bar on the current line", () => {
+    const html = renderToStaticMarkup(<LyricsPanel seekable={true} leadMs={0} lines={lines} />);
+    expect(html).not.toContain("data-marker");
+    expect(html).not.toContain("bg-accent");
+  });
+});
+
 describe("lineDistances", () => {
   const sung = (t: number) => ({ t, text: `l${t}` });
   const brk = (t: number) => ({ t, text: "", end: t + 5000 });

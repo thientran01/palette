@@ -294,8 +294,8 @@ const CASCADE_CAP = 10;
 /** Head start so the art view's exhale clears before rows land. */
 const CASCADE_BASE_MS = 90; // DUR[1]
 /** base + cap*step + row animation (200ms) + slack; also bounds the anchor
- * marker's ignite â€” keep in sync with index.css's marker rule (600ms hold +
- * 200ms caption-in = exactly this). The class is removed only AFTER every
+ * row's ignite sweep. Keep in sync with index.css's anchor ignite rule
+ * (540ms hold + 260ms sweep = exactly this). The class is removed only AFTER every
  * row animation has finished â€” ripping it off mid-cascade would snap
  * fill-mode-held rows to full opacity in one frame. */
 const ENTRANCE_DONE_MS = 800;
@@ -310,16 +310,19 @@ export type LyricsScale = "base" | "focus";
 const SCALE = {
   base: {
     row: "px-3 py-1.5 text-base leading-normal tracking-[0.025em]",
-    marker: "h-4 w-[2px]",
     anchor: 0.4,
     // The compact view stays full: a three-line cut left most of the panel
     // empty (Thien, 2026-11-06), so every line shows and only the
     // brightness falls off with distance (±3 means "3 or further"). Sung and
     // upcoming lines fade symmetrically (Thien preferred it to a dimmer past).
     recede: { "-3": 0.25, "-2": 0.45, "-1": 0.7, "1": 0.7, "2": 0.45, "3": 0.25 },
-    // Non-current ink is drawn slightly smaller than its layout box
-    // (paint-only, so wrapping never changes).
-    restScale: 0.97,
+    // Depth of field (2026-11-07, replacing the accent bar): non-current
+    // ink is drawn smaller than its layout box and goes out of focus with
+    // distance, so the current line is the only sharp, full-size one. The
+    // next/previous line stays sharp so you can read ahead. Paint-only, so
+    // wrapping never changes.
+    restScale: 0.95,
+    blur: { "-3": 1.2, "-2": 0.6, "2": 0.6, "3": 1.2 },
     mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
     chipTop: "top-8",
     chipBottom: "bottom-8",
@@ -334,7 +337,6 @@ const SCALE = {
     // compact lyrics "look like a spotlight"): rows ~2.25× the type size,
     // normal line height, letters slightly open instead of pulled together.
     row: "px-6 py-4 text-[44px] leading-normal tracking-[0.01em]",
-    marker: "h-9 w-[5px]",
     // 0.5 of the full-height lyric box (2026-11-06): the current line sits
     // mid-room, level with the upper half of the album art.
     anchor: 0.5,
@@ -343,7 +345,9 @@ const SCALE = {
     // whole screen the lit line should read like a theatre spotlight with
     // the rest in the dark (Thien, 2026-11-07).
     recede: { "-3": 0.1, "-2": 0.2, "-1": 0.38, "1": 0.38, "2": 0.2, "3": 0.1 },
-    restScale: 0.97,
+    // Blur scales with the 44px type: ±1 is soft but readable.
+    restScale: 0.94,
+    blur: { "-3": 4, "-2": 2.5, "-1": 1, "1": 1, "2": 2.5, "3": 4 },
     // Same lighting as the compact view: the per-line fade (recede) does
     // the dimming, and the mask only softens the very edges of the box
     // (2026-11-07; the old 260px ramps left most lines half-masked).
@@ -392,6 +396,14 @@ function recedeOpacity(scale: LyricsScale, distance: number, browsing: boolean):
   return table[String(distance)] ?? 0;
 }
 
+/** Resting blur (px) for a row at `distance`; 0 = sharp. Browsing clears it
+ * along with the fade. */
+function recedeBlur(scale: LyricsScale, distance: number, browsing: boolean): number {
+  if (distance === 0 || browsing) return 0;
+  const table = SCALE[scale].blur as Record<string, number | undefined>;
+  return table[String(distance)] ?? 0;
+}
+
 /** One lyric line. Memoized so a line advance reconciles the two rows whose
  * `current` flipped instead of the whole list; clicks are delegated to the
  * list container via data-line, so rows carry no per-render closures. */
@@ -414,10 +426,10 @@ const LyricLineRow = memo(function LyricLineRow({
   /** Stable per mount â€” distance from the line that was current when the
    * panel mounted. Inert until the container carries .lyrics-entering. */
   cascadeDelayMs: number;
-  /** The mount anchor: the ONLY row whose marker is held back for the
-   * closing ignite beat. Scoping the hold here (not to whatever row is
-   * current) means a mid-entrance line advance ignites the new row's marker
-   * instantly â€” no JS disarm, no engine-dependent delay retargeting. */
+  /** The mount anchor: the ONLY row whose ignite sweep is held back for the
+   * closing beat. Scoping the hold here (not to whatever row is current)
+   * means a mid-entrance line advance ignites the new row instantly, with no
+   * JS disarm and no engine-dependent delay retargeting. */
   anchor: boolean;
   scale: LyricsScale;
   /** Signed distance in sung lines from the current one, clamped to ±3
@@ -435,6 +447,7 @@ const LyricLineRow = memo(function LyricLineRow({
   // rows are font-medium in every state already.
   const tone = current ? (timed ? "text-muted/80" : "text-fg") : "text-muted/80";
   const opacity = recedeOpacity(scale, distance, browsing);
+  const blur = recedeBlur(scale, distance, browsing);
   return (
     <Tag
       {...(seekable
@@ -459,6 +472,8 @@ const LyricLineRow = memo(function LyricLineRow({
           "--cascade-delay": `${cascadeDelayMs}ms`,
           "--lyric-recede": opacity,
           "--lyric-rest-scale": SCALE[scale].restScale,
+          "--lyric-rest-filter": blur > 0 ? `blur(${blur}px)` : "none",
+          "--lyric-ignite-from": SCALE[scale].recede["1"],
         } as React.CSSProperties
       }
       className={`lyric-row relative whitespace-pre-wrap ${keepHangulWords(text) ? "break-keep" : ""} rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${timed ? "font-medium" : ""} ${tone} ${
@@ -467,14 +482,6 @@ const LyricLineRow = memo(function LyricLineRow({
         opacity === 0 ? "pointer-events-none" : seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
-      <span
-        aria-hidden
-        data-marker
-        // The marker shares the album accent with waveform/progress; text stays neutral.
-        className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-full bg-accent [transition:opacity_200ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].marker} ${
-          current ? "opacity-100" : "opacity-0"
-        }`}
-      />
       <span className="lyric-ink">
       {timed
         ? words.map((w, wi) => (
@@ -514,8 +521,8 @@ const BREAK_DOT_EXIT_STEP_MS = 55; // DUR-adjacent; 4Â·55 + 220 fade â‰ˆ w
  * per fifth of the break â€” Apple Music's idle-progress idiom in the living
  * separator's capsule vocabulary (a content event, and the ONE ambient
  * living instance per view stays the Waveform). Accent on the lit dots is
- * the current-line marker's license â€” content feedback, not chrome; no
- * marker bar (the dots ARE the current indicator). Filled dots keep
+ * content feedback, like the waveform and progress fill, not chrome (the
+ * dots ARE the current indicator). Filled dots keep
  * background-color in the transition so an art-change retint sweeps them
  * like every accent surface.
  *
@@ -633,7 +640,7 @@ export function LyricsPanel({
   leadMs: number;
   /** True when this mount is a real within-expanded arrival (the user was
    * watching the big-art fallback) â€” plays the anchor-outward cascade and
-   * holds the accent marker back as the closing beat. */
+   * holds the anchor line's ignite sweep back as the closing beat. */
   entrance?: boolean;
   scale?: LyricsScale;
   /** Disables word wipes only; line highlighting and following stay active. */
@@ -668,7 +675,7 @@ export function LyricsPanel({
   // The anchor line at mount â€” cascade delays radiate from it, stable across
   // re-renders so a mid-entrance line advance can't reshuffle delays. The
   // entrance ends by timeout only (after every row animation has finished);
-  // the marker-hold is scoped to the anchor row via data-anchor, so nothing
+  // the ignite hold is scoped to the anchor row via data-anchor, so nothing
   // needs disarming when the song advances mid-cascade.
   const entranceIdx = useRef(idx);
   const [entering, setEntering] = useState(entrance);
@@ -957,8 +964,7 @@ export function LyricsPanel({
           </span>
         )}
       </div>
-      {/* Return-to-now chip â€” neutral chrome (accent stays on the line
-       * marker), on the edge the live line sits past, outside the re-latch
+      {/* Return-to-now chip â€” neutral chrome, on the edge the live line sits past, outside the re-latch
        * band only (inside it the line is on screen and a wheel-back
        * re-latches anyway). 32px offsets clear the 28px mask fade. Exits
        * plain with the browse, per the house transition rule. */}

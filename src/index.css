@@ -309,17 +309,14 @@ body {
   animation-delay: var(--cascade-delay, 0ms);
 }
 
-/* The accent marker ignites LAST — color as the closing beat, the separator
- * ladder's grammar. An ANIMATION, not a transition-delay: the marker mounts
- * already-visible inside the anchor row, so no opacity change ever fired and
- * the delayed transition was dead — the accent actually landed FIRST, with
- * the row's own fade (motion pass, 2026-07-16). `both` back-fills opacity 0
- * through the 600ms hold, then it ignites over 200ms, ending exactly at
- * ENTRANCE_DONE_MS (800ms, src/LyricsPanel.tsx — keep the three in sync).
- * Scoped to the ANCHOR row only: a mid-entrance line advance ignites the
- * new row's marker instantly instead of inheriting the hold. */
-.lyrics-entering [data-anchor] [data-marker] {
-  animation: caption-in 200ms var(--ease-out-tk) 600ms both;
+/* The current line ignites LAST: the anchor row's sweep (.lyric-ink below)
+ * holds through the cascade, then plays as the closing beat. `backwards`
+ * back-fills the unlit mask through the 540ms hold, and the 260ms sweep ends
+ * exactly at ENTRANCE_DONE_MS (800ms, src/LyricsPanel.tsx; keep the three in
+ * sync). Scoped to the ANCHOR row only: a mid-entrance line advance ignites
+ * the new row at once instead of inheriting the hold. */
+.lyrics-entering [data-anchor][data-current="true"]:not([data-word-row]) .lyric-ink {
+  animation-delay: 540ms;
 }
 
 /* Track-change title beat (the pill): the incoming title/artist fade in
@@ -386,8 +383,11 @@ body {
   }
 }
 
-/* Lyric spotlight: neutral ink, paint-only lift, no idle shimmer loop.
- * Layout is always measured at full size; only the inner ink scales. */
+/* Lyric spotlight (depth of field, 2026-11-07): the current line is the
+ * only sharp, full-size ink; the rest are drawn smaller, dimmer and out of
+ * focus with distance (LyricsPanel SCALE). Neutral ink, no accent, no glow,
+ * no idle loop. Layout is always measured at full size; only the inner ink
+ * scales and blurs. */
 .lyric-row {
   --lyric-peak: 255 255 255;
   /* Balance the last rows of a wrapped line so a short tail ("oh)") isn't
@@ -401,20 +401,61 @@ body {
 [data-theme="light"] .lyric-row { --lyric-peak: var(--fg); }
 .lyric-ink {
   display: block;
+  /* Shrink to the words (wrapping is unchanged: a line that needs the full
+   * row still gets it). Keeps the scale origin and the ignite sweep on the
+   * text rather than the empty end of the row. */
+  width: fit-content;
   transform-origin: left center;
-  /* Recession (LyricsPanel SCALE.recede / restScale): the row sets
-   * --lyric-recede and --lyric-rest-scale; the word-wipe driver lifts a row
-   * that is singing early with --lyric-opacity / --lyric-scale. All paint-only,
-   * so a row's wrapping is the same at every distance. */
+  /* Recession (LyricsPanel SCALE.recede / restScale / blur): the row sets
+   * --lyric-recede, --lyric-rest-scale and --lyric-rest-filter; the
+   * word-wipe driver lifts a row that is singing early with --lyric-opacity /
+   * --lyric-scale / --lyric-filter. All paint-only, so a row's wrapping is
+   * the same at every distance. */
   opacity: var(--lyric-opacity, var(--lyric-recede, 1));
-  transform: scale(var(--lyric-scale, var(--lyric-rest-scale, 0.97)));
+  transform: scale(var(--lyric-scale, var(--lyric-rest-scale, 0.95)));
+  filter: var(--lyric-filter, var(--lyric-rest-filter, none));
   transition:
     transform var(--transition-duration-4) var(--ease-in-out-tk),
-    opacity var(--transition-duration-4) var(--ease-in-out-tk);
+    opacity var(--transition-duration-4) var(--ease-in-out-tk),
+    filter var(--transition-duration-4) var(--ease-in-out-tk);
 }
-.lyric-row[data-current="true"] { --lyric-scale: 1; }
+.lyric-row[data-current="true"] { --lyric-scale: 1; --lyric-filter: none; }
+/* Hovering a seekable row brings it into focus, so you can read what a
+ * click would jump to. */
+button.lyric-row:hover { --lyric-filter: none; }
+
+/* Ignite: a line without word timing lights up left to right in one sweep
+ * when it becomes current (timed rows already wipe word by word). A mask
+ * holds the unlit part at the brightness the line had as the next line
+ * (--lyric-ignite-from) and its soft edge slides across once, so the
+ * brightening is carried by the sweep: the opacity step is instant here
+ * instead of transitioning. The mask exists only while the animation runs
+ * (it's declared in the keyframes), so the resting line is unmasked text.
+ * Geometry: a 250%-wide mask whose soft edge (40%..60% of the image, half
+ * the ink's width) starts just left of the ink and ends just past it, so
+ * the whole duration is spent crossing the words. The ink is fit-content
+ * (below) so a short line sweeps across its words, not the empty row. */
+@keyframes lyric-ignite {
+  from {
+    mask-image: linear-gradient(to right, #000 40%, rgb(0 0 0 / var(--lyric-ignite-from, 0.6)) 60%);
+    mask-size: 250% 100%;
+    mask-position: 100% 0;
+  }
+  to {
+    mask-image: linear-gradient(to right, #000 40%, rgb(0 0 0 / var(--lyric-ignite-from, 0.6)) 60%);
+    mask-size: 250% 100%;
+    mask-position: 0 0;
+  }
+}
+.lyric-row[data-current="true"]:not([data-word-row]):not([data-browsing]) .lyric-ink {
+  animation: lyric-ignite var(--transition-duration-5) var(--ease-in-out-tk) backwards;
+  transition:
+    transform var(--transition-duration-4) var(--ease-in-out-tk),
+    filter var(--transition-duration-4) var(--ease-in-out-tk);
+}
 @media (prefers-reduced-motion: reduce) {
-  .lyric-ink { transform: none; transition: none; }
+  .lyric-ink { transform: none; transition: none; filter: none; }
+  .lyric-row .lyric-ink { animation: none; }
   .lyric-row [data-word] { --word-sheen: var(--word-bright, currentColor) !important; }
 }
 
