@@ -732,9 +732,10 @@ const MOCK_CREDITS: CreditRow[] = [
   { role: "Composition", names: ["Kenzie", "Paris Alexa", "Dem Jointz"] },
   { role: "Arrangement", names: ["Dem Jointz"] },
   { role: "Vocal direction", names: ["Kenzie"] },
-  { role: "Recorded by", names: ["Noh Min-ji", "Kang Eun-ji"] },
+  { role: "Background vocals", names: ["Sunwoo (THE BOYZ)", "Eric (THE BOYZ)", "Kenzie"] },
+  { role: "Recorded by", names: ["노민지 (Noh Min Ji)", "강은지 (Kang Eun Ji)"] },
   { role: "Mixed by", names: ["Kim Cheol-sun"] },
-  { role: "Mastered by", names: ["Kwon Nam-woo"] },
+  { role: "Mastered by", names: ["권남우 (Kwon Nam Woo)"] },
 ];
 
 /** Real hotkey defaults (mirrors lib.rs HK_* + hotkey_defs order). The mock
@@ -1356,7 +1357,7 @@ export const commands = {
       const rows = CREDITS_PARAM === "short"
         ? [{ role: "Written by", names: ["Park Jin-young", "Lee Woo-min"] }]
         : MOCK_CREDITS;
-      return { status: "ok", rows, url: "https://genius.com" };
+      return { status: "ok", rows, url: "https://genius.com/The-boyz-savior-lyrics" };
     }
     return invoke<SongCredits>("song_credits", { artist, title });
   },
@@ -1381,18 +1382,11 @@ export const commands = {
   openDataFolder(): void {
     if (IN_TAURI) void invoke("open_data_folder");
   },
-  /** Open where a connector's key (or Spotify's app) is made. */
-  openConnectorPage(which: "spotify" | "lastfm" | "genius"): void {
-    if (IN_TAURI) {
-      void invoke("open_connector_page", { which });
-      return;
-    }
-    const url = {
-      spotify: "https://developer.spotify.com/dashboard",
-      lastfm: "https://www.last.fm/api/account/create",
-      genius: "https://genius.com/api-clients",
-    }[which];
-    window.open(url, "_blank", "noopener");
+  /** Open a connector's key page or a Genius song page in the browser.
+   * Rust only opens allowlisted prefixes (prefs.rs LINK_PREFIXES). */
+  openLink(url: string): void {
+    if (IN_TAURI) void invoke("open_link", { url }).catch(() => {});
+    else window.open(url, "_blank", "noopener");
   },
   /** Open the source repo in the browser. */
   openRepo(): void {

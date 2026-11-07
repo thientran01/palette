@@ -605,6 +605,7 @@ export default function Focus() {
                           entrance={entrance}
                           scale="focus"
                           credits={credits}
+                          durationMs={np.duration_ms}
                         />
                       </div>
                     )}

@@ -7,7 +7,7 @@
  * machinery. Two type scales: "base" (the 380px expanded view) and "focus"
  * (the fullscreen takeover) â€” same grammar, bigger clothes.
  */
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   BREAK_DOTS,
   attachWords,
@@ -19,8 +19,9 @@ import {
   type LyricLine,
   type LyricWord,
 } from "./lib/lrc";
-import { commands, onKaraokeReady, onSyncLibraryChanged, type CreditRow } from "./lib/backend";
-import { CreditsBlock } from "./Credits";
+import { commands, onKaraokeReady, onSyncLibraryChanged } from "./lib/backend";
+import { CreditsBlock, NO_CREDITS, type Credits } from "./Credits";
+import { planRoll, rollOffsetAt, singingEndMs } from "./lib/creditsRoll";
 import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
@@ -541,6 +542,34 @@ const BreakRow = memo(function BreakRow({
   );
 });
 
+/** True once playback passes `at` (null = never). The schedule-not-sample
+ * pattern of useLyricIndex: one timeout, re-derived on every clock anchor
+ * event, so a seek back before `at` flips it off at once. */
+function usePastPosition(at: number | null): boolean {
+  const [past, setPast] = useState(() => at !== null && posClock.now() >= at);
+  useEffect(() => {
+    if (at === null) {
+      setPast(false);
+      return;
+    }
+    let timer: number | undefined;
+    const sync = () => {
+      window.clearTimeout(timer);
+      const pos = posClock.now();
+      setPast(pos >= at);
+      if (pos >= at || !posClock.isPlaying()) return;
+      timer = window.setTimeout(sync, Math.min(at - pos, 30_000));
+    };
+    sync();
+    const unsubscribe = posClock.subscribe(sync);
+    return () => {
+      unsubscribe();
+      window.clearTimeout(timer);
+    };
+  }, [at]);
+  return at !== null && past;
+}
+
 export function LyricsPanel({
   lines,
   seekable,
@@ -548,7 +577,8 @@ export function LyricsPanel({
   entrance = false,
   scale = "base",
   karaoke = true,
-  credits = [],
+  credits = NO_CREDITS,
+  durationMs = 0,
 }: {
   lines: LyricLine[];
   seekable: boolean;
@@ -561,7 +591,9 @@ export function LyricsPanel({
   /** Disables word wipes only; line highlighting and following stay active. */
   karaoke?: boolean;
   /** Song credits, shown after the last line (Credits.tsx). */
-  credits?: CreditRow[];
+  credits?: Credits;
+  /** Track length, for pacing the credits roll (lib/creditsRoll.ts). */
+  durationMs?: number;
 }) {
   const idx = useLyricIndex(lines, leadMs);
   // Words fire ahead of their aligned onset by the nudgeable word lead
@@ -685,6 +717,51 @@ export function LyricsPanel({
 
   const browsing = manualOffset !== null;
   const offset = manualOffset ?? autoOffset;
+
+  // Credits roll: once the singing is over, playback position drives the
+  // list's transform directly (one style write per frame, like the word
+  // wipe) instead of the line anchor. A wheel browse pauses it.
+  const creditsRef = useRef<HTMLDivElement>(null);
+  const singingEnd = useMemo(() => singingEndMs(lines), [lines]);
+  const hasCredits = credits.groups.length > 0;
+  const rolling = usePastPosition(hasCredits ? singingEnd : null) && !browsing;
+  const rollOffset = useRef(0);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const viewport = viewportRef.current;
+    const box = creditsRef.current;
+    if (!rolling || singingEnd === null || !list || !viewport || !box) return;
+    let raf = 0;
+    const frame = () => {
+      cancelAnimationFrame(raf);
+      // Re-measured each frame: offsetTop ignores the transform, and the
+      // fullscreen room can resize mid-roll. The edges clear the mask fades.
+      const h = viewport.clientHeight;
+      const top = scale === "focus" ? Math.min(240, h * 0.26) : 28;
+      const bottom = scale === "focus" ? Math.min(320, h * 0.34) : 28;
+      const max = maxOffset();
+      const from = Math.min(Math.max(box.offsetTop - top, 0), max);
+      const to = Math.min(Math.max(box.offsetTop + box.offsetHeight + bottom - h, from), max);
+      const plan = planRoll(singingEnd, durationMs, from, to);
+      const pos = posClock.now();
+      const y = Math.round(rollOffsetAt(plan, pos));
+      rollOffset.current = y;
+      // The arrival glides on the house 220ms ease like a line advance;
+      // the roll itself is per-frame, so no transition fights it.
+      list.style.transition =
+        pos < plan.start ? "transform var(--transition-duration-4, 220ms) var(--ease-in-out-tk)" : "none";
+      list.style.transform = `translateY(${-y}px)`;
+      if (posClock.isPlaying() && y < plan.to) raf = requestAnimationFrame(frame);
+    };
+    frame();
+    const unsubscribe = posClock.subscribe(frame);
+    return () => {
+      unsubscribe();
+      cancelAnimationFrame(raf);
+      list.style.transition = "";
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rolling, singingEnd, durationMs, scale, credits]);
   const band = (viewportRef.current?.clientHeight ?? 0) * RELATCH_BAND;
   // Where "now" sits relative to the browse â€” drives the chip's edge/arrow.
   const nowBelow = browsing && autoOffset > (manualOffset as number);
@@ -696,7 +773,7 @@ export function LyricsPanel({
   };
 
   const onWheel = (e: React.WheelEvent) => {
-    const prev = manualOffset ?? autoOffset;
+    const prev = manualOffset ?? (rolling ? rollOffset.current : autoOffset);
     const next = Math.round(Math.min(Math.max(prev + e.deltaY, 0), maxOffset()));
     // Magnetic re-latch: arriving inside the band while closing on the live
     // line IS the resume gesture â€” no idle wait. (When not browsing, prev is
@@ -740,7 +817,12 @@ export function LyricsPanel({
         className={`flex flex-col gap-1 will-change-transform ${
           browsing || !anchored ? "" : "[transition:transform_220ms_var(--ease-in-out-tk)]"
         } ${entering ? "lyrics-entering" : ""}`}
-        style={{ transform: `translateY(${-offset}px)`, paddingTop: pad.top, paddingBottom: pad.bottom }}
+        style={{
+          // While rolling, the roll effect owns the transform.
+          transform: rolling ? undefined : `translateY(${-offset}px)`,
+          paddingTop: pad.top,
+          paddingBottom: pad.bottom,
+        }}
       >
         {lines.map((line, i) => {
           const anchor = i === Math.max(entranceIdx.current, 0);
@@ -767,7 +849,9 @@ export function LyricsPanel({
             />
           );
         })}
-        <CreditsBlock rows={credits} scale={scale} />
+        <div ref={creditsRef}>
+          <CreditsBlock credits={credits} scale={scale} />
+        </div>
       </div>
       {/* Word-lead caption: the one piece of feedback the nudge hotkeys
        * give. Same chip grammar AND the same per-scale top seat as the

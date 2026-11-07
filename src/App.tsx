@@ -1107,6 +1107,7 @@ function ExpandedView({
                   leadMs={VOCAL_LEAD_MS[np.player]}
                   entrance={celebrate}
                   credits={credits}
+                  durationMs={np.duration_ms}
                 />
               </motion.div>
             )}

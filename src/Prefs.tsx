@@ -266,7 +266,7 @@ function Ghost({
 }
 
 /** Inline link out to a connector's sign-up page. Neutral: underline, no
- * accent. Opens through Rust (prefs.rs open_connector_page), since the
+ * accent. Opens through Rust (prefs.rs open_link's allowlist), since the
  * webview has no opener permission. */
 function ExtLink({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
   return (
@@ -784,7 +784,7 @@ export default function Prefs() {
                 project holds text to (CLAUDE.md's accent clause). */}
             <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
               Development mode — connecting is limited to accounts allow-listed in the{" "}
-              <ExtLink onClick={() => commands.openConnectorPage("spotify")}>Spotify dashboard</ExtLink>. Queue
+              <ExtLink onClick={() => commands.openLink("https://developer.spotify.com/dashboard")}>Spotify dashboard</ExtLink>. Queue
               control and playback need this connection.
             </p>
           </div>
@@ -816,7 +816,7 @@ export default function Prefs() {
             </div>
             <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
               Create a free Last.fm API account, then paste its API key here.{" "}
-              <ExtLink onClick={() => commands.openConnectorPage("lastfm")}>Get a key</ExtLink>
+              <ExtLink onClick={() => commands.openLink("https://www.last.fm/api/account/create")}>Get a key</ExtLink>
             </p>
           </div>
           {/* Genius */}
@@ -844,7 +844,7 @@ export default function Prefs() {
             </div>
             <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
               Create a free Genius API client, then paste its Client Access Token here.{" "}
-              <ExtLink onClick={() => commands.openConnectorPage("genius")}>Get a token</ExtLink>
+              <ExtLink onClick={() => commands.openLink("https://genius.com/api-clients")}>Get a token</ExtLink>
             </p>
           </div>
         </>

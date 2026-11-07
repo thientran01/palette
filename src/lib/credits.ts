@@ -1,22 +1,31 @@
 /*
  * Shapes credits.rs's role rows into the person-first layout Credits.tsx
- * draws: a few sections (Production, Songwriting, Performers, Engineering),
- * each listing people once with every role they had. K-pop pages repeat the
- * same names across roles (a producer who also wrote and arranged), so this
- * reads shorter than one line per role.
+ * draws: a few sections (Production, Songwriting, Performers, Engineering).
+ * Within a section each person is merged across roles, then people with the
+ * same set of roles share one line ("Lyrics · Composition: A, B, C"). Genius
+ * lists every contributor, and a K-pop page can name a dozen writers, so a
+ * line per person never fit the compact panel (Thien, 2026-11-07).
  */
 import type { CreditRow } from "./backend";
 
 export type CreditSection = "Production" | "Songwriting" | "Performers" | "Engineering";
 
-export interface CreditPerson {
-  name: string;
+/** A credited name. `aside` is a parenthetical shown quieter: the
+ * romanization in "구종필 (JongPil Gu)" or a disambiguator like "(KOR)". */
+export interface CreditName {
+  main: string;
+  aside: string | null;
+}
+
+/** People who share exactly the same roles, on one line. */
+export interface CreditLine {
   roles: string[];
+  names: CreditName[];
 }
 
 export interface CreditGroup {
   title: CreditSection;
-  people: CreditPerson[];
+  lines: CreditLine[];
 }
 
 const ORDER: CreditSection[] = ["Production", "Songwriting", "Performers", "Engineering"];
@@ -47,21 +56,44 @@ function sectionOf(role: string): CreditSection {
   return "Performers";
 }
 
-export function groupCredits(rows: CreditRow[]): CreditGroup[] {
-  const groups = new Map<CreditSection, Map<string, CreditPerson>>();
+const fold = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
+/** "구종필 (JongPil Gu)" → main "구종필", aside "JongPil Gu". A tag that only
+ * repeats the playing artist ("Gawon (MEOVV)" while MEOVV plays) is
+ * dropped. */
+export function splitName(name: string, artist: string): CreditName {
+  const m = /^(.+?)\s*\(([^()]+)\)$/.exec(name.trim());
+  if (!m) return { main: name.trim(), aside: null };
+  const aside = m[2].trim();
+  const a = fold(artist);
+  const f = fold(aside);
+  if (a && f && (a === f || a.includes(f) || f.includes(a))) return { main: m[1], aside: null };
+  return { main: m[1], aside };
+}
+
+export function groupCredits(rows: CreditRow[], artist = ""): CreditGroup[] {
+  // section → person key → { name, roles }, in first-seen order.
+  const groups = new Map<CreditSection, Map<string, { name: CreditName; roles: string[] }>>();
   for (const row of rows) {
     const [section, noun] = KNOWN[row.role] ?? [sectionOf(row.role), row.role];
     let people = groups.get(section);
     if (!people) groups.set(section, (people = new Map()));
-    for (const name of row.names) {
-      const key = name.toLowerCase();
+    for (const raw of row.names) {
+      const name = splitName(raw, artist);
+      const key = fold(name.main) || name.main;
       const person = people.get(key) ?? { name, roles: [] };
       if (!person.roles.includes(noun)) person.roles.push(noun);
       people.set(key, person);
     }
   }
-  return ORDER.filter((t) => groups.has(t)).map((title) => ({
-    title,
-    people: [...groups.get(title)!.values()],
-  }));
+  return ORDER.filter((t) => groups.has(t)).map((title) => {
+    const lines = new Map<string, CreditLine>();
+    for (const p of groups.get(title)!.values()) {
+      const key = p.roles.join("\u0001");
+      const line = lines.get(key) ?? { roles: p.roles, names: [] };
+      line.names.push(p.name);
+      lines.set(key, line);
+    }
+    return { title, lines: [...lines.values()] };
+  });
 }
