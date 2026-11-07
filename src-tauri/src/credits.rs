@@ -292,7 +292,8 @@ fn role_display(label: &str) -> Option<(String, u8)> {
         "executive",
         "stylist",
     ];
-    if l.is_empty() || HIDDEN.iter().any(|h| l.contains(h)) {
+    // "Mixed At", "Recorded At": studios, not people.
+    if l.is_empty() || l.ends_with(" at") || HIDDEN.iter().any(|h| l.contains(h)) {
         return None;
     }
     let mapped = match l.as_str() {
@@ -307,7 +308,16 @@ fn role_display(label: &str) -> Option<(String, u8)> {
         "recording engineer" | "recorded by" => ("Recorded by", 60),
         "mixing engineer" | "mix engineer" | "mixed by" => ("Mixed by", 62),
         "mastering engineer" | "mastered by" => ("Mastered by", 63),
-        _ => return Some((sentence_case(label.trim()), 30)),
+        // Other studio roles ("Digital Audio Editor") sit under the three
+        // named ones; instruments and the rest rank last, so MAX_ROWS trims
+        // them before an engineer (a full SM page has 20+ rows).
+        _ if ["engineer", "editor", "edit", "record", "mix", "master"]
+            .iter()
+            .any(|k| l.contains(k)) =>
+        {
+            return Some((sentence_case(label.trim()), 64))
+        }
+        _ => return Some((sentence_case(label.trim()), 70)),
     };
     Some((mapped.0.to_string(), mapped.1))
 }
@@ -412,9 +422,11 @@ fn credit_rows(song: &Value) -> Vec<CreditRow> {
 
 // ---- disk cache ----
 
+/// `v2`: rows ranked with studios hidden and instruments last (2026-11-07);
+/// older entries simply age out.
 fn cache_key(artist: &str, title: &str) -> String {
     format!(
-        "{}\u{1}{}",
+        "v2\u{1}{}\u{1}{}",
         tokens(artist).join(" "),
         tokens(title).join(" ")
     )
@@ -571,11 +583,45 @@ mod tests {
                 "Lyrics",
                 "Composition",
                 "Arrangement",
-                "Digital editor",
                 "Mixed by",
-                "Mastered by"
+                "Mastered by",
+                "Digital editor"
             ]
         );
+    }
+
+    #[test]
+    fn studios_hide_and_instruments_trim_before_engineers() {
+        let mut perfs = vec![
+            json!({ "label": "Lyricist", "artists": [{ "name": "Seo Ji Eum" }] }),
+            json!({ "label": "Mixed At", "artists": [{ "name": "SM Blue Cup Studio" }] }),
+            json!({ "label": "Mastered At", "artists": [{ "name": "821 Sound" }] }),
+        ];
+        for inst in [
+            "Synthesizer",
+            "Strings",
+            "Piano",
+            "Guitar",
+            "Bass",
+            "Drums",
+            "Keyboards",
+            "Violin",
+            "Cello",
+        ] {
+            perfs.push(json!({ "label": inst, "artists": [{ "name": "MCK" }] }));
+        }
+        perfs.push(json!({ "label": "Recording Engineer", "artists": [{ "name": "Noh Min Ji" }] }));
+        perfs.push(json!({ "label": "Mixing Engineer", "artists": [{ "name": "Jung Eui Seok" }] }));
+        perfs.push(
+            json!({ "label": "Mastering Engineer", "artists": [{ "name": "Kwon Nam Woo" }] }),
+        );
+        let song =
+            json!({ "producer_artists": [], "writer_artists": [], "custom_performances": perfs });
+        let roles: Vec<String> = credit_rows(&song).into_iter().map(|r| r.role).collect();
+        assert_eq!(roles.len(), MAX_ROWS);
+        assert_eq!(roles[0], "Lyrics");
+        assert_eq!(&roles[1..4], ["Recorded by", "Mixed by", "Mastered by"]);
+        assert!(!roles.iter().any(|r| r.ends_with(" at")));
     }
 
     #[test]

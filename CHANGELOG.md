@@ -11,9 +11,11 @@ Installed apps self-update at launch, so most users are always on the latest rel
 ### Added
 
 - Song credits after the lyrics: who wrote, produced, arranged, recorded, mixed and mastered the song, from Genius. Paste a free Genius client access token in Preferences → Connectors to turn it on. Songs without a confident match show nothing.
+- Each connector in Preferences → Connectors links to the page where you get its key: the Spotify dashboard, Last.fm's API account page and Genius's API clients page.
 
 ### Changed
 
+- Song credits read like liner notes: a Credits heading, then writing, performance and engineering in their own groups, two to a row. Korean names keep their romanization in a quieter tone, and a member's group name is dropped when it's the artist. Studio rows ("Mixed at") are gone, instruments make way for the engineers when a page has too many rows, and "Credits from Genius" opens the song's Genius page.
 - "Something different" suggestions load much faster. Lookups run side by side, connections are reused, and results are remembered on disk, so a song you play often costs no network at all the next time. When suggestions can't load, the search window now says so instead of quietly leaving the section out.
 
 ## [1.0.11] - 2026-10-31

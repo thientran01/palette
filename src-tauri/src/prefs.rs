@@ -275,3 +275,49 @@ pub async fn open_repo(app: AppHandle) {
         .opener()
         .open_url("https://github.com/thientran01/palette", None::<&str>);
 }
+
+/// Where a webview may send the browser: the connectors' key pages and
+/// Genius song pages (the credits' source link). A fixed allowlist rather
+/// than any URL, so a page can't use this to launch arbitrary targets.
+const LINK_PREFIXES: [&str; 3] = [
+    "https://genius.com/",
+    "https://www.last.fm/api/",
+    "https://developer.spotify.com/",
+];
+
+fn link_allowed(url: &str) -> bool {
+    url.len() <= 512
+        && !url
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '"')
+        && LINK_PREFIXES.iter().any(|p| url.starts_with(p))
+}
+
+/// Open an allowlisted link in the default browser.
+#[tauri::command]
+pub async fn open_link(app: AppHandle, url: String) -> Result<(), String> {
+    if !link_allowed(&url) {
+        return Err("link not allowed".into());
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::link_allowed;
+
+    #[test]
+    fn only_allowlisted_links_open() {
+        assert!(link_allowed("https://genius.com/api-clients"));
+        assert!(link_allowed("https://genius.com/Stayc-teddy-bear-lyrics"));
+        assert!(link_allowed("https://www.last.fm/api/account/create"));
+        assert!(link_allowed("https://developer.spotify.com/dashboard"));
+        assert!(!link_allowed("https://genius.com.evil.example/"));
+        assert!(!link_allowed("http://genius.com/api-clients"));
+        assert!(!link_allowed("https://example.com/?https://genius.com/"));
+        assert!(!link_allowed("https://genius.com/a b"));
+        assert!(!link_allowed("file:///C:/Windows/System32/calc.exe"));
+    }
+}

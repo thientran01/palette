@@ -1314,6 +1314,7 @@ pub fn run() {
             prefs::open_logs,
             prefs::open_data_folder,
             prefs::open_repo,
+            prefs::open_link,
             rebind_hotkey,
             reset_hotkeys,
             set_hotkeys_capture,

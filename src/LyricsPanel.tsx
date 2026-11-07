@@ -19,8 +19,8 @@ import {
   type LyricLine,
   type LyricWord,
 } from "./lib/lrc";
-import { commands, onKaraokeReady, onSyncLibraryChanged, type CreditRow } from "./lib/backend";
-import { CreditsBlock } from "./Credits";
+import { commands, onKaraokeReady, onSyncLibraryChanged } from "./lib/backend";
+import { CreditsBlock, NO_CREDITS, type Credits } from "./Credits";
 import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
@@ -548,7 +548,7 @@ export function LyricsPanel({
   entrance = false,
   scale = "base",
   karaoke = true,
-  credits = [],
+  credits = NO_CREDITS,
 }: {
   lines: LyricLine[];
   seekable: boolean;
@@ -561,7 +561,7 @@ export function LyricsPanel({
   /** Disables word wipes only; line highlighting and following stay active. */
   karaoke?: boolean;
   /** Song credits, shown after the last line (Credits.tsx). */
-  credits?: CreditRow[];
+  credits?: Credits;
 }) {
   const idx = useLyricIndex(lines, leadMs);
   // Words fire ahead of their aligned onset by the nudgeable word lead
@@ -767,7 +767,7 @@ export function LyricsPanel({
             />
           );
         })}
-        <CreditsBlock rows={credits} scale={scale} />
+        <CreditsBlock credits={credits} scale={scale} />
       </div>
       {/* Word-lead caption: the one piece of feedback the nudge hotkeys
        * give. Same chip grammar AND the same per-scale top seat as the

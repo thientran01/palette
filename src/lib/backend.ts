@@ -727,14 +727,19 @@ export interface SongCredits {
  * `?credits=short` serves a writers-only page (older K-pop's usual shape). */
 const CREDITS_PARAM = IN_TAURI ? null : new URLSearchParams(window.location.search).get("credits");
 
+// Shaped like a real SM page: Hangul names with a romanized parenthetical,
+// member names suffixed with the group (Credits.tsx mutes the first and
+// drops the second).
 const MOCK_CREDITS: CreditRow[] = [
-  { role: "Lyrics", names: ["Kenzie"] },
+  { role: "Produced by", names: ["Kenzie"] },
+  { role: "Lyrics", names: ["Kenzie", "서지음 (Seo Ji Eum)"] },
   { role: "Composition", names: ["Kenzie", "Paris Alexa", "Dem Jointz"] },
   { role: "Arrangement", names: ["Dem Jointz"] },
+  { role: "Background vocals", names: ["Sunwoo (THE BOYZ)", "Eric (THE BOYZ)", "Kenzie"] },
   { role: "Vocal direction", names: ["Kenzie"] },
-  { role: "Recorded by", names: ["Noh Min-ji", "Kang Eun-ji"] },
+  { role: "Recorded by", names: ["노민지 (Noh Min Ji)", "강은지 (Kang Eun Ji)"] },
   { role: "Mixed by", names: ["Kim Cheol-sun"] },
-  { role: "Mastered by", names: ["Kwon Nam-woo"] },
+  { role: "Mastered by", names: ["권남우 (Kwon Nam Woo)"] },
 ];
 
 /** Real hotkey defaults (mirrors lib.rs HK_* + hotkey_defs order). The mock
@@ -1356,7 +1361,7 @@ export const commands = {
       const rows = CREDITS_PARAM === "short"
         ? [{ role: "Written by", names: ["Park Jin-young", "Lee Woo-min"] }]
         : MOCK_CREDITS;
-      return { status: "ok", rows, url: "https://genius.com" };
+      return { status: "ok", rows, url: "https://genius.com/The-boyz-savior-lyrics" };
     }
     return invoke<SongCredits>("song_credits", { artist, title });
   },
@@ -1380,6 +1385,12 @@ export const commands = {
   /** Reveal the app-data folder. */
   openDataFolder(): void {
     if (IN_TAURI) void invoke("open_data_folder");
+  },
+  /** Open a connector's key page or a Genius song page in the browser.
+   * Rust only opens allowlisted prefixes (prefs.rs LINK_PREFIXES). */
+  openLink(url: string): void {
+    if (IN_TAURI) void invoke("open_link", { url }).catch(() => {});
+    else window.open(url, "_blank", "noopener");
   },
   /** Open the source repo in the browser. */
   openRepo(): void {

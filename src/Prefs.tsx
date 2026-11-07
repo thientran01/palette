@@ -38,6 +38,7 @@ import {
 } from "./lib/backend";
 import { chordCaps, tokenCap } from "./lib/chords";
 import { useKaraokePreference, setKaraokePreference } from "./lib/karaokePreference";
+import { ArrowOut } from "./Credits";
 
 const SECTIONS = ["connectors", "hotkeys", "playback", "general", "about", "data"] as const;
 type Section = (typeof SECTIONS)[number];
@@ -244,6 +245,21 @@ function Segmented<T extends string | number>({
 }
 
 /** Neutral ghost button — the window's one button shape. */
+/** A connector's "get a key here" link: opens the page in the browser
+ * (prefs.rs open_link allowlists these). Inline in the card's footer prose. */
+function KeyLink({ url, children }: { url: string; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={() => commands.openLink(url)}
+      className="inline-flex items-center gap-1 whitespace-nowrap text-fg/80 underline decoration-fg/20 underline-offset-2 [transition:color_var(--transition-duration-2)_var(--ease-out-tk),text-decoration-color_var(--transition-duration-2)_var(--ease-out-tk)] hover:text-fg hover:decoration-fg/50"
+    >
+      {children}
+      <ArrowOut />
+    </button>
+  );
+}
+
 function Ghost({
   onClick,
   disabled,
@@ -765,8 +781,9 @@ export default function Prefs() {
                 (why Connect may fail) and fg/40 sat under the 4.5:1 floor the
                 project holds text to (CLAUDE.md's accent clause). */}
             <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
-              Development mode — connecting is limited to allow-listed accounts. Queue control and
-              playback need this connection.
+              Development mode — connecting is limited to accounts allow-listed in the Spotify
+              dashboard. Queue control and playback need this connection.{" "}
+              <KeyLink url="https://developer.spotify.com/dashboard">developer.spotify.com</KeyLink>
             </p>
           </div>
           {/* Last.fm */}
@@ -795,6 +812,10 @@ export default function Prefs() {
               />
               <Ghost onClick={testKey}>{testLabel}</Ghost>
             </div>
+            <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
+              Create a free Last.fm API account, then paste its API key here.{" "}
+              <KeyLink url="https://www.last.fm/api/account/create">last.fm/api</KeyLink>
+            </p>
           </div>
           {/* Genius */}
           <div className="rounded-xl border border-border/[0.08] bg-fg/[0.015] p-4">
@@ -820,7 +841,8 @@ export default function Prefs() {
               <Ghost onClick={testGenius}>{geniusLabel}</Ghost>
             </div>
             <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
-              Make a free API client at genius.com/api-clients, then paste its client access token here.
+              Make a free API client, then paste its client access token here.{" "}
+              <KeyLink url="https://genius.com/api-clients">genius.com/api-clients</KeyLink>
             </p>
           </div>
         </>
