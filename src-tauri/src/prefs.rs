@@ -268,6 +268,28 @@ pub async fn open_data_folder(app: AppHandle) {
     }
 }
 
+/// Where each connector's key or app is made. A fixed map, not a URL from
+/// the webview, so the IPC seam can't be used to open arbitrary links.
+pub(crate) fn connector_page(which: &str) -> Option<&'static str> {
+    match which {
+        "spotify" => Some("https://developer.spotify.com/dashboard"),
+        "lastfm" => Some("https://www.last.fm/api/account/create"),
+        "genius" => Some("https://genius.com/api-clients"),
+        _ => None,
+    }
+}
+
+/// Open a connector's sign-up page in the default browser (Connectors).
+#[tauri::command]
+pub async fn open_connector_page(app: AppHandle, which: String) {
+    match connector_page(&which) {
+        Some(url) => {
+            let _ = app.opener().open_url(url, None::<&str>);
+        }
+        None => log::warn!("open_connector_page: unknown connector {which:?}"),
+    }
+}
+
 /// Open the source repo in the default browser (About → Source).
 #[tauri::command]
 pub async fn open_repo(app: AppHandle) {

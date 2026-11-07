@@ -265,6 +265,24 @@ function Ghost({
   );
 }
 
+/** Inline link out to a connector's sign-up page. Neutral: underline, no
+ * accent. Opens through Rust (prefs.rs open_connector_page), since the
+ * webview has no opener permission. */
+function ExtLink({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="relative z-10 inline-flex items-center gap-0.5 whitespace-nowrap text-fg/85 underline decoration-fg/25 underline-offset-[3px] [transition:color_var(--transition-duration-2)_var(--ease-out-tk),text-decoration-color_var(--transition-duration-2)_var(--ease-out-tk)] hover:text-fg hover:decoration-fg/60"
+    >
+      {children}
+      <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden className="translate-y-[0.5px]">
+        <path d="M3 7 7 3M3.6 3H7v3.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </button>
+  );
+}
+
 // ---- nav icons (static, decorative — inline SVG per the handoff) ----------
 
 const NAV_ICON: Record<Section, React.ReactNode> = {
@@ -765,8 +783,9 @@ export default function Prefs() {
                 (why Connect may fail) and fg/40 sat under the 4.5:1 floor the
                 project holds text to (CLAUDE.md's accent clause). */}
             <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
-              Development mode — connecting is limited to allow-listed accounts. Queue control and
-              playback need this connection.
+              Development mode — connecting is limited to accounts allow-listed in the{" "}
+              <ExtLink onClick={() => commands.openConnectorPage("spotify")}>Spotify dashboard</ExtLink>. Queue
+              control and playback need this connection.
             </p>
           </div>
           {/* Last.fm */}
@@ -795,6 +814,10 @@ export default function Prefs() {
               />
               <Ghost onClick={testKey}>{testLabel}</Ghost>
             </div>
+            <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
+              Create a free Last.fm API account, then paste its API key here.{" "}
+              <ExtLink onClick={() => commands.openConnectorPage("lastfm")}>Get a key</ExtLink>
+            </p>
           </div>
           {/* Genius */}
           <div className="rounded-xl border border-border/[0.08] bg-fg/[0.015] p-4">
@@ -820,7 +843,8 @@ export default function Prefs() {
               <Ghost onClick={testGenius}>{geniusLabel}</Ghost>
             </div>
             <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
-              Make a free API client at genius.com/api-clients, then paste its client access token here.
+              Create a free Genius API client, then paste its Client Access Token here.{" "}
+              <ExtLink onClick={() => commands.openConnectorPage("genius")}>Get a token</ExtLink>
             </p>
           </div>
         </>

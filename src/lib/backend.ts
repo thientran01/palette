@@ -1381,6 +1381,19 @@ export const commands = {
   openDataFolder(): void {
     if (IN_TAURI) void invoke("open_data_folder");
   },
+  /** Open where a connector's key (or Spotify's app) is made. */
+  openConnectorPage(which: "spotify" | "lastfm" | "genius"): void {
+    if (IN_TAURI) {
+      void invoke("open_connector_page", { which });
+      return;
+    }
+    const url = {
+      spotify: "https://developer.spotify.com/dashboard",
+      lastfm: "https://www.last.fm/api/account/create",
+      genius: "https://genius.com/api-clients",
+    }[which];
+    window.open(url, "_blank", "noopener");
+  },
   /** Open the source repo in the browser. */
   openRepo(): void {
     if (IN_TAURI) void invoke("open_repo");

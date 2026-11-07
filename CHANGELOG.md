@@ -10,7 +10,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Added
 
-- Song credits after the lyrics: who wrote, produced, arranged, recorded, mixed and mastered the song, from Genius. Paste a free Genius client access token in Preferences → Connectors to turn it on. Songs without a confident match show nothing.
+- Song credits after the lyrics: who wrote, produced, arranged, recorded, mixed and mastered the song, from Genius. They're grouped into Production, Songwriting, Performers and Engineering, with each person listed once alongside every role they had. Paste a free Genius client access token in Preferences → Connectors to turn it on. Songs without a confident match show nothing.
+- Each connector in Preferences now links to the page where you create its key (Last.fm, Genius) or manage the app (Spotify dashboard).
 
 ### Changed
 

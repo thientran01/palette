@@ -7,9 +7,10 @@
  *
  * Quiet by design: a song with no confident match, no token, or no network
  * shows nothing at all. Neutral chrome only, per the design rules: muted
- * role labels, fg names, no accent.
+ * section titles and roles, fg names, no accent, nothing animated.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { groupCredits } from "./lib/credits";
 import { commands, onSettingsChanged, type CreditRow } from "./lib/backend";
 import type { NowPlaying } from "./types";
 import type { LyricsScale } from "./LyricsPanel";
@@ -49,36 +50,51 @@ export function useCredits(np: NowPlaying | null): CreditRow[] {
 
 const CLOTHES = {
   base: {
-    box: "px-3 pb-2 pt-7",
-    grid: "gap-x-3 gap-y-1.5",
-    role: "text-[11.5px] leading-[18px]",
-    names: "text-[13px] leading-[18px]",
-    source: "mt-4 text-[11px]",
+    box: "px-3 pb-3 pt-8",
+    rule: "mb-5 w-8",
+    section: "mb-5",
+    title: "mb-2 text-[10.5px] tracking-[0.08em]",
+    grid: "grid-cols-2 gap-x-4 gap-y-2.5",
+    name: "text-[13.5px] leading-[18px]",
+    roles: "text-[11.5px] leading-4",
+    source: "text-[11px]",
   },
   focus: {
-    box: "px-6 pb-4 pt-12",
-    grid: "gap-x-6 gap-y-3",
-    role: "text-[17px] leading-[28px]",
-    names: "text-[22px] leading-[28px]",
-    source: "mt-8 text-[15px]",
+    box: "px-6 pb-6 pt-14",
+    rule: "mb-8 w-12",
+    section: "mb-8",
+    title: "mb-3 text-[13px] tracking-[0.1em]",
+    grid: "grid-cols-3 gap-x-8 gap-y-4",
+    name: "text-[22px] leading-[28px]",
+    roles: "text-[15px] leading-[22px]",
+    source: "text-[14px]",
   },
 } as const satisfies Record<LyricsScale, unknown>;
 
-/** The credits block, rendered as the lyric list's last child. No
- * data-line, so a click on it never seeks. */
+/** The credits block, rendered as the lyric list's last child: a short
+ * hairline, then Production / Songwriting / Performers / Engineering, each
+ * a grid of people with their roles underneath. No data-line, so a click on
+ * it never seeks. */
 export function CreditsBlock({ rows, scale = "base" }: { rows: CreditRow[]; scale?: LyricsScale }) {
-  if (rows.length === 0) return null;
+  const groups = useMemo(() => groupCredits(rows), [rows]);
+  if (groups.length === 0) return null;
   const c = CLOTHES[scale];
   return (
     <section aria-label="Song credits" className={`select-text text-left ${c.box}`}>
-      <dl className={`grid grid-cols-[auto_1fr] ${c.grid}`}>
-        {rows.map((r) => (
-          <div key={r.role} className="contents">
-            <dt className={`whitespace-nowrap text-muted ${c.role}`}>{r.role}</dt>
-            <dd className={`text-fg/80 ${c.names}`}>{r.names.join(", ")}</dd>
-          </div>
-        ))}
-      </dl>
+      <div aria-hidden className={`h-px bg-fg/15 ${c.rule}`} />
+      {groups.map((g) => (
+        <div key={g.title} className={c.section}>
+          <h3 className={`font-medium uppercase text-muted ${c.title}`}>{g.title}</h3>
+          <ul className={`grid ${c.grid}`}>
+            {g.people.map((p) => (
+              <li key={p.name} className="min-w-0 break-words">
+                <p className={`font-medium text-fg/90 ${c.name}`}>{p.name}</p>
+                <p className={`text-muted ${c.roles}`}>{p.roles.join(" · ")}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
       <p className={`text-muted ${c.source}`}>Credits from Genius</p>
     </section>
   );
