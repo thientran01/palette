@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resampleRGBA } from "./crispArt";
+import { resampleRGBA, urlId } from "./crispArt";
 
 function solid(w: number, h: number, rgba: [number, number, number, number]): Uint8ClampedArray {
   const a = new Uint8ClampedArray(w * h * 4);
@@ -40,5 +40,16 @@ describe("resampleRGBA", () => {
       const p = (10 * 20 + x) * 4;
       if (out[p + 3] > 8) expect(out[p]).toBeGreaterThan(240);
     }
+  });
+});
+
+describe("urlId", () => {
+  it("keeps remote urls and shortens data: urls to a stable id", () => {
+    expect(urlId("https://i.scdn.co/image/abc")).toBe("https://i.scdn.co/image/abc");
+    const a = "data:image/png;base64," + "A".repeat(200_000);
+    const b = "data:image/png;base64," + "A".repeat(199_999) + "B";
+    expect(urlId(a)).toBe(urlId(a.slice()));
+    expect(urlId(a).length).toBeLessThan(40);
+    expect(urlId(a)).not.toBe(urlId(b));
   });
 });

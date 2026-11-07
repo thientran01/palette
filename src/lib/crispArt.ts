@@ -16,7 +16,7 @@
  * add detail the source doesn't have, and the browser's own upscale filter
  * is fine.
  */
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 const LOBES = 3;
 
@@ -176,8 +176,22 @@ const done = new Map<string, string>();
 const pending = new Map<string, Promise<string>>();
 const MAX_ENTRIES = 160;
 
-function keyOf(url: string, side: number): string {
-  return `${side}|${url}`;
+/** A short id for a cover url. Remote urls are short and used as-is. A GSMTC
+ * cover is a data: URL of a few hundred KB, and keying the cache on it would
+ * keep up to MAX_ENTRIES copies of those strings alive, so it is hashed
+ * (FNV-1a over every char, plus the length) instead. */
+export function urlId(url: string): string {
+  if (!url.startsWith("data:")) return url;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < url.length; i++) {
+    h ^= url.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `data#${url.length}#${(h >>> 0).toString(36)}`;
+}
+
+function keyOf(id: string, side: number): string {
+  return `${side}|${id}`;
 }
 
 function remember(key: string, value: string): void {
@@ -190,8 +204,7 @@ function remember(key: string, value: string): void {
   }
 }
 
-function crisp(url: string, side: number): Promise<string> {
-  const key = keyOf(url, side);
+function crisp(url: string, key: string, side: number): Promise<string> {
   const inflight = pending.get(key);
   if (inflight) return inflight;
   const p = loadImage(url)
@@ -259,13 +272,15 @@ export function useDevicePixelRatio(): number {
 export function useCrispArt(url: string | null, cssSize: number): string | null {
   const dpr = useDevicePixelRatio();
   const side = Math.round(cssSize * dpr);
-  const key = url ? keyOf(url, side) : null;
+  // Hashed once per cover, not per render.
+  const id = useMemo(() => (url ? urlId(url) : null), [url]);
+  const key = id ? keyOf(id, side) : null;
   const hit = key ? done.get(key) : undefined;
   const [shown, setShown] = useState<{ key: string; src: string } | null>(null);
   useEffect(() => {
     if (!url || !key || hit !== undefined) return;
     let alive = true;
-    void crisp(url, side).then((src) => {
+    void crisp(url, key, side).then((src) => {
       if (alive) setShown({ key, src });
     });
     return () => {
