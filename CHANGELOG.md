@@ -13,6 +13,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Search has a section strip: Songs, Library and History. Tab moves between them, and `Ctrl+Alt+L` opens Search on Library.
 - Library lists Liked Songs, then your playlists and the ones you follow, recently played first. The playlist that's playing says Playing, and inside it the current song says Now. Typing filters them instantly and finds public playlists on Spotify below. Enter opens a playlist's songs with Play in the header, Shift+Enter plays it, and Esc or the Library link above it goes back.
 - History lists everything you've played, grouped by day with play times. The day's header stays pinned at the top as you scroll until the next day replaces it. Each day's header also shows how many songs you played that day and how long you listened. Enter plays a song and Shift+Enter queues it.
+- Song credits after the lyrics: who wrote, produced, arranged, recorded, mixed and mastered the song, from Genius. They're grouped by kind (production, songwriting, performers, engineering), with people who share roles on one line, in one type size and two tones: roles in gray, names in white. Once the singing ends, the lyrics glide up to the credits and roll through them at a reading pace, timed to the outro; pausing stops the roll and scrolling takes over. Korean names show their romanization in a quieter tone, and "Credits from Genius" opens the song's Genius page. Paste a free Genius client access token in Preferences → Connectors to turn it on. Songs without a confident match show nothing.
+- Each connector in Preferences now links to the page where you create its key (Last.fm, Genius) or manage the app (Spotify dashboard).
 
 ### Changed
 
@@ -22,6 +24,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Search's icons are redrawn at the exact size they're shown, so their lines sit on whole pixels and look sharp. Songs now has a music note instead of a second magnifier, and Library a stack of albums.
 - Typing in History searches every song you've played, not just the ones already scrolled into view.
 - Holding an arrow key in Search's History now moves one row per key repeat, smoothly. It used to re-format every play time on each press and fall several rows behind.
+- Album covers in the player, queue and Search are sharper. Palette now shrinks each cover to the exact pixels of its box with a high-quality filter instead of leaving it to the browser, and Spotify rows load the 300px cover instead of the 64px one, which was blurry at any Windows scaling above 100%.
 - Lyrics are calmer: lines fade evenly the further they are from the current one, above and below.
 - Focus mode: lyrics fill the right side of the screen.
 - Lyric lines wrap more cleanly: short ad-libs like "(oh-oh)" stay on one row, and Korean words no longer split between syllables.

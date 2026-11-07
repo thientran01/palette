@@ -57,6 +57,7 @@ import { initReactive } from "./lib/reactive";
 import { DUR, EASE } from "./lib/tokens";
 import { DeviceTag } from "./DeviceTag";
 import { LyricsPanel, lyricsKeyOf, lyricsVerdictOf, useLyrics, useSeatHold } from "./LyricsPanel";
+import { useCredits } from "./Credits";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
 import {
   armSuppression,
@@ -144,7 +145,7 @@ function IdentityStack({
     // width, and the lyric column's bottom-alignment all derive from the
     // same value, which is what makes the aligned edges exact.
     <div className={`flex w-(--art) flex-col ${align}`}>
-      <div className="grid aspect-square w-full place-items-center overflow-hidden rounded-3xl bg-surface-2 text-muted">
+      <div className="art-edge grid aspect-square w-full place-items-center overflow-hidden rounded-3xl bg-surface-2 text-muted">
         {showArt ? (
           <img
             src={artUrl}
@@ -241,6 +242,7 @@ export default function Focus() {
   const artUrl = useArt(np?.art_id ?? null);
   useArtAccent(artUrl);
   const lyrics = useLyrics(np);
+  const credits = useCredits(np);
   useEffect(() => initReactive(), []);
   const reducedMotion = useReducedMotion();
   const spotify = useSpotifyStatus();
@@ -603,6 +605,8 @@ export default function Focus() {
                           leadMs={VOCAL_LEAD_MS[np.player]}
                           entrance={entrance}
                           scale="focus"
+                          credits={credits}
+                          durationMs={np.duration_ms}
                         />
                       </div>
                     )}

@@ -54,7 +54,7 @@ function SyncingRow({job}:{job:ActiveSync}) {
     </div>
   </div>;
 }
-function Cover({song}:{song:SavedSync}){const [src,setSrc]=useState<string|null>(null);useEffect(()=>{let live=true;setSrc(null);if(song.thumb_key)void commands.historyThumbUrl(song.thumb_key).then(s=>{if(live)setSrc(s);}).catch(()=>{});return ()=>{live=false;};},[song.thumb_key]);return <div className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded bg-fg/5 text-muted">{src?<img src={src} alt="" className="h-full w-full object-cover" onError={()=>setSrc(null)}/>:<Glyph kind="music"/>}</div>;}
+function Cover({song}:{song:SavedSync}){const [src,setSrc]=useState<string|null>(null);useEffect(()=>{let live=true;setSrc(null);if(song.thumb_key)void commands.historyThumbUrl(song.thumb_key).then(s=>{if(live)setSrc(s);}).catch(()=>{});return ()=>{live=false;};},[song.thumb_key]);return <div className="art-edge grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded bg-fg/5 text-muted">{src?<img src={src} alt="" className="h-full w-full object-cover" onError={()=>setSrc(null)}/>:<Glyph kind="music"/>}</div>;}
 export function SavedSyncs({np,onClose,current}:{np:NowPlaying;onClose:(restoreFocus?:boolean)=>void;current:{title:string;detail:string;phase:SyncStatus["phase"]}}){
  const {jobs, unavailable}=useActiveSyncs();
  const [rows,setRows]=useState<SavedSync[]|null>(null),[error,setError]=useState(""),[busy,setBusy]=useState<string|null>(null),[notice,setNotice]=useState("");

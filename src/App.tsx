@@ -33,7 +33,9 @@ import {
   useSeatHold,
   type LyricsState,
 } from "./LyricsPanel";
+import { useCredits } from "./Credits";
 import { useArt, useArtAccent } from "./lib/artAccent";
+import { crispCanvas, useCrispArt } from "./lib/crispArt";
 import * as posClock from "./lib/posClock";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
 import { initReactive } from "./lib/reactive";
@@ -115,15 +117,21 @@ function useHistoryThumb(artId: string | null): void {
       img.onerror = unlatch;
       img.onload = () => {
         const side = 96;
-        const c = document.createElement("canvas");
-        c.width = side;
-        c.height = side;
-        const ctx = c.getContext("2d");
-        if (!ctx || img.width === 0 || img.height === 0) return;
-        // Cover-crop the (usually already square) art into the square thumb.
-        const s = Math.min(img.width, img.height);
-        ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, side, side);
-        commands.historyThumb(artId.split(":")[0], c.toDataURL("image/jpeg", 0.8));
+        if (img.width === 0 || img.height === 0) return;
+        // Cover-crop the (usually already square) art into the square thumb,
+        // Lanczos-resampled (a one-step drawImage shrink aliases); a cover
+        // already ≤96px falls back to the plain draw.
+        let c = crispCanvas(img, side);
+        if (!c) {
+          c = document.createElement("canvas");
+          c.width = side;
+          c.height = side;
+          const ctx = c.getContext("2d");
+          if (!ctx) return;
+          const s = Math.min(img.width, img.height);
+          ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, side, side);
+        }
+        commands.historyThumb(artId.split(":")[0], c.toDataURL("image/jpeg", 0.85));
       };
       img.src = url;
     });
@@ -738,7 +746,10 @@ const ART_XFADE_MS = DUR[1];
  * art never moves. Covers track-change swaps, the pref=art view, and
  * media.rs's stale-art rev-bump heals. Timer, not transitionend — the
  * outgoing top layer unmounts, so it can't report its own end. */
-function Art({ url, size, radiusPx }: { url: string | null; size: number; radiusPx: number }) {
+function Art({ url: rawUrl, size, radiusPx }: { url: string | null; size: number; radiusPx: number }) {
+  // Resampled to this box's device pixels (lib/crispArt) — the crossfade
+  // below runs on the crisp copy, so a track change fades once.
+  const url = useCrispArt(rawUrl, size);
   const [settled, setSettled] = useState(url);
   useEffect(() => {
     if (url === settled) return;
@@ -754,7 +765,7 @@ function Art({ url, size, radiusPx }: { url: string | null; size: number; radius
   const incoming = url !== null && url !== settled ? url : null;
   return (
     <div
-      className="relative grid shrink-0 place-items-center overflow-hidden bg-surface-2 text-muted"
+      className="art-edge grid shrink-0 place-items-center overflow-hidden bg-surface-2 text-muted"
       style={{ width: size, height: size, borderRadius: radiusPx }}
     >
       {settled ? (
@@ -848,6 +859,7 @@ function ExpandedView({
   // (Kept as the inline discriminant check — aliased-condition narrowing is
   // what lets lyrics.lines/.key flow into LyricsPanel below.)
   const lyricsLive = lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np);
+  const credits = useCredits(np);
   // What the state says about THIS track — stale verdicts read as pending,
   // so captions/routing can't answer for the previous track.
   const verdict = lyricsVerdictOf(np, lyrics);
@@ -1104,6 +1116,8 @@ function ExpandedView({
                   seekable={seekable}
                   leadMs={VOCAL_LEAD_MS[np.player]}
                   entrance={celebrate}
+                  credits={credits}
+                  durationMs={np.duration_ms}
                 />
               </motion.div>
             )}
@@ -1330,15 +1344,25 @@ function ExpandedView({
       />
       {/* Hoisted chrome: one seat for both states. Progress sits ABOVE the
           transport (handoff order) so the transport is the very-bottom row —
-          the anchored cluster shares its vertical band at the corner. */}
-      <ProgressBar np={np} />
-      {/* outline-offset 0: the md buttons fill this h-8 row, leaving only the
-          pb-0.5 (2px) between their bottom edge and the shell's overflow clip
-          — the house ring's 2px offset would push its bottom stroke entirely
-          past the clip line, so here the 2px stroke hugs the button instead
-          and exactly fits the clearance. */}
-      <div className="flex h-8 items-center justify-center [&_button:focus-visible]:[outline-offset:0px]">
-        <Transport np={np} seekable={seekable} playing={playing} />
+          the anchored cluster shares its vertical band at the corner.
+          One group with NO gap, not the column's gap-2: at gap-2 the bar
+          floated nearer the lyrics than the buttons it scrubs, and Thien
+          picked flush over the card's 28px rhythm (2026-11-07). Flush is
+          safe: the md buttons' hover box meets the 16px progress row's
+          bottom edge, 5.5px clear of the live 5px rail. The transport row
+          never moves (pb-0.5 pins it to the control centerline), so this
+          only lowers the bar and gives the content 8px more; the column's
+          gap-2 still separates the bar from the lyrics. */}
+      <div className="flex flex-col">
+        <ProgressBar np={np} />
+        {/* outline-offset 0: the md buttons fill this h-8 row, leaving only
+            the pb-0.5 (2px) between their bottom edge and the shell's overflow
+            clip — the house ring's 2px offset would push its bottom stroke
+            entirely past the clip line, so here the 2px stroke hugs the
+            button instead and exactly fits the clearance. */}
+        <div className="flex h-8 items-center justify-center [&_button:focus-visible]:[outline-offset:0px]">
+          <Transport np={np} seekable={seekable} playing={playing} />
+        </div>
       </div>
     </div>
   );

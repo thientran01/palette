@@ -2,6 +2,7 @@ pub mod acoustic;
 mod acoustic_worker;
 pub mod align;
 mod audio;
+mod credits;
 mod dock;
 mod focus;
 mod history;
@@ -1323,9 +1324,12 @@ pub fn run() {
             prefs::set_setting,
             prefs::test_lastfm_key,
             prefs::lastfm_has_key,
+            credits::song_credits,
+            credits::test_genius_token,
             prefs::open_logs,
             prefs::open_data_folder,
             prefs::open_repo,
+            prefs::open_link,
             rebind_hotkey,
             reset_hotkeys,
             set_hotkeys_capture,
