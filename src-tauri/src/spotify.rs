@@ -44,13 +44,21 @@ const SPOTIFY_CLIENT_ID: &str = "3f82e7a35eea45ddab8625819a79d1de";
 
 const REDIRECT_PORT: u16 = 43117;
 /// read = queue/currently-playing; modify = add-to-queue/skip (play-now and
-/// the up-next feeder) — requested up front so later features need no
-/// re-consent. The library scopes (the like heart) were REQUESTED AND CUT
-/// 2026-07-12: Spotify endpoint-blocks PUT/DELETE /me/tracks and GET
-/// .../contains for this app id — 403 with a valid token carrying the
-/// scopes (verified live; the dev-mode blocking family). Don't re-add
-/// without re-verifying the endpoints answer.
-const SCOPES: &str = "user-read-playback-state user-modify-playback-state";
+/// the up-next feeder). The four READ library scopes feed the Search
+/// window's Library section (library.rs): `GET /me/playlists`, `GET
+/// /me/tracks`, the items of playlists the user owns or collaborates on, and
+/// `GET /me/player/recently-played` (the Recents-style sort) —
+/// all still open to Development Mode apps after Spotify's February 2026
+/// changes. A token consented before they were added lacks them, so
+/// library.rs checks the granted scope string and asks for one reconnect
+/// instead of 403-ing.
+///
+/// The like heart's WRITE scope (user-library-modify) stays cut (2026-07-12):
+/// Spotify endpoint-blocked PUT/DELETE /me/tracks and GET .../contains for
+/// this app id (403 with a valid token; since replaced by /me/library). Don't
+/// re-add it without re-verifying the replacement endpoints answer.
+pub(crate) const SCOPES: &str = "user-read-playback-state user-modify-playback-state \
+playlist-read-private playlist-read-collaborative user-library-read user-read-recently-played";
 const UA: &str = "Palette/0.1 (https://github.com/thientran01/palette)";
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// How long the loopback listener waits for the browser consent round-trip.
@@ -246,6 +254,17 @@ pub fn connected(app: &AppHandle) -> bool {
     let auth = app.state::<SpotifyAuth>();
     let inner = lock(&auth);
     inner.tokens.is_some()
+}
+
+/// Whether the stored grant carries every scope in `want` (space-separated
+/// grant string from the token endpoint). False when disconnected.
+pub(crate) fn has_scopes(app: &AppHandle, want: &[&str]) -> bool {
+    let auth = app.state::<SpotifyAuth>();
+    let inner = lock(&auth);
+    inner.tokens.as_ref().is_some_and(|t| {
+        let granted: Vec<&str> = t.scope.split_whitespace().collect();
+        want.iter().all(|w| granted.contains(w))
+    })
 }
 
 pub fn is_remote(app: &AppHandle) -> bool {
@@ -796,7 +815,7 @@ fn ensure_access(app: &AppHandle) -> Result<String, &'static str> {
 
 /// Call a player endpoint with one 401-refresh retry and one 429 Retry-After
 /// honor. Ok(None) = 204 (no active playback) or an empty body.
-fn api_call(
+pub(crate) fn api_call(
     app: &AppHandle,
     method: &str,
     url: &str,
@@ -814,7 +833,17 @@ fn api_call_body(
     api_call_impl(app, method, url, Some(body), "disconnected")
 }
 
-fn api_call_impl(
+/// Keep-alive agent for Web API GETs. `ureq::request` builds a fresh agent,
+/// so every call paid a new TCP + TLS handshake; discovery and search make
+/// several GETs in a row. GETs only: ureq retries an idempotent request whose
+/// pooled connection went stale, but not a PUT/POST, so player commands keep
+/// their fresh connection.
+fn get_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| ureq::AgentBuilder::new().build())
+}
+
+pub(crate) fn api_call_impl(
     app: &AppHandle,
     method: &str,
     url: &str,
@@ -825,7 +854,12 @@ fn api_call_impl(
     let mut refreshed = false;
     let mut waited_429 = false;
     loop {
-        let req = ureq::request(method, url)
+        let req = if method == "GET" {
+            get_agent().request(method, url)
+        } else {
+            ureq::request(method, url)
+        };
+        let req = req
             .set("User-Agent", UA)
             .set("Authorization", &format!("Bearer {token}"))
             .timeout(TIMEOUT);
@@ -907,9 +941,24 @@ fn api_call_impl(
     }
 }
 
+/// Smallest image ≥64px wins; Spotify orders images largest-first, so the
+/// fallback (no usable widths) is also the LAST entry. Playlist images often
+/// carry null widths (a mosaic or an upload), which lands on that fallback.
+pub(crate) fn small_image(images: &serde_json::Value) -> Option<String> {
+    images
+        .as_array()
+        .and_then(|imgs| {
+            imgs.iter()
+                .rfind(|i| i["width"].as_i64().unwrap_or(0) >= 64)
+                .or_else(|| imgs.last())
+        })
+        .and_then(|i| i["url"].as_str())
+        .map(String::from)
+}
+
 /// Parse one queue/currently-playing item. Non-track items (episodes) map
 /// with best-effort fields; anything without a uri is dropped by the caller.
-fn parse_track(v: &serde_json::Value) -> Option<QueueTrack> {
+pub(crate) fn parse_track(v: &serde_json::Value) -> Option<QueueTrack> {
     let uri = v["uri"].as_str()?.to_string();
     let artist = v["artists"]
         .as_array()
@@ -920,17 +969,7 @@ fn parse_track(v: &serde_json::Value) -> Option<QueueTrack> {
                 .join(", ")
         })
         .unwrap_or_default();
-    // Smallest image ≥64px wins; Spotify orders images largest-first, so
-    // the fallback (no usable widths) is also the LAST entry.
-    let art_url = v["album"]["images"]
-        .as_array()
-        .and_then(|imgs| {
-            imgs.iter()
-                .rfind(|i| i["width"].as_i64().unwrap_or(0) >= 64)
-                .or_else(|| imgs.last())
-        })
-        .and_then(|i| i["url"].as_str())
-        .map(String::from);
+    let art_url = small_image(&v["album"]["images"]);
     Some(QueueTrack {
         uri,
         title: v["name"].as_str().unwrap_or_default().to_string(),
@@ -1026,36 +1065,44 @@ pub fn play_now(app: &AppHandle, uri: &str) -> &'static str {
     outcome
 }
 
-/// Start playback of `uri` from SILENCE. play_now's never-PUT-play-uris rule
-/// exists to protect a live playlist context — from no_playback there is no
-/// context to kill, and the bare-uris PUT on the best available device is
-/// exactly right (the search window's headline case: summon, type, play, with
-/// nothing running). "ok" | "no_device" | "disconnected" | "offline".
-fn start_playback(app: &AppHandle, uri: &str) -> &'static str {
+/// The device a PUT play should target: the active one — but never a
+/// restricted one (Connect hardware that rejects Web API commands with a
+/// 403) — else the first commandable device. Err("no_device") = Spotify
+/// isn't open anywhere it can play.
+pub(crate) fn pick_device(app: &AppHandle) -> Result<String, &'static str> {
     let devices = match api_call(app, "GET", "https://api.spotify.com/v1/me/player/devices") {
         Ok(Some(v)) => v,
-        Ok(None) => return "no_device",
-        Err(e) => return e,
+        Ok(None) => return Err("no_device"),
+        Err(e) => return Err(e),
     };
     let list = devices["devices"].as_array().cloned().unwrap_or_default();
-    // Prefer the active device — but never a restricted one (Connect
-    // hardware that rejects Web API commands with a 403); fall back to the
-    // first commandable device.
     let commandable = |d: &&serde_json::Value| d["is_restricted"].as_bool() != Some(true);
     let dev = list
         .iter()
         .filter(commandable)
         .find(|d| d["is_active"].as_bool() == Some(true))
         .or_else(|| list.iter().find(commandable));
-    let Some(id) = dev.and_then(|d| d["id"].as_str()) else {
-        return "no_device"; // Spotify isn't open anywhere it can play
+    dev.and_then(|d| d["id"].as_str())
+        .map(String::from)
+        .ok_or("no_device")
+}
+
+/// Start playback of `uri` from SILENCE. play_now's never-PUT-play-uris rule
+/// exists to protect a live playlist context — from no_playback there is no
+/// context to kill, and the bare-uris PUT on the best available device is
+/// exactly right (the search window's headline case: summon, type, play, with
+/// nothing running). "ok" | "no_device" | "disconnected" | "offline".
+fn start_playback(app: &AppHandle, uri: &str) -> &'static str {
+    let id = match pick_device(app) {
+        Ok(id) => id,
+        Err(e) => return e,
     };
     if let Err(e) = api_call_body(
         app,
         "PUT",
         &format!(
             "https://api.spotify.com/v1/me/player/play?device_id={}",
-            urlenc(id)
+            urlenc(&id)
         ),
         &serde_json::json!({ "uris": [uri] }),
     ) {
@@ -1077,6 +1124,80 @@ fn start_playback(app: &AppHandle, uri: &str) -> &'static str {
                 }
                 return "ok";
             }
+        }
+    }
+    "diverged"
+}
+
+/// Play a whole playlist (or Liked Songs) as the new context, optionally
+/// starting at one of its songs — the Search window's Library section.
+/// This is the one sanctioned context REPLACEMENT: the user picked a
+/// playlist, so swapping the context is the point. It still never sends bare
+/// `uris` (the play_now rule) — `context_uri` + an `offset` keeps the
+/// playlist running after the song.
+///
+/// Verified by re-reading currently-playing (never trust the PUT's answer):
+/// the context must match, and the offset song must be the item when one was
+/// given. Liked Songs plays as `spotify:user:<id>:collection`; Spotify may
+/// report that context in another spelling, so any `…:collection` context
+/// counts there.
+///
+/// Returns: "ok" | "busy" | "no_device" | "forbidden" (403: Spotify answers
+/// this for non-Premium playback and restricted devices) | "diverged" |
+/// "disconnected" | "offline".
+pub fn play_context(app: &AppHandle, context_uri: &str, offset_uri: Option<&str>) -> &'static str {
+    let auth = app.state::<SpotifyAuth>();
+    let upnext = app.state::<crate::upnext::UpNext>();
+    // Same exclusion as play_now: one playback rewrite at a time, and the
+    // up-next feeder holds still while the context changes under it.
+    let Some(_jump) = crate::upnext::JumpGuard::start(&upnext, &auth.jump_in_flight) else {
+        return "busy";
+    };
+    let Some(_feed) = crate::upnext::pause_feeding(&upnext) else {
+        return "busy";
+    };
+    let id = match pick_device(app) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let mut body = serde_json::json!({ "context_uri": context_uri });
+    if let Some(o) = offset_uri {
+        body["offset"] = serde_json::json!({ "uri": o });
+    }
+    if let Err(e) = api_call_impl(
+        app,
+        "PUT",
+        &format!(
+            "https://api.spotify.com/v1/me/player/play?device_id={}",
+            urlenc(&id)
+        ),
+        Some(&body),
+        "forbidden",
+    ) {
+        return e;
+    }
+    let collection = context_uri.ends_with(":collection");
+    for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(450));
+        let Ok(Some(v)) = api_call(
+            app,
+            "GET",
+            "https://api.spotify.com/v1/me/player/currently-playing",
+        ) else {
+            continue;
+        };
+        let ctx = v["context"]["uri"].as_str().unwrap_or_default();
+        let ctx_ok = ctx == context_uri || (collection && ctx.ends_with(":collection"));
+        // Track relinking: Spotify may play a market-specific copy of the
+        // requested song and report the original under `linked_from`.
+        let item = v["item"]["uri"].as_str();
+        let linked = v["item"]["linked_from"]["uri"].as_str();
+        let item_ok = offset_uri.is_none_or(|o| item == Some(o) || linked == Some(o));
+        if ctx_ok && item_ok {
+            if let Some(t) = parse_track(&v["item"]) {
+                update_now(app, &t);
+            }
+            return "ok";
         }
     }
     "diverged"
@@ -1249,7 +1370,7 @@ fn requeue(app: &AppHandle, items: &[QueueTrack]) -> bool {
 /// and remember the uri. Callers hand it a track they TRUST: a settled
 /// currently-playing read (enrich_now) or a verified jump landing — never a
 /// mid-jump snapshot.
-fn update_now(app: &AppHandle, t: &QueueTrack) {
+pub(crate) fn update_now(app: &AppHandle, t: &QueueTrack) {
     crate::history::enrich_uri(app, &t.title, &t.artist, &t.uri);
     let auth = app.state::<SpotifyAuth>();
     let mut inner = lock(&auth);

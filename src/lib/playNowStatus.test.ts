@@ -15,5 +15,6 @@ describe("playNowNote", () => {
     expect(playNowNote("partial")).toBe("Played — some items couldn't re-queue");
     expect(playNowNote("offline")).toBe("Spotify unreachable");
     expect(playNowNote("disconnected")).toBe("Spotify unreachable");
+    expect(playNowNote("forbidden")).toBe("Spotify refused · playback needs Premium");
   });
 });

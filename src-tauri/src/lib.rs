@@ -7,6 +7,7 @@ mod focus;
 mod history;
 mod karaoke;
 mod lastfm;
+mod library;
 mod loopback;
 mod lyrics;
 mod media;
@@ -53,6 +54,8 @@ const HK_PREV: &str = "ctrl+alt+p";
 const HK_TOGGLE: &str = "ctrl+alt+m";
 /// S for search/summon — the search window (Thien's pick, 2026-07-11).
 const HK_SEARCH: &str = "ctrl+alt+s";
+/// L for library — the search window, opened on its Library section.
+const HK_LIBRARY: &str = "ctrl+alt+l";
 /// Word-wipe lead nudges (docs/specs/2026-09-04-word-lead-nudge.md): the
 /// one feedback signal that measures Thien's perception, not the audio.
 const HK_WORDS_EARLIER: &str = "ctrl+alt+[";
@@ -77,8 +80,8 @@ struct HotkeyDef {
     action: fn(&AppHandle),
 }
 
-/// The nine actions, in the order the prefs Hotkeys list renders them.
-fn hotkey_defs() -> [HotkeyDef; 9] {
+/// The ten actions, in the order the prefs Hotkeys list renders them.
+fn hotkey_defs() -> [HotkeyDef; 10] {
     [
         HotkeyDef {
             id: "playpause",
@@ -150,7 +153,13 @@ fn hotkey_defs() -> [HotkeyDef; 9] {
             id: "search",
             label: "Summon search",
             default_chord: HK_SEARCH,
-            action: |app| search::toggle(app),
+            action: |app| search::toggle(app, "songs"),
+        },
+        HotkeyDef {
+            id: "library",
+            label: "Open your library",
+            default_chord: HK_LIBRARY,
+            action: |app| search::toggle(app, "library"),
         },
         HotkeyDef {
             id: "wordsearlier",
@@ -1297,6 +1306,12 @@ pub fn run() {
             spotify::spotify_resolve_uri,
             spotify::spotify_search,
             search::search_hide,
+            library::spotify_library,
+            library::spotify_liked,
+            library::spotify_playlist_tracks,
+            library::spotify_search_playlists,
+            library::spotify_play_context,
+            library::spotify_now_context,
             focus::focus_open,
             focus::focus_close,
             focus::focus_warm,

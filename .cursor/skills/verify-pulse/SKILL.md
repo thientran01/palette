@@ -40,6 +40,7 @@ Mock routes (same origin, same process):
 | `/?jump=partial` | Play-now returns `partial` |
 | `/?similar=<status>` | More-like-this toast (`no_data`, `no_key`, `offline`, …) |
 | `/?window=palette` | Search palette window |
+| `/?window=search&section=library` | Search on its Library section (`&section=history` for History); `&library=reconnect` / `offline` / `slow` force the missing-scope, offline and slow-load states |
 | `/?window=focus` | Focus-mode room (native `focusOpen` is a no-op in the mock) |
 | `/?lab` | Icon morph lab (dev only) |
 | `/?fs` + `/?presence` | Presence overlay (`fs=YES concealed=YES`) |

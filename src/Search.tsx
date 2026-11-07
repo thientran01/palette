@@ -33,37 +33,70 @@
  * realm runs no art→accent pipeline (the --accent var here only ever
  * holds the resting value, effectively unused).
  */
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { commands, onSearchShown } from "./lib/backend";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { commands, onSearchSection, onSearchShown } from "./lib/backend";
 import { RowThumb, useSpotifyStatus } from "./Queue";
 import { playNowNote } from "./lib/playNowStatus";
+import { browserStorage, createDiscoveryCache } from "./lib/discoveryCache";
+import { nextSection, SECTIONS } from "./lib/searchLibrary";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
-import { IN_TAURI, type HistoryEntry, type QueueTrack } from "./types";
+import {
+  BackIcon,
+  EnterKeyIcon,
+  HistoryIcon,
+  LibraryIcon,
+  PlayIcon,
+  SearchIcon,
+  ShiftKeyIcon,
+  SongsIcon,
+  TabKeyIcon,
+  UpKeyIcon,
+} from "./icons/searchIcons";
+import {
+  drillItems,
+  historyItems,
+  ItemTile,
+  libraryItems,
+  ReconnectButton,
+  trackRow,
+  useHistoryList,
+  useHistoryThumbs,
+  isPlayingTarget,
+  useLibrary,
+  useNowContext,
+  useOpenedTracks,
+  usePublicPlaylists,
+  type Item,
+  type OpenTarget,
+  type SearchRow,
+} from "./SearchSections";
+import { IN_TAURI, type HistoryEntry, type QueueTrack, type SearchSection } from "./types";
 
 const RESULT_LIMIT = 8;
+/** History rows rendered at once; scrolling (or arrowing) near the end
+ * renders more, then pages the log. */
+const HISTORY_RENDER_STEP = 60;
+/** The browser mock's starting section (`?window=search&section=library`);
+ * live, every summon names its section. */
+const INITIAL_SECTION: SearchSection = (() => {
+  const s = IN_TAURI ? null : new URLSearchParams(window.location.search).get("section");
+  return s === "library" || s === "history" ? s : "songs";
+})();
+const SECTION_LABEL: Record<SearchSection, string> = {
+  songs: "Songs",
+  library: "Library",
+  history: "History",
+};
+const SECTION_GLYPH: Record<SearchSection, () => React.ReactNode> = {
+  songs: () => <SongsIcon />,
+  library: () => <LibraryIcon />,
+  history: () => <HistoryIcon />,
+};
 const DEBOUNCE_MS = 250;
 /** History pages scanned for the resurfacing picks (3 × 200 entries). */
 const RESURFACE_PAGES = 3;
 /** A pick must have been genuinely listened to (cumulative). */
 const RESURFACE_MIN_MS = 60_000;
-
-interface SearchRow {
-  key: string;
-  title: string;
-  artist: string;
-  artUrl: string | null;
-  /** Full track when it came from search; resurfaced rows resolve on demand. */
-  track: QueueTrack | null;
-  uri: string | null;
-  /** Why a resurfaced row is here — rendered on the row. Unlabeled, the
-   * picks read as a bug ("why these two? why did one change?") — Thien's
-   * live feedback, 2026-07-12. */
-  reason?: string;
-}
-
-function searchRow(t: QueueTrack): SearchRow {
-  return { key: t.uri, title: t.title, artist: t.artist, artUrl: t.art_url, track: t, uri: t.uri };
-}
 
 /** Resolve-on-demand cache for resurfaced rows (the Queue.tsx uriCache
  * pattern) — successes only: the search window lives for the whole app
@@ -145,10 +178,33 @@ function pickSeeds(pool: Agg[], seed: number): { title: string; artist: string }
   return seeds;
 }
 
-/** Discovery rows keyed by day-block. The window lives for the whole app
- * session, so a re-summon inside a block is network-free; a new block misses
- * (≤3 fetch rounds/day). Only successful ("ok") fetches are cached. */
-const discoveryCache = new Map<number, SearchRow[]>();
+/** Discovery rows keyed by day-block, kept across restarts (see
+ * lib/discoveryCache), so a re-summon inside a block is network-free; a new
+ * block misses (≤3 fetch rounds/day). Only successful ("ok") fetches are
+ * cached. */
+const discoveryCache = createDiscoveryCache<SearchRow>(browserStorage());
+
+/** Wait before the one automatic retry of a failed discovery fetch. */
+const DISCOVERY_RETRY_MS = 1500;
+
+/** The quiet line a discovery fetch that came back empty-handed leaves, so
+ * the section doesn't just vanish after its skeleton ("sometimes it just
+ * doesn't load", Thien, 2026-11-06). Null = say nothing: the gated statuses
+ * (no key, Spotify disconnected) are already explained elsewhere. */
+function discoveryFailureNote(status: string | null): string | null {
+  switch (status) {
+    case null:
+    case "offline":
+    case "busy":
+      return "Couldn't load suggestions. Press ↑ to try again";
+    case "bad_key":
+      return "Last.fm rejected the API key";
+    case "no_data":
+      return "No new suggestions right now";
+    default:
+      return null;
+  }
+}
 
 /** The "From your history" section: up to four resurfacing picks over the
  * local play log, each a relative measure (the log is young; absolute
@@ -282,6 +338,13 @@ async function artForHistory(agg: Agg): Promise<string | null> {
   }
 }
 
+/** The queued-row confirmation: one extra wash over the row (on top of the
+ * selection) that holds, then fades — opacity only (.row-flash). Mounted for
+ * the flash's 900ms; keyed by flash count so a second queue replays it. */
+function RowFlash() {
+  return <span aria-hidden className="row-flash pointer-events-none absolute inset-0 rounded-md bg-fg/10" />;
+}
+
 /** A ghost of one result row — shown where real rows will land while a fetch
  * runs (discovery fill and first search results), so the wait fills its space
  * with the shape of the answer instead of a void. Geometry mirrors the real
@@ -338,15 +401,6 @@ function SkeletonRow({ index, reason = false }: { index: number; reason?: boolea
   );
 }
 
-function SearchGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
-      <circle cx="7" cy="7" r="4.4" />
-      <path d="M 10.4,10.4 L 13.6,13.6" />
-    </svg>
-  );
-}
-
 /** One elevated keycap for the search-row hint. The old inline glyphs
  * ("↵ play · ⇧↵ queue") sat in the same 11px muted run as their labels and
  * read as compressed noise — you couldn't tell what to press (Thien,
@@ -367,39 +421,47 @@ function HintKey({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** The three hint glyphs, stroke-drawn (never font arrows — see HintKey). */
-const hintSvg = {
-  viewBox: "0 0 16 16",
-  width: 12,
-  height: 12,
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 1.5,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-  "aria-hidden": true,
-};
-function EnterGlyph() {
+type HintKeyName = "enter" | "shift" | "esc";
+/** The hint run for Library and History: Raycast's footer grammar, as in
+ * the Songs row — verb first, then its key(s), hairlines between groups. */
+function SectionHints({ verbs }: { verbs: [string, HintKeyName][] }) {
+  const keys = (k: HintKeyName) =>
+    k === "enter" ? (
+      <HintKey>
+        <EnterKeyIcon />
+      </HintKey>
+    ) : k === "shift" ? (
+      <span className="flex items-center gap-[3px]">
+        <HintKey>
+          <ShiftKeyIcon />
+        </HintKey>
+        <HintKey>
+          <EnterKeyIcon />
+        </HintKey>
+      </span>
+    ) : (
+      <HintKey>
+        <span className="px-[2px] text-[10.5px] leading-none">Esc</span>
+      </HintKey>
+    );
+  const spoken: Record<HintKeyName, string> = { enter: "Enter", shift: "Shift+Enter", esc: "Escape" };
   return (
-    <svg {...hintSvg}>
-      <path d="M 12.5,4 L 12.5,9 L 4.5,9" />
-      <path d="M 7.5,6 L 4.5,9 L 7.5,12" />
-    </svg>
-  );
-}
-function ShiftGlyph() {
-  return (
-    <svg {...hintSvg}>
-      <path d="M 8,3 L 12.8,8.4 L 9.9,8.4 L 9.9,12.5 L 6.1,12.5 L 6.1,8.4 L 3.2,8.4 Z" />
-    </svg>
-  );
-}
-function UpGlyph() {
-  return (
-    <svg {...hintSvg}>
-      <path d="M 8,12.5 L 8,3.5" />
-      <path d="M 4.5,7 L 8,3.5 L 11.5,7" />
-    </svg>
+    <>
+      <span className="sr-only">
+        {verbs.map(([verb, k]) => `${spoken[k]} ${verb === "back" ? "goes back" : `${verb}s`}.`).join(" ")}
+      </span>
+      <span aria-hidden className="flex shrink-0 items-center gap-2 text-[11px] text-muted/85">
+        {verbs.map(([verb, k], i) => (
+          <Fragment key={verb}>
+            {i > 0 && <span className="h-3 w-px bg-border/10" />}
+            <span className="flex items-center gap-1.5">
+              {verb}
+              {keys(k)}
+            </span>
+          </Fragment>
+        ))}
+      </span>
+    </>
   );
 }
 
@@ -425,6 +487,8 @@ export default function Search() {
   const [selected, setSelected] = useState(0);
   const [note, setNote] = useState<string | null>(null);
   const [flashKeys, setFlashKeys] = useState<ReadonlySet<string>>(new Set());
+  // Bumped per flash so queueing the same row again replays its flash.
+  const [flashSeq, setFlashSeq] = useState(0);
   const spotify = useSpotifyStatus();
   // Live connection for the summon-time discovery fetch (the onSearchShown
   // listener is registered once and must not close over a stale value).
@@ -469,6 +533,91 @@ export default function Search() {
   // page is already the shown window), so the mock starts already-shown.
   const shownRef = useRef(!IN_TAURI);
 
+  // ---- sections: Songs | Library | History ----
+  const [section, setSection] = useState<SearchSection>(INITIAL_SECTION);
+  const sectionRef = useRef(section);
+  sectionRef.current = section;
+  // One filter per section, so Tab never throws a Songs query away.
+  const [libQuery, setLibQuery] = useState("");
+  const [histQuery, setHistQuery] = useState("");
+  const [drillQuery, setDrillQuery] = useState("");
+  // The playlist (or Liked Songs) open inside Library; Esc goes back.
+  const [opened, setOpened] = useState<OpenTarget | null>(null);
+  // The Library selection to restore on the way back out.
+  const libReturn = useRef(0);
+  // Bumped when the input should refocus and select-all (summon, section switch).
+  const [focusTick, setFocusTick] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [histRender, setHistRender] = useState(HISTORY_RENDER_STEP);
+
+  const lib = useLibrary(section === "library" && spotify.connected);
+  const openedTracks = useOpenedTracks(opened, lib);
+  const pub = usePublicPlaylists(libQuery, section === "library" && !opened && spotify.connected);
+  const history = useHistoryList(section === "history");
+  // A typed filter searches every play: walk the rest of the log (a local
+  // read, 200 a page) instead of matching only the pages scrolled so far.
+  // Re-checked as pages land, so a scroll page in flight doesn't strand it.
+  const histFiltering = section === "history" && histQuery.trim() !== "";
+  const histLoaded = history.entries.length;
+  useEffect(() => {
+    if (histFiltering && histLoaded > 0) history.loadAll();
+  }, [histFiltering, histLoaded, history.loadAll]);
+  const nowCtx = useNowContext(section === "library" && spotify.connected, focusTick);
+  const libItems: Item[] = useMemo(() => {
+    if (section !== "library") return [];
+    return opened
+      ? drillItems(opened, openedTracks.tracks, drillQuery, nowCtx)
+      : libraryItems(lib, libQuery, pub.playlists, nowCtx);
+  }, [section, opened, openedTracks.tracks, drillQuery, lib, libQuery, pub.playlists, nowCtx]);
+  // History gets its own memo: sharing one with Library made every arrow
+  // press rebuild (and re-format the play time of) every history row,
+  // because a Library input changes identity on each render.
+  const histItems: Item[] = useMemo(
+    () =>
+      section === "history"
+        ? historyItems(history.entries, histQuery, Date.now(), history.exhausted)
+        : [],
+    [section, history.entries, histQuery, history.exhausted],
+  );
+  const items = section === "history" ? histItems : libItems;
+  const shownItems = section === "history" ? items.slice(0, histRender) : items;
+  const thumbs = useHistoryThumbs(
+    section === "history" ? shownItems.map((it) => it.thumbKey ?? "").filter(Boolean) : [],
+  );
+  const drilling = section === "library" && opened !== null;
+
+  const goSection = useCallback((next: SearchSection) => {
+    setSection(next);
+    setSelected(0);
+    setHistRender(HISTORY_RENDER_STEP);
+    setFocusTick((t) => t + 1);
+  }, []);
+  // A summon hotkey while the window is up: its own section toggles it
+  // away, another section switches (search.rs toggle).
+  useEffect(
+    () =>
+      onSearchSection((next) => {
+        if (next === sectionRef.current) commands.searchHide();
+        else {
+          setOpened(null);
+          goSection(next);
+        }
+      }),
+    [goSection],
+  );
+  useEffect(() => {
+    if (focusTick === 0) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [focusTick]);
+  // A new filter restarts the selection at the top (the first song when a
+  // playlist is open; its Play button is the slot above).
+  useEffect(() => {
+    setSelected(opened ? 1 : 0);
+    setHistRender(HISTORY_RENDER_STEP);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [libQuery, histQuery, drillQuery]);
+
   const showNote = (msg: string, holdMs = 2400) => {
     setNote(msg);
     if (noteTimer.current !== null) window.clearTimeout(noteTimer.current);
@@ -476,6 +625,7 @@ export default function Search() {
   };
 
   const flash = (key: string) => {
+    setFlashSeq((n) => n + 1);
     setFlashKeys((s) => new Set(s).add(key));
     const prev = flashTimers.current.get(key);
     if (prev !== undefined) window.clearTimeout(prev);
@@ -590,15 +740,38 @@ export default function Search() {
     if (discoveryFlight.current) {
       await discoveryFlight.current.catch(() => {});
       if (gen !== resurfaceGen.current) return;
+      // The run we waited on was often fetching this very block (a quick
+      // hide + re-summon). It caches its result even though its gen lost,
+      // so take that instead of paying for a second walk.
+      const hit =
+        refreshN === 0
+          ? discoveryCache.get(seed)?.filter((r) => !playedKeys.has(discoveryKey(r.artist, r.title)))
+          : undefined;
+      if (hit?.length) {
+        remember(hit);
+        setDiscovery(hit);
+        setDiscoveryPending(false);
+        return;
+      }
     }
     refreshBusy.current = gen;
-    let res: Awaited<ReturnType<typeof commands.discoveryPicks>> | null;
-    const flight = commands.discoveryPicks(seeds, exclude);
+    let res: Awaited<ReturnType<typeof commands.discoveryPicks>> | null = null;
+    // A transport hiccup reads as null, the same as a non-ok status.
+    const attempt = () => commands.discoveryPicks(seeds, exclude).catch(() => null);
+    // One quiet retry for a transient failure (a network blip, or the
+    // backend's single-flight still finishing a superseded run) before the
+    // section gives up. The retry is part of the same flight, so a newer run
+    // still waits behind it.
+    const flight = (async () => {
+      const first = await attempt();
+      if (first && first.status !== "offline" && first.status !== "busy") return first;
+      if (gen !== resurfaceGen.current) return first;
+      await new Promise((r) => window.setTimeout(r, DISCOVERY_RETRY_MS));
+      return gen === resurfaceGen.current ? attempt() : first;
+    })();
     discoveryFlight.current = flight;
     try {
       res = await flight;
-    } catch {
-      res = null; // transport hiccup — same silent fallback as a non-ok status
     } finally {
       // Owner-only clears throughout: a superseded run's finally must not
       // free a newer run's token or flight (the same clobber class twice).
@@ -607,7 +780,11 @@ export default function Search() {
       // A stale gen never touches pending — the newer run owns it now.
       if (gen === resurfaceGen.current) setDiscoveryPending(false);
     }
-    if (gen !== resurfaceGen.current || !res || res.status !== "ok") return;
+    if (!res || res.status !== "ok") {
+      const msg = discoveryFailureNote(res ? res.status : null);
+      if (msg && gen === resurfaceGen.current) showNote(msg, 4000);
+      return;
+    }
     const seen = new Set(rows.map((r) => r.uri).filter((u): u is string => !!u));
     const rows2: SearchRow[] = res.picks
       .filter((p) => !seen.has(p.track.uri))
@@ -621,19 +798,25 @@ export default function Search() {
         uri: p.track.uri,
         reason: `Because you played ${p.seed_title}`,
       }));
-    remember(rows2);
-    setDiscovery(rows2);
     // Cache only a NON-EMPTY pristine set: `if (cached)` treats [] as a hit,
     // and one pathological empty post-filter would otherwise pin the section
-    // dead for the whole block (quick-review catch).
+    // dead for the whole block (quick-review catch). Cached even when this
+    // run was superseded, so the newer run waiting on it can reuse it.
     if (refreshN === 0 && rows2.length) discoveryCache.set(seed, rows2);
+    if (gen !== resurfaceGen.current) return;
+    remember(rows2);
+    setDiscovery(rows2);
   }, []);
 
   // Summon signal: refocus, select-all the stale query, fresh empty state.
   useEffect(
     () =>
-      onSearchShown(() => {
+      onSearchShown((next) => {
         shownRef.current = true;
+        // Every summon starts at the top of its section, outside any
+        // opened playlist.
+        setOpened(null);
+        goSection(next);
         inputRef.current?.focus();
         inputRef.current?.select();
         setNote(null);
@@ -644,7 +827,7 @@ export default function Search() {
         discoveryShown.current.clear();
         void refreshEmptyState(0);
       }),
-    [refreshEmptyState],
+    [refreshEmptyState, goSection],
   );
   // After the first show, a Spotify connect flip refills discovery without
   // waiting for the next summon. Skip while still hidden so a launch-time
@@ -673,9 +856,21 @@ export default function Search() {
   // Discovery appends BELOW history, so a late-arriving discovery fill never
   // shifts the selected index (the clamp handles list growth).
   const rows: SearchRow[] = hasQuery
-    ? (results ?? []).map(searchRow)
+    ? (results ?? []).map(trackRow)
     : [...resurfaced, ...discovery];
-  const sel = Math.min(selected, Math.max(rows.length - 1, 0));
+  // The list the keys walk: Songs' rows, or the section's items (an opened
+  // playlist's Play button is slot 0, its songs follow).
+  const listLen =
+    section === "songs" ? rows.length : drilling ? shownItems.length + 1 : shownItems.length;
+  const sel = Math.min(selected, Math.max(listLen - 1, 0));
+  const itemAt = (i: number): Item | "play" | undefined =>
+    drilling ? (i === 0 ? "play" : shownItems[i - 1]) : shownItems[i];
+  const selItem = section === "songs" ? undefined : itemAt(sel);
+  // Keep the keyboard selection on screen in the long lists.
+  useEffect(() => {
+    if (section === "songs") return;
+    document.getElementById(`search-opt-${sel}`)?.scrollIntoView({ block: "nearest" });
+  }, [sel, section]);
 
   const playRow = async (row: SearchRow) => {
     // Double-press / slow resolve: tell the user instead of a dead click.
@@ -758,7 +953,7 @@ export default function Search() {
   const offline = spotify.connected && searchStatus === "offline";
   const gated = !spotify.connected || offline;
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
+  const songsKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       e.preventDefault();
       commands.searchHide();
@@ -796,6 +991,369 @@ export default function Search() {
     }
   };
 
+  // ---- Library / History verbs ----
+
+  /** Play a playlist (or Liked Songs) as the new context, optionally from
+   * one of its songs. Same one-at-a-time gate and stay-open-on-failure as
+   * playRow. */
+  const playContext = async (contextUri: string, offsetUri?: string) => {
+    if (busy.current) {
+      showNote("Still working…");
+      return;
+    }
+    busy.current = true;
+    try {
+      let status: string;
+      try {
+        status = await commands.playContext(contextUri, offsetUri);
+      } catch {
+        showNote("Spotify unreachable");
+        return;
+      }
+      const fail = playNowNote(status);
+      if (fail) {
+        showNote(fail);
+        return;
+      }
+      setNote(null);
+      commands.searchHide();
+    } finally {
+      busy.current = false;
+    }
+  };
+  const playTarget = (t: OpenTarget) => {
+    // Liked Songs plays as the account's collection context, which needs
+    // the account id the library load returned.
+    if (t.kind === "liked" && !lib.userId) {
+      showNote("Couldn't start Liked Songs");
+      return;
+    }
+    void playContext(t.uri);
+  };
+  const openTarget = (t: OpenTarget) => {
+    libReturn.current = sel;
+    setOpened(t);
+    setDrillQuery("");
+    setSelected(1);
+  };
+  const closeTarget = () => {
+    setOpened(null);
+    setSelected(libReturn.current);
+    setFocusTick((n) => n + 1);
+  };
+  /** Enter (or a click) on slot `i`; `shift` = Shift+Enter. */
+  const activate = (i: number, shift: boolean) => {
+    if (!spotify.connected) {
+      showNote("Connect Spotify to play");
+      return;
+    }
+    const it = itemAt(i);
+    if (!it) return;
+    if (it === "play") {
+      if (opened) playTarget(opened);
+      return;
+    }
+    if (it.open) {
+      if (shift) playTarget(it.open);
+      else openTarget(it.open);
+      return;
+    }
+    if (!it.song) return;
+    if (shift) void queueRow(it.song);
+    else if (it.context && it.song.uri) {
+      if (it.context.endsWith(":collection") && !lib.userId) void playRow(it.song);
+      else void playContext(it.context, it.song.uri);
+    } else void playRow(it.song);
+  };
+
+  const sectionKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (drilling) closeTarget();
+      else commands.searchHide();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const next = Math.min(sel + 1, Math.max(listLen - 1, 0));
+      setSelected(next);
+      if (section === "history" && next >= histRender - 5) {
+        if (histRender < items.length) setHistRender((r) => r + HISTORY_RENDER_STEP);
+        else history.loadMore();
+      }
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelected(Math.max(sel - 1, 0));
+    } else if (e.key === "Enter" && listLen > 0) {
+      e.preventDefault();
+      // One physical press = one action (see the Songs handler).
+      if (e.repeat) return;
+      activate(sel, e.shiftKey);
+    }
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    // Tab walks the section strip (Shift+Tab backwards), like Raycast. The
+    // input is the pane's only focus stop, so nothing else wants Tab.
+    if (e.key === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      goSection(nextSection(section, e.shiftKey ? -1 : 1));
+      return;
+    }
+    if (section === "songs") songsKeyDown(e);
+    else sectionKeyDown(e);
+  };
+
+  const onListScroll = () => {
+    if (section !== "history") return;
+    const el = listRef.current;
+    if (!el || el.scrollTop + el.clientHeight < el.scrollHeight - 160) return;
+    if (histRender < items.length) setHistRender((r) => r + HISTORY_RENDER_STEP);
+    else history.loadMore();
+  };
+
+  // The input belongs to the current section's filter.
+  const inputValue =
+    section === "songs" ? query : section === "history" ? histQuery : drilling ? drillQuery : libQuery;
+  const setInput = (v: string) => {
+    if (section === "songs") setQuery(v);
+    else if (section === "history") setHistQuery(v);
+    else if (drilling) setDrillQuery(v);
+    else setLibQuery(v);
+  };
+  const placeholder =
+    section === "songs"
+      ? "Play something…"
+      : section === "history"
+        ? "What did you play?"
+        : opened
+          ? `Filter ${opened.name}…`
+          : "Find a playlist…";
+  const inputLabel =
+    section === "songs"
+      ? "Search Spotify"
+      : section === "history"
+        ? "Search your history"
+        : opened
+          ? `Filter ${opened.name}`
+          : "Find a playlist";
+
+  // ---- Library / History rendering ----
+
+  const hoverSelect = (i: number) => (e: React.MouseEvent) => {
+    const prev = lastMouse.current;
+    lastMouse.current = { x: e.clientX, y: e.clientY };
+    if (prev && Math.abs(prev.x - e.clientX) + Math.abs(prev.y - e.clientY) < 3) return;
+    if (prev) setSelected(i);
+  };
+  const prose = (text: string) => (
+    <p className="m-0 px-3.5 py-2.5 text-[13px] text-muted">{text}</p>
+  );
+  const sectionHeader = (text: string) => (
+    <p
+      role="presentation"
+      className="m-0 px-3.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
+    >
+      {text}
+    </p>
+  );
+  /** One Library / History row — the Songs row's exact geometry. History
+   * draws its own sticky day headers (`inlineHeader` false) and keeps rows
+   * clear of them when the selection scrolls into view. */
+  const renderItem = (it: Item, slot: number, inlineHeader = true) => {
+    const art = it.artUrl ?? (it.thumbKey ? (thumbs.get(it.thumbKey) ?? null) : null);
+    return (
+      <Fragment key={it.key}>
+        {inlineHeader && it.header && sectionHeader(it.header)}
+        <div
+          id={`search-opt-${slot}`}
+          role="option"
+          aria-selected={slot === sel}
+          onMouseMove={hoverSelect(slot)}
+          onClick={(e) => activate(slot, e.shiftKey)}
+          // Selection snaps (no transition): arrows move it many times a
+          // second, and a fade made the highlight trail the key.
+          className={`relative flex h-[52px] shrink-0 cursor-pointer select-none items-center gap-3 rounded-md px-3.5 ${
+            inlineHeader ? "" : "scroll-mt-[31px]"
+          } ${slot === sel ? "bg-fg/10" : ""}`}
+        >
+          {it.song && flashKeys.has(it.song.key) && <RowFlash key={flashSeq} />}
+          {it.tile ? <ItemTile tile={it.tile} url={art} size={32} /> : <RowThumb url={art} size={32} />}
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate text-[14px] font-medium leading-5 text-fg">{it.title}</span>
+            {it.subtitle && <span className="truncate text-[12px] leading-4 text-muted">{it.subtitle}</span>}
+          </span>
+          {it.right && (
+            <span
+              className={`max-w-[45%] shrink-0 truncate text-right text-[11px] tabular-nums ${
+                it.rightActive ? "font-medium text-fg" : "text-muted/85"
+              }`}
+            >
+              {it.right}
+            </span>
+          )}
+        </div>
+      </Fragment>
+    );
+  };
+  const skeletons = (n: number) =>
+    Array.from({ length: n }, (_, i) => <SkeletonRow key={`sk${i}`} index={i} />);
+
+  const renderDrill = (t: OpenTarget) => (
+    <div id="search-list" role="listbox" aria-label={t.name}>
+      {/* Where you are, in the slot "Your library" held: the input alone
+          (showing the playlist's name) read like a filter that its songs
+          failed. "Library" is the visible back, same as Esc. */}
+      <p
+        role="presentation"
+        className="m-0 flex min-w-0 items-center gap-1.5 px-3.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
+      >
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={closeTarget}
+          aria-label="Back to Library"
+          className="inline-flex shrink-0 items-center gap-1 uppercase tracking-widest text-muted [transition:color_140ms_var(--ease-out-tk)] hover:text-fg"
+        >
+          <BackIcon />
+          Library
+        </button>
+        <span aria-hidden="true">/</span>
+        <span className="truncate">{t.name}</span>
+      </p>
+      {/* The opened playlist: identity + Play. Slot 0, so Up from the first
+          song reaches Play and Enter there plays the whole thing. */}
+      <div
+        id="search-opt-0"
+        role="option"
+        aria-selected={sel === 0}
+        aria-label={`Play ${t.name}`}
+        onMouseMove={hoverSelect(0)}
+        className="flex items-center gap-3 px-3.5 pb-2.5 pt-1.5"
+      >
+        <ItemTile tile={t.kind === "liked" ? "liked" : "playlist"} url={t.artUrl} size={48} />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-[16px] font-medium leading-[22px] text-fg">{t.name}</span>
+          {(t.subtitle || isPlayingTarget(t, nowCtx)) && (
+            <span className="truncate text-[12px] leading-4 text-muted">
+              {[t.subtitle, isPlayingTarget(t, nowCtx) ? "Playing" : ""].filter(Boolean).join(" · ")}
+            </span>
+          )}
+        </span>
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={() => activate(0, false)}
+          // Outlined until selected: a filled button out-shouted the
+          // selected song row, which is what Enter actually plays.
+          // No transition: Up/Down select it, so it snaps like a row.
+          className={`inline-flex h-[26px] shrink-0 items-center gap-1.5 rounded-md pl-2 pr-2.5 text-[12px] font-medium ring-1 ring-inset ${
+            sel === 0 ? "bg-fg/20 text-fg ring-transparent" : "text-muted ring-fg/15 hover:bg-fg/10 hover:text-fg"
+          }`}
+        >
+          <PlayIcon />
+          Play
+        </button>
+      </div>
+      {openedTracks.status === "loading" ? (
+        skeletons(6)
+      ) : openedTracks.status === "restricted" ? (
+        // Spotify (February 2026) lists songs only for playlists the user
+        // owns or collaborates on; playback of the whole playlist still works.
+        <p className="m-0 px-3.5 py-2 text-[13px] leading-5 text-muted">
+          Spotify only shares the songs of playlists you own or collaborate on. Play still works.
+        </p>
+      ) : openedTracks.status === "offline" ? (
+        prose("Spotify unreachable")
+      ) : shownItems.length === 0 ? (
+        prose(drillQuery.trim() ? "No songs here match" : "This playlist is empty")
+      ) : (
+        shownItems.map((it, i) => renderItem(it, i + 1))
+      )}
+    </div>
+  );
+
+  const renderLibrary = () => {
+    if (!spotify.connected) {
+      return (
+        <div className="flex flex-col items-start gap-1.5 px-3.5 py-2.5">
+          <SpotifyConnectButton />
+          <p className="m-0 text-[12px] text-muted/85">Connect Spotify to see your playlists and Liked Songs.</p>
+        </div>
+      );
+    }
+    if (lib.status === "needs_reconnect") {
+      return (
+        <div className="flex flex-col items-start gap-1.5 px-3.5 py-2.5">
+          <ReconnectButton />
+          <p className="m-0 text-[12px] text-muted/85">
+            Reconnect once so Palette can read your playlists and Liked Songs.
+          </p>
+        </div>
+      );
+    }
+    if (lib.status === "offline") return prose("Spotify unreachable");
+    if (lib.status !== "ok") return skeletons(7);
+    if (opened) return renderDrill(opened);
+    const q = libQuery.trim();
+    const hasPublicHeader = items.some((it) => it.header === "Playlists on Spotify");
+    return (
+      <div id="search-list" role="listbox" aria-label="Your library">
+        {shownItems.map((it, i) => renderItem(it, i))}
+        {q && pub.pending && !hasPublicHeader && (
+          <>
+            {sectionHeader("Playlists on Spotify")}
+            <p className="m-0 px-3.5 py-2 text-[12px] text-muted/85">Searching Spotify…</p>
+          </>
+        )}
+        {q && !pub.pending && items.length === 0 && prose("Nothing in your library or on Spotify matches")}
+      </div>
+    );
+  };
+
+  const renderHistory = () => {
+    if (history.entries.length === 0) {
+      return prose("Songs you play will gather here.");
+    }
+    if (shownItems.length === 0)
+      return prose(history.filling ? "Searching your history…" : "Nothing in your history matches");
+    // One block per day, so its header sticks to the top while that day
+    // scrolls by and the next day's header pushes it off: deep in History
+    // the time alone didn't say which day you were in (Thien, 2026-11-06).
+    const days: { label: string; summary: string | null; rows: { it: Item; slot: number }[] }[] = [];
+    shownItems.forEach((it, slot) => {
+      if (it.header || days.length === 0)
+        days.push({ label: it.header ?? "", summary: it.headerRight ?? null, rows: [] });
+      days[days.length - 1].rows.push({ it, slot });
+    });
+    return (
+      <div id="search-list" role="listbox" aria-label="History">
+        {days.map((day) => (
+          <div key={day.rows[0].it.key} role="group" aria-label={day.label}>
+            {/* Sticky, opaque (the card's own surface) so rows pass under
+                it. -top-1.5 cancels the list's p-1.5, so it pins flush to
+                the list's top edge with no sliver of row showing above. */}
+            <p
+              role="presentation"
+              className="sticky -top-1.5 z-10 m-0 flex items-baseline justify-between gap-3 bg-surface px-3.5 pb-1.5 pt-2 text-[11px] text-muted"
+            >
+              <span className="uppercase tracking-widest">{day.label}</span>
+              {/* What that day added up to, under the play-time column. A
+                  day still cut off at the page edge shows nothing yet. */}
+              {day.summary && (
+                <span
+                  title="Time you actually listened. A skipped song counts only the part you heard."
+                  className="shrink-0 tabular-nums text-muted/85"
+                >
+                  {day.summary}
+                </span>
+              )}
+            </p>
+            {day.rows.map(({ it, slot }) => renderItem(it, slot, false))}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   return (
     // The window is transparent and fixed-size; the p-3 gutter gives the
     // shell's shadow room. A click on the gutter (outside the shell)
@@ -823,20 +1381,20 @@ export default function Search() {
         className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border/10 bg-surface shadow-xl shadow-black/40"
       >
         {/* Search row — the search's one verb. */}
-        <div className="flex items-center gap-3 border-b border-border/10 px-5 py-4">
+        <div className="flex items-center gap-3 px-5 pb-3 pt-4">
           <span className={searching ? "text-fg" : "text-muted"}>
-            <SearchGlyph />
+            <SearchIcon />
           </span>
           <input
             ref={inputRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Play something…"
-            aria-label="Search Spotify"
+            value={inputValue}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={placeholder}
+            aria-label={inputLabel}
             role="combobox"
-            aria-expanded={rows.length > 0}
+            aria-expanded={listLen > 0}
             aria-controls="search-list"
-            aria-activedescendant={rows[sel] ? `search-opt-${sel}` : undefined}
+            aria-activedescendant={listLen > 0 ? `search-opt-${sel}` : undefined}
             spellCheck={false}
             autoCorrect="off"
             autoComplete="off"
@@ -847,7 +1405,18 @@ export default function Search() {
             // the pane's only focusable element.
             className="search-input min-w-0 flex-1 bg-transparent text-[18px] text-fg outline-none placeholder:text-muted focus-visible:[outline:none]"
           />
-          {!gated && (
+          {section !== "songs" && spotify.connected && listLen > 0 && (
+            <SectionHints
+              verbs={
+                drilling
+                  ? [["play", "enter"], ["queue", "shift"], ["back", "esc"]]
+                  : selItem && selItem !== "play" && selItem.open
+                    ? [["open", "enter"], ["play", "shift"]]
+                    : [["play", "enter"], ["queue", "shift"]]
+              }
+            />
+          )}
+          {section === "songs" && !gated && (
             <>
               {/* AT mirror: the visual chips are glyph soup to a reader
                   ("return symbol upwards arrow…") — hide them and say it in
@@ -864,14 +1433,14 @@ export default function Search() {
                   hairline, not middots. */}
               <span className="flex items-center gap-1.5">
                 play
-                <HintKey><EnterGlyph /></HintKey>
+                <HintKey><EnterKeyIcon /></HintKey>
               </span>
               <span className="h-3 w-px bg-border/10" />
               <span className="flex items-center gap-1.5">
                 queue
                 <span className="flex items-center gap-[3px]">
-                  <HintKey><ShiftGlyph /></HintKey>
-                  <HintKey><EnterGlyph /></HintKey>
+                  <HintKey><ShiftKeyIcon /></HintKey>
+                  <HintKey><EnterKeyIcon /></HintKey>
                 </span>
               </span>
               {!hasQuery && rows.length > 0 && (
@@ -879,7 +1448,7 @@ export default function Search() {
                   <span className="h-3 w-px bg-border/10" />
                   <span className="flex items-center gap-1.5">
                     more
-                    <HintKey><UpGlyph /></HintKey>
+                    <HintKey><UpKeyIcon /></HintKey>
                   </span>
                 </>
               )}
@@ -888,12 +1457,60 @@ export default function Search() {
           )}
         </div>
 
+        {/* The section strip: what the window is finding. Tab walks it.
+            pl-3.5 lines the tab glyphs up with the magnifier; pr-5 matches
+            the input row so "next section" ends on the same edge as the
+            play/queue hints above it. */}
+        <div
+          role="tablist"
+          aria-label="Search sections"
+          className="flex items-center gap-0.5 border-b border-border/10 pb-2.5 pl-3.5 pr-5"
+        >
+          {SECTIONS.map((sec) => (
+            <button
+              key={sec}
+              type="button"
+              role="tab"
+              // The input stays the pane's only focus stop (panel mousedown
+              // keeps focus there); Tab is the strip's key.
+              tabIndex={-1}
+              aria-selected={sec === section}
+              onClick={() => {
+                if (sec === section && drilling) closeTarget();
+                else if (sec !== section) goSection(sec);
+              }}
+              // No transition: Tab flips the active tab, so it snaps like
+              // the row selection.
+              className={`inline-flex h-[26px] items-center gap-1.5 rounded-md pl-2 pr-2.5 text-[12.5px] font-medium ${
+                sec === section ? "bg-fg/10 text-fg" : "text-muted hover:text-fg"
+              }`}
+            >
+              {SECTION_GLYPH[sec]()}
+              {SECTION_LABEL[sec]}
+            </button>
+          ))}
+          <span aria-hidden className="ml-auto flex items-center gap-1.5 text-[11px] text-muted/85">
+            next section
+            <HintKey>
+              <TabKeyIcon />
+            </HintKey>
+          </span>
+        </div>
+
         {/* AT mirror of the states the visuals paint for sighted users (the
             skeletons are aria-hidden): search-in-flight — a status the old
             "Searching…" text used to provide — the discovery wait, and the
             landed suggestion count (quick-review a11y catches, 2026-07-16). */}
         <span role="status" className="sr-only">
-          {hasQuery && searching && rows.length === 0
+          {section === "library"
+            ? lib.status === "loading"
+              ? "Loading your library"
+              : libQuery.trim() && pub.pending
+                ? "Searching Spotify playlists"
+                : ""
+            : section === "history"
+              ? ""
+              : hasQuery && searching && rows.length === 0
             ? "Searching Spotify"
             : !hasQuery && discoveryPending
               ? "Finding suggestions"
@@ -907,8 +1524,16 @@ export default function Search() {
             the SAME 20px inset as the search row's px-5 glyph — the input's
             magnifier, section labels, and row thumbs share one vertical
             line (the alignment sweep, 2026-07-16). */}
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-1.5 [scrollbar-width:none]">
-          {!spotify.connected ? (
+        <div
+          ref={listRef}
+          onScroll={onListScroll}
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto p-1.5 [scrollbar-width:none]"
+        >
+          {section === "library" ? (
+            renderLibrary()
+          ) : section === "history" ? (
+            renderHistory()
+          ) : !spotify.connected ? (
             <div className="flex flex-col items-start gap-1.5 px-3.5 py-2.5">
               <SpotifyConnectButton />
               <p className="m-0 text-[12px] text-muted/85">Connect Spotify to search and play.</p>
@@ -975,8 +1600,10 @@ export default function Search() {
                       if (prev) setSelected(i);
                     }}
                     onClick={() => void playRow(row)}
-                    className={`flex h-[52px] cursor-pointer select-none items-center gap-3 rounded-md px-3.5 [transition:background-color_140ms_var(--ease-out-tk)] ${
-                      flashKeys.has(row.key) ? "bg-fg/20" : i === sel ? "bg-fg/10" : ""
+                    // Selection snaps, as in renderItem: no trailing fade
+                    // behind the arrow keys.
+                    className={`relative flex h-[52px] cursor-pointer select-none items-center gap-3 rounded-md px-3.5 ${
+                      i === sel ? "bg-fg/10" : ""
                     } ${!hasQuery && swapTick > 0 ? "row-swap-in" : ""}`}
                     style={
                       // Stagger is LOCAL to each section's landing moment:
@@ -991,13 +1618,14 @@ export default function Search() {
                         : undefined
                     }
                   >
+                    {flashKeys.has(row.key) && <RowFlash key={flashSeq} />}
                     <RowThumb url={row.artUrl} size={32} />
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="truncate text-[14px] font-medium leading-5 text-fg">{row.title}</span>
                       <span className="truncate text-[12px] leading-4 text-muted">{row.artist}</span>
                     </span>
                     {/* Why, flush right — keeps the empty state at 7×52 so the
-                        born-at-size window seats every row (search.rs H=554).
+                        born-at-size window seats every row (search.rs H=586).
                         Native title carries the full string when the label is
                         clipped; stacking it under identity blew past six rows. */}
                     {row.reason ? (
@@ -1013,17 +1641,23 @@ export default function Search() {
                   );
                 })}
                 {/* Discovery in flight, nothing to show yet (summon-fill OR
-                    pull-refresh — same wait): the header appears at once with
-                    three ghost rows holding the exact space the picks will
-                    land in, so a multi-second Last.fm→Spotify walk never
-                    reads as broken and the swap is in-place. */}
+                    pull-refresh — same wait): a ghost header and three ghost
+                    rows hold the exact space the picks will land in, so a
+                    multi-second Last.fm→Spotify walk never reads as broken
+                    and the swap is in-place. The header is a ghost too: the
+                    real "Something different" over empty bars read as a
+                    section that had loaded with nothing in it (Thien,
+                    2026-11-06). Same box as the real header, so the swap doesn't shift. */}
                 {!hasQuery && discoveryPending && discovery.length === 0 && (
                   <>
                     <p
-                      role="presentation"
+                      aria-hidden
+                      data-ghost-header
                       className="m-0 px-3.5 pb-1.5 pt-2 text-[11px] uppercase tracking-widest text-muted"
                     >
-                      Something different
+                      {/* Zero-width text keeps the real header's line box. */}
+                      {"\u200b"}
+                      <span className="skeleton-pulse inline-block h-[7px] w-[124px] rounded-full bg-fg/5 align-middle" />
                     </p>
                     {[0, 1, 2].map((i) => (
                       <SkeletonRow key={i} index={i} reason />

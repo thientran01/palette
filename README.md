@@ -17,6 +17,7 @@ Download the setup `.exe` from the [latest release](https://github.com/thientran
 | `Ctrl+Alt+N` / `P` | Next / previous |
 | `Ctrl+Alt+M` | Show / hide |
 | `Ctrl+Alt+S` | Search |
+| `Ctrl+Alt+L` | Search, on your library |
 | `Ctrl+Alt+[` / `]` | Nudge karaoke words earlier / later |
 
 Rebind them in **Preferences → Hotkeys**.
@@ -24,7 +25,7 @@ Rebind them in **Preferences → Hotkeys**.
 ## Good to know
 
 - Apple Music can't be seeked by other apps, so seek is off for it. Spotify seeks fine. Details: [docs/smtc-support-matrix.md](docs/smtc-support-matrix.md).
-- Search's play/queue, the up-next queue, and "more like this" need Spotify (connect from the tray). "More like this" also needs a [Last.fm API key](https://www.last.fm/api/account/create). The Spotify app is in development mode, so only allow-listed accounts can connect.
+- Search has three sections (Tab moves between them): Songs, Library (Liked Songs and your playlists) and History. Search's play/queue, Library, the up-next queue, and "more like this" need Spotify (connect from the tray), and starting playback needs Spotify Premium. Spotify only lists the songs of playlists you own or collaborate on, so a followed playlist can be played but not opened. "More like this" also needs a [Last.fm API key](https://www.last.fm/api/account/create). The Spotify app is in development mode, so only allow-listed accounts can connect.
 
 ## Privacy
 

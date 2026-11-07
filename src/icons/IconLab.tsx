@@ -13,6 +13,19 @@ import { PlayerMark, type PlayerId } from "./badges";
 import { useSeekTick } from "./useSeekTick";
 import { useSkipFlick } from "./useSkipFlick";
 import { useBracketPulse } from "./useBracketPulse";
+import {
+  BackIcon,
+  EnterKeyIcon,
+  HeartIcon,
+  HistoryIcon,
+  LibraryIcon,
+  PlayIcon,
+  SearchIcon,
+  ShiftKeyIcon,
+  SongsIcon,
+  TabKeyIcon,
+  UpKeyIcon,
+} from "./searchIcons";
 
 const NAMES = Object.keys(ICONS) as MorphName[];
 const SIZES = [13, 16, 18, 22, 48] as const;
@@ -198,6 +211,64 @@ function ModeDemo() {
   );
 }
 
+/** The search window's icons before the pixel-grid redraw (2026-11-06):
+ * 16-unit drawings shown at 10-14px. Kept only so the lab can show old and
+ * new side by side at 1x; delete once the new set has settled. */
+const SEARCH_LEGACY: Record<string, string> = {
+  search: `<svg viewBox='0 0 16 16' width='16' height='16' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round'><circle cx='7' cy='7' r='4.4'/><path d='M 10.4,10.4 L 13.6,13.6'/></svg>`,
+  songs: `<svg viewBox='0 0 16 16' width='14' height='14' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round'><circle cx='7' cy='7' r='4.2'/><path d='M 10.3,10.3 L 13.2,13.2'/></svg>`,
+  library: `<svg viewBox='0 0 16 16' width='14' height='14' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round'><path d='M 3.2,3.2 L 3.2,12.8'/><path d='M 6.4,3.2 L 6.4,12.8'/><path d='M 9.2,3.8 L 12.8,12.2'/></svg>`,
+  history: `<svg viewBox='0 0 16 16' width='14' height='14' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><circle cx='8' cy='8' r='5.6'/><path d='M 8,5 L 8,8 L 10.2,9.4'/></svg>`,
+  enter: `<svg viewBox='0 0 16 16' width='12' height='12' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M 12.5,4 L 12.5,9 L 4.5,9'/><path d='M 7.5,6 L 4.5,9 L 7.5,12'/></svg>`,
+  shift: `<svg viewBox='0 0 16 16' width='12' height='12' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M 8,3 L 12.8,8.4 L 9.9,8.4 L 9.9,12.5 L 6.1,12.5 L 6.1,8.4 L 3.2,8.4 Z'/></svg>`,
+  up: `<svg viewBox='0 0 16 16' width='12' height='12' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M 8,12.5 L 8,3.5'/><path d='M 4.5,7 L 8,3.5 L 11.5,7'/></svg>`,
+  tab: `<svg viewBox='0 0 16 16' width='12' height='12' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M 2.5,8 L 11.5,8'/><path d='M 8.5,5 L 11.5,8 L 8.5,11'/><path d='M 13.5,4.5 L 13.5,11.5'/></svg>`,
+  play: `<svg viewBox='0 0 16 16' width='11' height='11' fill='currentColor'><path d='M 5,3.2 L 12.6,8 L 5,12.8 Z'/></svg>`,
+  back: `<svg viewBox='0 0 16 16' width='10' height='10' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'><path d='M10,3.5 L5.5,8 L10,12.5'/></svg>`,
+  heart: `<svg viewBox='0 0 16 16' width='13' height='13' fill='currentColor' stroke='currentColor' stroke-width='1.5' stroke-linejoin='round'><path d='M8,13 C5.3,11.1 2.7,9 2.7,6.3 C2.7,4.5 4,3.2 5.6,3.2 C6.7,3.2 7.5,3.8 8,4.7 C8.5,3.8 9.3,3.2 10.4,3.2 C12,3.2 13.3,4.5 13.3,6.3 C13.3,9 10.7,11.1 8,13 Z'/></svg>`,
+};
+const SEARCH_NEW: Record<string, React.ReactNode> = {
+  search: <SearchIcon />,
+  songs: <SongsIcon />,
+  library: <LibraryIcon />,
+  history: <HistoryIcon />,
+  enter: <EnterKeyIcon />,
+  shift: <ShiftKeyIcon />,
+  up: <UpKeyIcon />,
+  tab: <TabKeyIcon />,
+  play: <PlayIcon />,
+  back: <BackIcon />,
+  heart: <HeartIcon />,
+};
+
+/** Old vs new at their real size, in both text tones, on the window's own
+ * surface. Judge on the real PC: headless screenshots can't show it. */
+function SearchIconCompare() {
+  return (
+    <div className="flex flex-col gap-1 rounded-xl border border-border/10 bg-surface p-4">
+      <div className="flex items-center gap-6 pb-1 text-[11px] text-muted">
+        <span className="w-16" />
+        <span className="w-24">old</span>
+        <span className="w-24">new</span>
+      </div>
+      {Object.keys(SEARCH_NEW).map((k) => (
+        <div key={k} className="flex h-7 items-center gap-6">
+          <span className="w-16 text-xs text-muted">{k}</span>
+          {[SEARCH_LEGACY[k], null].map((old, i) => (
+            <span key={i} className="flex w-24 items-center gap-4">
+              {(["text-fg", "text-muted"] as const).map((tone) => (
+                <span key={tone} className={`flex ${tone}`}>
+                  {old !== null ? <span className="flex" dangerouslySetInnerHTML={{ __html: old }} /> : SEARCH_NEW[k]}
+                </span>
+              ))}
+            </span>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function IconLab() {
   return (
     <main className="min-h-screen bg-surface p-8 text-fg">
@@ -208,6 +279,9 @@ export function IconLab() {
             3 strokes × 2 cubics per glyph — any icon morphs into any other.
           </p>
         </header>
+        <Section title="Search icons — old vs pixel-grid redraw, at 1x">
+          <SearchIconCompare />
+        </Section>
         <Section title="Sequencer — any → any (200ms EASE.inOut)">
           <Sequencer />
         </Section>
