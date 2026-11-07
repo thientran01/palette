@@ -941,15 +941,23 @@ pub(crate) fn api_call_impl(
     }
 }
 
-/// Smallest image ≥64px wins; Spotify orders images largest-first, so the
-/// fallback (no usable widths) is also the LAST entry. Playlist images often
-/// carry null widths (a mosaic or an upload), which lands on that fallback.
+/// Width a row cover must reach: rows draw art at up to 48 CSS px (Search's
+/// header tile), which is 96 device px at 200% Windows scaling. Spotify's
+/// album rungs are 640/300/64, so this lands on 300; the old 64px floor was
+/// upscaled at any scaling above 100% (Thien, 2026-11-07: covers looked low
+/// quality). The frontend resamples it down to the box (lib/crispArt.ts).
+const ROW_ART_MIN_PX: i64 = 96;
+
+/// Smallest image ≥ROW_ART_MIN_PX wins; Spotify orders images largest-first,
+/// so the fallback (no usable widths) is also the LAST entry. Playlist images
+/// often carry null widths (a mosaic or an upload), which lands on that
+/// fallback.
 pub(crate) fn small_image(images: &serde_json::Value) -> Option<String> {
     images
         .as_array()
         .and_then(|imgs| {
             imgs.iter()
-                .rfind(|i| i["width"].as_i64().unwrap_or(0) >= 64)
+                .rfind(|i| i["width"].as_i64().unwrap_or(0) >= ROW_ART_MIN_PX)
                 .or_else(|| imgs.last())
         })
         .and_then(|i| i["url"].as_str())
@@ -1603,4 +1611,27 @@ pub async fn spotify_search(app: AppHandle, query: String, limit: Option<u32>) -
             tracks: Vec::new(),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::small_image;
+    use serde_json::json;
+
+    #[test]
+    fn small_image_takes_the_300_rung_for_rows() {
+        let imgs = json!([
+            {"url": "big", "width": 640, "height": 640},
+            {"url": "mid", "width": 300, "height": 300},
+            {"url": "tiny", "width": 64, "height": 64},
+        ]);
+        assert_eq!(small_image(&imgs).as_deref(), Some("mid"));
+    }
+
+    #[test]
+    fn small_image_falls_back_to_the_last_entry() {
+        let imgs = json!([{"url": "upload", "width": null, "height": null}]);
+        assert_eq!(small_image(&imgs).as_deref(), Some("upload"));
+        assert_eq!(small_image(&json!([])), None);
+    }
 }
