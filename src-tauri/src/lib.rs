@@ -650,7 +650,7 @@ fn last_emit_summary(app: &AppHandle) -> Option<(String, String)> {
 /// Never runs art_pump: nothing but position moved, and art work is the full
 /// path's job — plan_beat routes every probing beat there.
 fn emit_position_refresh(app: &AppHandle, tick: &media::TickKey) -> Option<media::NowPlaying> {
-    let (app_id, position_ticks, updated_ticks, status) = tick;
+    let (app_id, position_ticks, updated_ticks, status, _) = tick;
     let my_seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let (position_ms, position_at_ms) =
         media::position_pair_from_ticks(*position_ticks, *updated_ticks);

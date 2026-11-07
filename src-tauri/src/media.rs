@@ -1195,7 +1195,14 @@ pub fn current_player() -> &'static str {
 /// (unverified for programmatic Spotify seeks) — the post-seek UI bound must
 /// stay one heartbeat, not one push cadence. Metadata-only changes still
 /// snapshot: MediaPropertiesChanged wakes force one.
-pub type TickKey = (String, i64, i64, &'static str);
+///
+/// The last field is the timeline's EndTime (duration, ms). It is the one
+/// metadata field that does NOT announce itself: a skip's properties event
+/// can snapshot before the player restamps its timeline, so the first
+/// payload may carry the previous track's duration. Without it here, the
+/// correction looked like a position-only delta once art probing settled,
+/// and the reuse path republished the stale duration for the whole track.
+pub type TickKey = (String, i64, i64, &'static str, i64);
 
 pub fn tick_key() -> Option<TickKey> {
     let session = current_session()?;
@@ -1206,15 +1213,16 @@ pub fn tick_key() -> Option<TickKey> {
     set_stage(Stage::Timeline);
     let timeline = session.GetTimelineProperties();
     set_stage(Stage::Idle);
-    let (position, updated) = timeline
+    let (position, updated, end_ms) = timeline
         .map(|t| {
             (
                 t.Position().map(|d| d.Duration).unwrap_or(0),
                 t.LastUpdatedTime().map(|d| d.UniversalTime).unwrap_or(0),
+                t.EndTime().map(|d| d.Duration / TICKS_PER_MS).unwrap_or(0),
             )
         })
-        .unwrap_or((0, 0));
-    Some((app_id, position, updated, playback_status(&session)))
+        .unwrap_or((0, 0, 0));
+    Some((app_id, position, updated, playback_status(&session), end_ms))
 }
 
 /// True while the art pipeline needs the media loop to run full snapshots
@@ -1259,6 +1267,7 @@ pub enum BeatAction {
 /// - `force` (event wakes, first beat after launch/show) and `probing` (the
 ///   art pipeline needs the full path — art_pump only runs there).
 /// - Session appear/vanish (either tick None), or an app_id/status delta.
+/// - A duration (EndTime) delta: the late timeline of a skip (see TickKey).
 /// - A missing or mismatched last payload: a session that vanished and came
 ///   back must re-marshal, and an empty app_id is never trusted as identity.
 /// - `subscribed` false: without live handlers the reuse premise is gone —
@@ -1279,11 +1288,13 @@ pub fn plan_beat(
     if tick == last_tick {
         return BeatAction::Skip;
     }
-    let (Some((app_id, _, _, status)), Some((last_app, _, _, last_status))) = (tick, last_tick)
+    let (Some((app_id, _, _, status, end)), Some((last_app, _, _, last_status, last_end))) =
+        (tick, last_tick)
     else {
         return BeatAction::Snapshot;
     };
-    let position_only = !app_id.is_empty() && app_id == last_app && status == last_status;
+    let position_only =
+        !app_id.is_empty() && app_id == last_app && status == last_status && end == last_end;
     let payload_matches =
         last_payload.is_some_and(|(p_app, p_status)| p_app == app_id && p_status == *status);
     if position_only && payload_matches && subscribed {
@@ -1805,7 +1816,27 @@ mod tests {
     }
 
     fn tick(app: &str, pos: i64, updated: i64, status: &'static str) -> TickKey {
-        (app.into(), pos, updated, status)
+        (app.into(), pos, updated, status, 200_000)
+    }
+
+    #[test]
+    fn duration_delta_escalates_to_a_snapshot() {
+        // A skip's first snapshot can carry the previous track's duration;
+        // the timeline's correction must re-marshal, not republish it.
+        let last = tick("spotify", 10_000_000, 500, "playing");
+        let mut now = tick("spotify", 20_000_000, 600, "playing");
+        now.4 = 185_000;
+        assert_eq!(
+            plan_beat(
+                Some(&now),
+                Some(&last),
+                false,
+                false,
+                true,
+                Some(("spotify", "playing")),
+            ),
+            BeatAction::Snapshot
+        );
     }
 
     #[test]

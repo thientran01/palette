@@ -46,6 +46,13 @@ const LYRICS_PARAM = IN_TAURI ? null : new URLSearchParams(window.location.searc
  * and deregisters its session. */
 const NOTHING_PARAM = !IN_TAURI && new URLSearchParams(window.location.search).has("nothing");
 
+/** `?straggle` delivers a skip the way GSMTC does live: the first payload
+ * carries the new title with the PREVIOUS track's duration, and the real
+ * duration lands on the next tick (~500ms), like media.rs's heartbeat
+ * snapshot catching the restamped timeline. The double-entrance repro
+ * (lib/trackId.ts); the default mock emits a skip atomically. */
+const STRAGGLE_PARAM = !IN_TAURI && new URLSearchParams(window.location.search).has("straggle");
+
 /** The AM profile's hidden ms-precise timeline. Payloads only ever carry its
  * floor — the lost fraction is what makes pushes project backwards, so the
  * truth must live outside the payload (re-deriving it from a floored
@@ -63,6 +70,9 @@ const MOCK_TRACKS = [
   { title: "Instagram", artist: "DEAN", album: "Instagram - Single" },
   { title: "WHERE YOU AT?", artist: "STAYC", album: "2:LOVE - EP" },
 ];
+/** Per-track durations, distinct like real songs: useLyrics reads a new
+ * song reporting the previous song's exact duration as a stale timeline. */
+const MOCK_DURATIONS = [MOCK_DURATION, 187_520, 221_310];
 let mockTrack = 0;
 
 let mock: NowPlaying = {
@@ -92,13 +102,21 @@ function mockJumpTo(i: number): void {
   amTruth = { pos: 0, at: now };
   // Per-track art id so a mock skip exercises the Art crossfade (one shared
   // id made every track-change art swap a silent no-op in preview).
+  const duration = MOCK_DURATIONS[mockTrack];
   pushMock({
     ...MOCK_TRACKS[mockTrack],
     status: "playing",
     position_ms: 0,
     position_at_ms: now,
+    duration_ms: STRAGGLE_PARAM ? mock.duration_ms : duration,
     art_id: `mock-art-${mockTrack}`,
   });
+  if (STRAGGLE_PARAM) {
+    const landed = mockTrack;
+    window.setTimeout(() => {
+      if (mockTrack === landed) pushMock({ duration_ms: duration });
+    }, 500);
+  }
   const front = mockUpNext[0];
   if (front && front.title === MOCK_TRACKS[mockTrack].title) {
     mockUpNext.shift();
@@ -592,7 +610,7 @@ export function onNowPlaying(cb: (np: NowPlaying) => void): () => void {
     const push = () => {
       if (mock.status === "playing") {
         const now = Date.now();
-        amTruth = { pos: (amTruth.pos + (now - amTruth.at)) % MOCK_DURATION, at: now };
+        amTruth = { pos: (amTruth.pos + (now - amTruth.at)) % mock.duration_ms, at: now };
         pushMock({ position_ms: Math.floor(amTruth.pos / 1000) * 1000, position_at_ms: now });
       }
       cb(mock);
@@ -605,7 +623,7 @@ export function onNowPlaying(cb: (np: NowPlaying) => void): () => void {
     if (mock.status === "playing") {
       const now = Date.now();
       pushMock({
-        position_ms: (mock.position_ms + (now - mock.position_at_ms)) % MOCK_DURATION,
+        position_ms: (mock.position_ms + (now - mock.position_at_ms)) % mock.duration_ms,
         position_at_ms: now,
       });
     }
@@ -958,7 +976,7 @@ export const commands = {
         // the floor with a fresh stamp. Wrap like the playing tick does — a
         // clamp here pins a near-boundary pause at exactly track-end until the
         // next tick's % corrects it.
-        amTruth = { pos: (amTruth.pos + (now - amTruth.at)) % MOCK_DURATION, at: now };
+        amTruth = { pos: (amTruth.pos + (now - amTruth.at)) % mock.duration_ms, at: now };
         pushMock({
           status: "paused",
           position_ms: Math.floor(amTruth.pos / 1000) * 1000,
