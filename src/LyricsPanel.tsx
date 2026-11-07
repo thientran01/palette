@@ -323,7 +323,8 @@ const SCALE = {
     // next/previous line stays sharp so you can read ahead. Paint-only, so
     // wrapping never changes.
     restScale: 0.95,
-    blur: { "-4": 1.2, "-3": 1.2, "-2": 0.6, "2": 0.6, "3": 1.2, "4": 1.2 },
+    // Lowered ~40% after Thien found the first pass too strong (2026-11-07).
+    blur: { "-4": 0.7, "-3": 0.7, "-2": 0.4, "2": 0.4, "3": 0.7, "4": 0.7 },
     mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
     chipTop: "top-8",
     chipBottom: "bottom-8",
@@ -352,7 +353,7 @@ const SCALE = {
     recede: { "-3": 0.1, "-2": 0.2, "-1": 0.38, "1": 0.38, "2": 0.2, "3": 0.1, "4": 0.1 },
     // Blur scales with the 44px type: ±1 is soft but readable.
     restScale: 0.94,
-    blur: { "-3": 4, "-2": 2.5, "-1": 1, "1": 1, "2": 2.5, "3": 4, "4": 4 },
+    blur: { "-3": 2.5, "-2": 1.5, "-1": 0.6, "1": 0.6, "2": 1.5, "3": 2.5, "4": 2.5 },
     // Same lighting as the compact view: the per-line fade (recede) does
     // the dimming, and the mask only softens the very edges of the box
     // (2026-11-07; the old 260px ramps left most lines half-masked).

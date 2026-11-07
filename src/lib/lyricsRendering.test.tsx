@@ -52,10 +52,10 @@ describe("depth of field", () => {
   };
   it("keeps the current and next lines sharp in the compact view and blurs further ones", () => {
     // posClock is mocked at 1000ms, so line 0 is current.
-    expect(filters("base", 0)).toEqual(["none", "none", "blur(0.6px)", "blur(1.2px)", "blur(1.2px)", "blur(1.2px)", "blur(1.2px)"]);
+    expect(filters("base", 0)).toEqual(["none", "none", "blur(0.4px)", "blur(0.7px)", "blur(0.7px)", "blur(0.7px)", "blur(0.7px)"]);
   });
   it("softens even the next line in focus mode, where the type is 44px", () => {
-    expect(filters("focus", 0).slice(0, 4)).toEqual(["none", "blur(1px)", "blur(2.5px)", "blur(4px)"]);
+    expect(filters("focus", 0).slice(0, 4)).toEqual(["none", "blur(0.6px)", "blur(1.5px)", "blur(2.5px)"]);
   });
   it("has no accent bar on the current line", () => {
     const html = renderToStaticMarkup(<LyricsPanel seekable={true} leadMs={0} lines={lines} />);
