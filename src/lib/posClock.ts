@@ -11,6 +11,19 @@
  * deltas are quantization jitter and are held; only genuine discontinuities
  * (seeks, restarts, track changes) may move the clock backwards.
  *
+ * Monotonic is not the same as held, though. Spotify's pairs are ms-precise
+ * once a track is running (TimeMap fits over ~45 pushes per song sit at
+ * 3-16ms rms), but its FIRST pair after a track change has run 100-540ms
+ * ahead of the pushes that follow since late October 2026: pulse.log's
+ * "time map" lines show the arming pair's origin vs the fitted intercept
+ * differing by that much, by a different amount on every play of the same
+ * song. A lead under the band used to be held for the whole track, so the
+ * clock stayed early by whatever that play's start happened to be, and word
+ * karaoke looked like it needed a different offset per song. So on Spotify
+ * a sub-band backward pair is not ignored: the clock SLEWS onto it (runs at
+ * 1 − SLEW_RATE until it has given the lead back). It never steps backward,
+ * and it still lands on the player's own timeline within a couple of seconds.
+ *
  * All monotonicity lives HERE, in one layer. The backend must never filter or
  * nudge positions — a Rust-side filter whose correctness depends on a
  * frontend latch is the cross-layer trap this design deliberately rejects.
@@ -33,6 +46,23 @@ const JITTER_BAND_MS: Record<NowPlaying["player"], number> = {
   other: 800,
   none: 800,
 };
+
+/** Players whose steady-playing pairs are precise enough to correct a
+ * sub-band lead toward. Apple Music floors to whole seconds, so its fresh
+ * pairs sit up to 1s BELOW the truth and slewing onto them would make the
+ * clock lag; "other" players are unmeasured. */
+const SLEWS: Record<NowPlaying["player"], boolean> = {
+  apple_music: false,
+  spotify: true,
+  other: false,
+  none: false,
+};
+
+/** How much slower than 1x the clock runs while it gives back a lead: 0.25
+ * means 0.75x, so the largest sub-band lead (400ms) is gone in 1.6s. Slow
+ * enough that a word wipe in flight doesn't visibly stall, fast enough that a
+ * track-start lead is settled before most songs' first line. */
+const SLEW_RATE = 0.25;
 
 /** A pair stamped this long ago carries no usable position (player wedged,
  * clock skew) — hold the running clock. The old backend gate fell back to the
@@ -66,6 +96,9 @@ let durationMs = 0;
 let canSeek = false;
 let anchorPos = 0;
 let anchorAt = 0;
+/** Lead (ms) the clock still owes back to the player's timeline, measured at
+ * anchorAt. now() pays it at SLEW_RATE per elapsed ms while playing. */
+let slewDebt = 0;
 let lastSeq = 0;
 let seekTarget: number | null = null;
 let seekGraceUntil = 0;
@@ -79,15 +112,24 @@ function notify(): void {
   for (const cb of subs) cb();
 }
 
-function rebase(pos: number): void {
+function rebase(pos: number, debt = 0): void {
   anchorPos = pos;
   anchorAt = performance.now();
+  slewDebt = debt;
+}
+
+/** Elapsed playing time since the anchor and how much of the debt it paid. */
+function sinceAnchor(): { elapsed: number; paid: number } {
+  const elapsed = playing ? performance.now() - anchorAt : 0;
+  return { elapsed, paid: Math.min(elapsed * SLEW_RATE, slewDebt) };
 }
 
 /** Display position in ms: advances at 1x from the last accepted anchor while
- * playing, frozen while paused. Pure read — safe at any frequency. */
+ * playing (slower while a slew pays back a lead), frozen while paused. Pure
+ * read — safe at any frequency. */
 export function now(): number {
-  const raw = anchorPos + (playing ? performance.now() - anchorAt : 0);
+  const { elapsed, paid } = sinceAnchor();
+  const raw = anchorPos + elapsed - paid;
   return Math.min(Math.max(raw, 0), durationMs || Infinity);
 }
 
@@ -120,6 +162,7 @@ export function ingest(np: NowPlaying): boolean {
   lastSeq = np.seq;
 
   const shown = now(); // BEFORE mutating state — the clock's previous value
+  const owed = slewDebt - sinceAnchor().paid; // lead still to give back; holds keep it
   const wasPlaying = playing;
   const isPlaying = np.status === "playing";
   // duration_ms is deliberately NOT part of track identity: a transient
@@ -165,7 +208,7 @@ export function ingest(np: NowPlaying): boolean {
   if (seekTarget !== null) {
     const inGrace = performance.now() < seekGraceUntil;
     if (inGrace && (!usable || Math.abs(projected - seekTarget) > SEEK_CONFIRM_MS)) {
-      rebase(shown);
+      rebase(shown, owed);
       notify();
       return true;
     }
@@ -193,7 +236,7 @@ export function ingest(np: NowPlaying): boolean {
           projected <= ghost + band &&
           Math.abs(projected - seekTarget) > band
         ) {
-          rebase(shown);
+          rebase(shown, owed);
           notify();
           return true;
         }
@@ -204,7 +247,7 @@ export function ingest(np: NowPlaying): boolean {
 
   if (!usable) {
     // Stale pair: hold the running clock, never adopt the raw value.
-    rebase(shown);
+    rebase(shown, owed);
     notify();
     return true;
   }
@@ -224,6 +267,15 @@ export function ingest(np: NowPlaying): boolean {
     // to a band above the player's quantized report, and stepping back onto
     // that report is the flash.
     next = projected - shown > PAUSED_SCRUB_MS || shown - projected >= band ? projected : shown;
+  } else if (wasPlaying && SLEWS[np.player] && shown - projected > 0 && shown - projected < band) {
+    // Steady play on a precise player, a little behind the clock: the clock
+    // is early (see the header — Spotify's track-start pair), not the pair.
+    // Don't step back; slew onto it. Only steady pairs: a resume pair's raw
+    // position is unprojected and can sit behind the truth by its delivery
+    // lag, so resumes keep the hold below and the next push settles them.
+    rebase(shown, shown - projected);
+    notify();
+    return true;
   } else {
     // Playing or resuming: forward is always truth; backward is a
     // discontinuity only beyond the jitter band, so a resume never ticks

@@ -119,8 +119,9 @@ describe("small-seek straggler (A5-1)", () => {
     // The genuine post-seek pair confirms; normal band rules resume.
     tick(300);
     clock.ingest(pay({ position_ms: 62_100 }));
-    expect(clock.now()).toBe(62_300); // confirmed — 200ms behind is sub-band jitter, held
+    expect(clock.now()).toBe(62_300); // confirmed — 200ms behind: no step back, slews instead
     tick(1_000);
+    expect(clock.now()).toBe(63_100); // 1s at 0.75x until the 200ms is given back
     clock.ingest(pay({ position_ms: 63_600 }));
     expect(clock.now()).toBe(63_600); // forward truth adopts
   });
@@ -186,6 +187,71 @@ describe("pause-freeze and the paused-scrub band", () => {
     expect(clock.now()).toBe(62_700);
     clock.ingest(pay({ status: "paused", position_ms: 50_000 }));
     expect(clock.now()).toBe(50_000);
+  });
+});
+
+describe("Spotify track-start lead (per-play karaoke offset)", () => {
+  it("slews a sub-band lead back onto the player's timeline without stepping backward", () => {
+    // Track change: Spotify's first pair says 0 now, but the audio really
+    // starts ~300ms later (pulse.log time maps, late Oct 2026).
+    clock.ingest(pay({ title: "Next", position_ms: 0 }));
+    tick(320);
+    expect(clock.now()).toBe(320);
+    // The real start pushes: 20ms in. The clock is 300ms early, under the
+    // 400ms band. The old kernel held that lead for the whole track.
+    clock.ingest(pay({ title: "Next", position_ms: 20 }));
+    expect(clock.now()).toBe(320); // no backward step
+    let truth = 20;
+    let prev = clock.now();
+    for (let i = 0; i < 40; i++) {
+      tick(50);
+      truth += 50;
+      const shown = clock.now();
+      expect(shown).toBeGreaterThan(prev); // still monotonic, still moving
+      prev = shown;
+    }
+    // 2s later: 300ms paid back at 0.25 per ms took 1.2s; on the timeline now.
+    expect(clock.now()).toBe(truth);
+    // Later pushes agree, so nothing more moves.
+    clock.ingest(pay({ title: "Next", position_ms: truth }));
+    tick(4_500);
+    truth += 4_500;
+    expect(clock.now()).toBe(truth);
+  });
+
+  it("keeps the lead owed across a stale-pair hold; a forward pair settles it", () => {
+    clock.ingest(pay({ position_ms: 10_000 }));
+    clock.ingest(pay({ position_ms: 9_800 })); // 200ms early
+    tick(400); // 100ms paid
+    expect(clock.now()).toBe(10_300);
+    // Stale pair: held, but the remaining 100ms is still owed.
+    clock.ingest(pay({ position_ms: 1, position_at_ms: wallNow - 31_000 }));
+    tick(400);
+    expect(clock.now()).toBe(10_600);
+    // A pair ahead of the clock is forward truth: adopted, nothing owed.
+    clock.ingest(pay({ position_ms: 10_650 }));
+    tick(1_000);
+    expect(clock.now()).toBe(11_650);
+  });
+
+  it("pausing mid-slew freezes where the clock is", () => {
+    clock.ingest(pay({ position_ms: 30_000 }));
+    clock.ingest(pay({ position_ms: 29_600 })); // 400 is the band: adopted outright
+    expect(clock.now()).toBe(29_600);
+    clock.ingest(pay({ position_ms: 29_300 })); // 300ms early: slews
+    tick(400);
+    expect(clock.now()).toBe(29_900);
+    clock.ingest(pay({ status: "paused", position_ms: 29_700 }));
+    tick(2_000);
+    expect(clock.now()).toBe(29_900); // frozen at the max, no slew while paused
+  });
+
+  it("Apple Music never slews: its floored pairs sit below the truth", () => {
+    clock.ingest(pay({ ...AM, position_ms: 60_000 }));
+    tick(900);
+    clock.ingest(pay({ ...AM, position_ms: 60_000 })); // floor of 60_900
+    tick(1_000);
+    expect(clock.now()).toBe(61_900);
   });
 });
 
