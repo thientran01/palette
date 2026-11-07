@@ -226,6 +226,32 @@ body {
   animation: row-swap-in 140ms var(--ease-out-tk) both;
 }
 
+/* Queue confirmation on a search row (Search.tsx RowFlash): the wash
+ * lands at once (the press is the cause, so no fade-in), holds so it reads,
+ * then fades out — before, it snapped off when the class dropped, which
+ * read as a blink. Opacity only. `forwards` keeps it at 0 until the 900ms
+ * unmount. Reduced motion: no animation at all, so the wash shows steady
+ * until it unmounts (the global block would otherwise jump it to 0). */
+@keyframes row-flash {
+  0%,
+  65% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.row-flash {
+  animation: row-flash 860ms var(--ease-out-tk) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row-flash {
+    animation: none;
+  }
+}
+
 /* The persistent widget shell (App.tsx): mode changes tween the box out of
  * the docked corner (a morph of an on-screen element → EASE.inOut); a
  * dock-corner change FLIPs `translate` back to 0 (a drag-release response →

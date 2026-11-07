@@ -1,4 +1,4 @@
-/** Statuses returned by spotify.rs play_now / start_playback. */
+/** Statuses returned by spotify.rs play_now / start_playback / play_context. */
 export type PlayNowStatus =
   | "ok"
   | "queued"
@@ -8,7 +8,8 @@ export type PlayNowStatus =
   | "diverged"
   | "gone"
   | "offline"
-  | "disconnected";
+  | "disconnected"
+  | "forbidden";
 
 /**
  * Human copy for spotify_play_now status strings. Shared by Search's footer
@@ -35,6 +36,10 @@ export function playNowNote(status: string): string | null {
     case "offline":
     case "disconnected":
       return "Spotify unreachable";
+    case "forbidden":
+      // play_context's 403: Spotify's answer for non-Premium playback and
+      // for restricted Connect devices.
+      return "Spotify refused · playback needs Premium";
     default: {
       const _unknown: string = status;
       void _unknown;

@@ -8,6 +8,21 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Added
+
+- Search has a section strip: Songs, Library and History. Tab moves between them, and `Ctrl+Alt+L` opens Search on Library.
+- Library lists Liked Songs, then your playlists and the ones you follow, recently played first. The playlist that's playing says Playing, and inside it the current song says Now. Typing filters them instantly and finds public playlists on Spotify below. Enter opens a playlist's songs with Play in the header, Shift+Enter plays it, and Esc or the Library link above it goes back.
+- History lists everything you've played, grouped by day with play times. The day's header stays pinned at the top as you scroll until the next day replaces it. Each day's header also shows how many songs you played that day and how long you listened. Enter plays a song and Shift+Enter queues it.
+
+### Changed
+
+- Palette now asks Spotify for permission to read your playlists, Liked Songs and recently played. Reconnect Spotify once (Search's Library shows the button) to use Library.
+- While Search's "Something different" picks load, the section's title is a placeholder bar too, instead of a real title over empty rows.
+- Search's selection, section tabs and Play button now move instantly with the arrow and Tab keys instead of fading behind them. Queueing a song still highlights its row, which now fades out instead of blinking off.
+- Search's icons are redrawn at the exact size they're shown, so their lines sit on whole pixels and look sharp. Songs now has a music note instead of a second magnifier, and Library a stack of albums.
+- Typing in History searches every song you've played, not just the ones already scrolled into view.
+- Holding an arrow key in Search's History now moves one row per key repeat, smoothly. It used to re-format every play time on each press and fall several rows behind.
+
 ## [1.0.11] - 2026-11-07
 
 ### Changed
