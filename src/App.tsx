@@ -33,6 +33,7 @@ import {
   useSeatHold,
   type LyricsState,
 } from "./LyricsPanel";
+import { useCredits } from "./Credits";
 import { useArt, useArtAccent } from "./lib/artAccent";
 import * as posClock from "./lib/posClock";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
@@ -848,6 +849,7 @@ function ExpandedView({
   // (Kept as the inline discriminant check — aliased-condition narrowing is
   // what lets lyrics.lines/.key flow into LyricsPanel below.)
   const lyricsLive = lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np);
+  const credits = useCredits(np);
   // What the state says about THIS track — stale verdicts read as pending,
   // so captions/routing can't answer for the previous track.
   const verdict = lyricsVerdictOf(np, lyrics);
@@ -1104,6 +1106,7 @@ function ExpandedView({
                   seekable={seekable}
                   leadMs={VOCAL_LEAD_MS[np.player]}
                   entrance={celebrate}
+                  credits={credits}
                 />
               </motion.div>
             )}

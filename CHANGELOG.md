@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Added
+
+- Song credits after the lyrics: who wrote, produced, arranged, recorded, mixed and mastered the song, from Genius. Paste a free Genius client access token in Preferences → Connectors to turn it on. Songs without a confident match show nothing.
+
 ### Changed
 
 - "Something different" suggestions load much faster. Lookups run side by side, connections are reused, and results are remembered on disk, so a song you play often costs no network at all the next time. When suggestions can't load, the search window now says so instead of quietly leaving the section out.

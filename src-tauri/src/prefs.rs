@@ -152,6 +152,7 @@ pub struct PrefsSeed {
     hide_on_fullscreen: bool,
     spotify_connected: bool,
     lastfm_api_key: String,
+    genius_token: String,
     seen_intro: bool,
     hotkeys: Vec<crate::HotkeyInfo>,
 }
@@ -171,6 +172,7 @@ pub async fn prefs_seed(app: AppHandle) -> PrefsSeed {
         hide_on_fullscreen: settings::get_bool(&app, "companion", true),
         spotify_connected: crate::spotify::connected(&app),
         lastfm_api_key: settings::get_string(&app, "lastfm_api_key").unwrap_or_default(),
+        genius_token: settings::get_string(&app, crate::credits::TOKEN_KEY).unwrap_or_default(),
         seen_intro: settings::get_bool(&app, "seenIntro", false),
         hotkeys: crate::hotkey_snapshot(&app),
     }
@@ -182,11 +184,12 @@ pub async fn prefs_seed(app: AppHandle) -> PrefsSeed {
 /// "hotkeys", autostart): those have their own typed setters that keep the
 /// tray mirror and geometry in sync, and the generic seam must never be a
 /// back door around them.
-const SETTABLE_KEYS: [&str; 5] = [
+const SETTABLE_KEYS: [&str; 6] = [
     "reactive_separator",
     "karaoke_lyrics",
     "launch_mode",
     "lastfm_api_key",
+    "genius_token",
     "seenIntro",
 ];
 /// Generous per-write ceiling on the serialized value — a real setting here is

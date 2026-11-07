@@ -400,6 +400,8 @@ export default function Prefs() {
 
   const [lastfmKey, setLastfmKey] = useState("");
   const [testLabel, setTestLabel] = useState("Test key");
+  const [geniusToken, setGeniusToken] = useState("");
+  const [geniusLabel, setGeniusLabel] = useState("Test token");
 
   const [hotkeys, setHotkeys] = useState<HotkeyInfo[]>([]);
   const [capture, setCapture] = useState<Capture | null>(null);
@@ -433,6 +435,7 @@ export default function Prefs() {
       setSeenIntro(s.seen_intro);
       setSpotifyConnected(s.spotify_connected);
       setLastfmKey(s.lastfm_api_key);
+      setGeniusToken(s.genius_token);
       setHotkeys(s.hotkeys);
     });
     return () => {
@@ -582,8 +585,44 @@ export default function Prefs() {
       lastfmPending.current = null;
     }, 400);
   };
+  // The Genius token persists the same way (debounced, flushed on blur, Test
+  // and close).
+  const geniusDebounce = useRef<number | undefined>(undefined);
+  const geniusPending = useRef<string | null>(null);
+  const flushGenius = useCallback(() => {
+    if (geniusPending.current === null) return;
+    window.clearTimeout(geniusDebounce.current);
+    commands.setSetting("genius_token", geniusPending.current);
+    geniusPending.current = null;
+  }, []);
+  const onGeniusInput = (v: string) => {
+    setGeniusToken(v);
+    setGeniusLabel("Test token");
+    geniusPending.current = v;
+    window.clearTimeout(geniusDebounce.current);
+    geniusDebounce.current = window.setTimeout(() => {
+      commands.setSetting("genius_token", v);
+      geniusPending.current = null;
+    }, 400);
+  };
+  const testGenius = async () => {
+    flushGenius();
+    setGeniusLabel("Checking…");
+    const r = await commands.testGeniusToken(geniusToken);
+    if (r === "ok") {
+      setGeniusLabel("Valid ✓");
+      toast("Genius token looks good");
+    } else if (r === "invalid") {
+      setGeniusLabel("Invalid token");
+      toast("That token was rejected");
+    } else {
+      setGeniusLabel("Test token");
+      toast("Couldn't reach Genius");
+    }
+  };
   const closePrefs = async () => {
     flushLastfm();
+    flushGenius();
     // The × can land mid-capture, and close DESTROYS this webview — the
     // capture effect's cleanup invoke would race the teardown and could
     // lose. Await the resume so register_all provably ran first (the
@@ -731,7 +770,7 @@ export default function Prefs() {
             </p>
           </div>
           {/* Last.fm */}
-          <div className="rounded-xl border border-border/[0.08] bg-fg/[0.015] p-4">
+          <div className="mb-4 rounded-xl border border-border/[0.08] bg-fg/[0.015] p-4">
             <div className="mb-3 flex items-center gap-3">
               <span className="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-lg bg-surface-2 text-[15px] font-semibold text-muted">
                 fm
@@ -756,6 +795,33 @@ export default function Prefs() {
               />
               <Ghost onClick={testKey}>{testLabel}</Ghost>
             </div>
+          </div>
+          {/* Genius */}
+          <div className="rounded-xl border border-border/[0.08] bg-fg/[0.015] p-4">
+            <div className="mb-3 flex items-center gap-3">
+              <span className="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-lg bg-surface-2 text-[15px] font-semibold text-muted">
+                G
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[14px] font-medium text-fg">Genius</p>
+                <p className="mt-px text-[12px] text-muted">Shows song credits after the lyrics.</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                value={geniusToken}
+                onChange={(e) => onGeniusInput(e.target.value)}
+                onBlur={flushGenius}
+                placeholder="Client access token"
+                spellCheck={false}
+                autoComplete="off"
+                className="h-8 min-w-0 flex-1 select-text rounded-lg border border-border/12 bg-black/25 px-3 text-[12.5px] text-fg outline-none [transition:border-color_var(--transition-duration-2)_var(--ease-out-tk)] focus:border-border/30"
+              />
+              <Ghost onClick={testGenius}>{geniusLabel}</Ghost>
+            </div>
+            <p className="mt-3 border-t border-border/[0.06] pt-3 text-[11.5px] leading-relaxed text-muted">
+              Make a free API client at genius.com/api-clients, then paste its client access token here.
+            </p>
           </div>
         </>
       ),
@@ -1008,6 +1074,8 @@ export default function Prefs() {
       authError,
       lastfmKey,
       testLabel,
+      geniusToken,
+      geniusLabel,
       hotkeys,
       capture,
       reactive,
