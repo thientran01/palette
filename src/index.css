@@ -145,6 +145,9 @@ body {
  * keeps its exact size. Ink is --fg, so it is a light line in dark theme and
  * a dark line in light theme, and it vanishes on covers that already contrast.
  * Not a shadow: a drop shadow on a near-black surface only reads as mud.
+ * Still and neutral on purpose: Thien tried an accent line that pulsed on
+ * the beat and found the motion and the shifting color wrong (2026-11-07).
+ * 18% is the strength he asked for ("stand out more"); 10% was too faint.
  * Only when an img is present, so the note-glyph placeholder stays flat. The
  * host must clip (overflow-hidden) and carry the border radius. */
 .art-edge {
@@ -155,7 +158,7 @@ body {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  box-shadow: inset 0 0 0 1px rgb(var(--fg) / 0.1);
+  box-shadow: inset 0 0 0 1px rgb(var(--fg) / 0.18);
   pointer-events: none;
 }
 
