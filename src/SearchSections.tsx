@@ -649,7 +649,7 @@ export function ItemTile({ tile, url, size }: { tile: "liked" | "playlist"; url:
   return (
     <span
       aria-hidden
-      className={`grid shrink-0 place-items-center overflow-hidden bg-surface-2 ${
+      className={`art-edge grid shrink-0 place-items-center overflow-hidden bg-surface-2 ${
         tile === "liked" ? "text-fg" : "text-muted"
       }`}
       style={{ width: size, height: size, borderRadius: size >= 48 ? 8 : 6 }}

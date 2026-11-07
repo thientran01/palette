@@ -145,7 +145,7 @@ function IdentityStack({
     // width, and the lyric column's bottom-alignment all derive from the
     // same value, which is what makes the aligned edges exact.
     <div className={`flex w-(--art) flex-col ${align}`}>
-      <div className="grid aspect-square w-full place-items-center overflow-hidden rounded-3xl bg-surface-2 text-muted">
+      <div className="art-edge grid aspect-square w-full place-items-center overflow-hidden rounded-3xl bg-surface-2 text-muted">
         {showArt ? (
           <img
             src={artUrl}
