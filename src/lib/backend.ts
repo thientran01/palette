@@ -778,9 +778,39 @@ export interface PrefsSeed {
   hide_on_fullscreen: boolean;
   spotify_connected: boolean;
   lastfm_api_key: string;
+  genius_token: string;
   seen_intro: boolean;
   hotkeys: HotkeyInfo[];
 }
+
+/** One credits line under the lyrics (credits.rs CreditRow). */
+export interface CreditRow {
+  role: string;
+  names: string[];
+}
+
+/** credits.rs CreditsOut. "none" = no confident Genius match, or a page
+ * without credits. */
+export interface SongCredits {
+  status: "ok" | "none" | "no_key" | "bad_key" | "offline";
+  rows: CreditRow[];
+  url: string | null;
+}
+
+/** `?credits=none|no_key|offline` forces a credits fallback in preview;
+ * `?credits=short` serves a writers-only page (older K-pop's usual shape). */
+const CREDITS_PARAM = IN_TAURI ? null : new URLSearchParams(window.location.search).get("credits");
+
+const MOCK_CREDITS: CreditRow[] = [
+  { role: "Lyrics", names: ["Kenzie"] },
+  { role: "Composition", names: ["Kenzie", "Paris Alexa", "Dem Jointz"] },
+  { role: "Arrangement", names: ["Dem Jointz"] },
+  { role: "Vocal direction", names: ["Kenzie"] },
+  { role: "Background vocals", names: ["Sunwoo (THE BOYZ)", "Eric (THE BOYZ)", "Kenzie"] },
+  { role: "Recorded by", names: ["노민지 (Noh Min Ji)", "강은지 (Kang Eun Ji)"] },
+  { role: "Mixed by", names: ["Kim Cheol-sun"] },
+  { role: "Mastered by", names: ["권남우 (Kwon Nam Woo)"] },
+];
 
 /** Real hotkey defaults (mirrors lib.rs HK_* + hotkey_defs order). The mock
  * marks the two seek chords unregistered so the OS-fail note is preview-
@@ -810,6 +840,7 @@ const mockSettings = {
   // more-like-this button are previewable by default; ?discovery=<status>
   // and ?similar=<status> still force each fallback.
   lastfm_api_key: "mock-lastfm-key",
+  genius_token: "mock-genius-token",
   seen_intro: false,
   hotkeys: MOCK_HOTKEYS.map((h) => ({ ...h })),
 };
@@ -1374,6 +1405,7 @@ export const commands = {
         hide_on_fullscreen: mockSettings.hide_on_fullscreen,
         spotify_connected: mockSpotifyConnected,
         lastfm_api_key: mockSettings.lastfm_api_key,
+        genius_token: mockSettings.genius_token,
         seen_intro: mockSettings.seen_intro,
         hotkeys: mockSettings.hotkeys.map((h) => ({ ...h })),
       };
@@ -1460,6 +1492,29 @@ export const commands = {
     }
     return invoke<string>("test_lastfm_key", { key });
   },
+  /** Validate a Genius client access token. "ok" | "invalid" | "offline". */
+  async testGeniusToken(token: string): Promise<string> {
+    if (!IN_TAURI) {
+      await new Promise((r) => setTimeout(r, 500));
+      return token.trim() ? "ok" : "invalid";
+    }
+    return invoke<string>("test_genius_token", { token });
+  },
+  /** Song credits from Genius, cached per song on disk (credits.rs). */
+  async songCredits(artist: string, title: string): Promise<SongCredits> {
+    if (!IN_TAURI) {
+      await new Promise((r) => setTimeout(r, 300));
+      if (CREDITS_PARAM === "none" || CREDITS_PARAM === "no_key" || CREDITS_PARAM === "offline") {
+        return { status: CREDITS_PARAM, rows: [], url: null };
+      }
+      if (!mockSettings.genius_token.trim()) return { status: "no_key", rows: [], url: null };
+      const rows = CREDITS_PARAM === "short"
+        ? [{ role: "Written by", names: ["Park Jin-young", "Lee Woo-min"] }]
+        : MOCK_CREDITS;
+      return { status: "ok", rows, url: "https://genius.com/The-boyz-savior-lyrics" };
+    }
+    return invoke<SongCredits>("song_credits", { artist, title });
+  },
   /** Whether a Last.fm key is present (the reusable gate signal). */
   async lastfmHasKey(): Promise<boolean> {
     if (!IN_TAURI) return mockSettings.lastfm_api_key.trim().length > 0;
@@ -1480,6 +1535,12 @@ export const commands = {
   /** Reveal the app-data folder. */
   openDataFolder(): void {
     if (IN_TAURI) void invoke("open_data_folder");
+  },
+  /** Open a connector's key page or a Genius song page in the browser.
+   * Rust only opens allowlisted prefixes (prefs.rs LINK_PREFIXES). */
+  openLink(url: string): void {
+    if (IN_TAURI) void invoke("open_link", { url }).catch(() => {});
+    else window.open(url, "_blank", "noopener");
   },
   /** Open the source repo in the browser. */
   openRepo(): void {

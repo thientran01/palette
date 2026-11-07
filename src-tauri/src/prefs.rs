@@ -152,6 +152,7 @@ pub struct PrefsSeed {
     hide_on_fullscreen: bool,
     spotify_connected: bool,
     lastfm_api_key: String,
+    genius_token: String,
     seen_intro: bool,
     hotkeys: Vec<crate::HotkeyInfo>,
 }
@@ -171,6 +172,7 @@ pub async fn prefs_seed(app: AppHandle) -> PrefsSeed {
         hide_on_fullscreen: settings::get_bool(&app, "companion", true),
         spotify_connected: crate::spotify::connected(&app),
         lastfm_api_key: settings::get_string(&app, "lastfm_api_key").unwrap_or_default(),
+        genius_token: settings::get_string(&app, crate::credits::TOKEN_KEY).unwrap_or_default(),
         seen_intro: settings::get_bool(&app, "seenIntro", false),
         hotkeys: crate::hotkey_snapshot(&app),
     }
@@ -182,11 +184,12 @@ pub async fn prefs_seed(app: AppHandle) -> PrefsSeed {
 /// "hotkeys", autostart): those have their own typed setters that keep the
 /// tray mirror and geometry in sync, and the generic seam must never be a
 /// back door around them.
-const SETTABLE_KEYS: [&str; 5] = [
+const SETTABLE_KEYS: [&str; 6] = [
     "reactive_separator",
     "karaoke_lyrics",
     "launch_mode",
     "lastfm_api_key",
+    "genius_token",
     "seenIntro",
 ];
 /// Generous per-write ceiling on the serialized value — a real setting here is
@@ -265,10 +268,57 @@ pub async fn open_data_folder(app: AppHandle) {
     }
 }
 
+/// Where a webview may send the browser: the connectors' key pages and
+/// Genius song pages (the credits' source link). A fixed allowlist rather
+/// than any URL, so a page can't use this to launch arbitrary targets.
+const LINK_PREFIXES: [&str; 3] = [
+    "https://genius.com/",
+    "https://www.last.fm/api/",
+    "https://developer.spotify.com/",
+];
+
+fn link_allowed(url: &str) -> bool {
+    url.len() <= 512
+        && !url
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '"')
+        && LINK_PREFIXES.iter().any(|p| url.starts_with(p))
+}
+
+/// Open an allowlisted link in the default browser.
+#[tauri::command]
+pub async fn open_link(app: AppHandle, url: String) -> Result<(), String> {
+    if !link_allowed(&url) {
+        log::warn!("open_link: refused a link outside the allowlist");
+        return Err("link not allowed".into());
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Open the source repo in the default browser (About → Source).
 #[tauri::command]
 pub async fn open_repo(app: AppHandle) {
     let _ = app
         .opener()
         .open_url("https://github.com/thientran01/palette", None::<&str>);
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::link_allowed;
+
+    #[test]
+    fn only_allowlisted_links_open() {
+        assert!(link_allowed("https://genius.com/api-clients"));
+        assert!(link_allowed("https://genius.com/Stayc-teddy-bear-lyrics"));
+        assert!(link_allowed("https://www.last.fm/api/account/create"));
+        assert!(link_allowed("https://developer.spotify.com/dashboard"));
+        assert!(!link_allowed("https://genius.com.evil.example/"));
+        assert!(!link_allowed("http://genius.com/api-clients"));
+        assert!(!link_allowed("https://example.com/?https://genius.com/"));
+        assert!(!link_allowed("https://genius.com/a b"));
+        assert!(!link_allowed("file:///C:/Windows/System32/calc.exe"));
+    }
 }
