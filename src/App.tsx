@@ -807,7 +807,7 @@ const NO_LYRICS_CAPTION_MS = 4000;
  * content region crossfades. Mode controls live in the app-root anchored
  * cluster; the view toggle is hoisted beside the swap for the same reason.
  * The arrival is choreographed (art exhales with the house blur, rows
- * cascade outward from the current line, the accent marker ignites last) —
+ * cascade outward from the current line, the current line ignites last) —
  * but ONLY when lyrics resolve on their own: a user-initiated toggle is a
  * command, not an arrival, and swaps plain. The reverse — a track change —
  * exits fast and plain: continuity is earned by content identity, and the

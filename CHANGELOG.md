@@ -28,6 +28,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Lyrics are calmer: lines fade evenly the further they are from the current one, above and below.
 - Focus mode: lyrics fill the right side of the screen.
 - Lyric lines wrap more cleanly: short ad-libs like "(oh-oh)" stay on one row, and Korean words no longer split between syllables.
+- The current lyric line no longer has an accent bar beside it. It's the only sharp, full-size line: the others are drawn a little smaller and go softly out of focus the further they are from it, and a new line lights up left to right as it starts. Hovering a line brings it into focus.
+- Focus mode shows at most three lyric lines above the current one, and on tall screens the current line sits higher to match.
 
 ### Fixed
 

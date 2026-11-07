@@ -58,6 +58,7 @@ describe("word rows follow onsets independently of the line marker", () => {
     expect(upcoming.style.values.has("--word-peak")).toBe(false);
     expect(upcoming.style.values.has("--lyric-scale")).toBe(false);
     expect(upcoming.style.values.has("--lyric-opacity")).toBe(false);
+    expect(upcoming.style.values.has("--lyric-filter")).toBe(false);
     expect(h.pending.size).toBe(0);
     h.anchor(3020, true);
     const wipe = parseFloat(upcoming.spans[0].values.get("--wipe")!);
@@ -79,6 +80,7 @@ describe("word rows follow onsets independently of the line marker", () => {
     expect(current.style.values.has("--word-peak")).toBe(false);
     expect(current.style.values.has("--lyric-scale")).toBe(false);
     expect(current.style.values.has("--lyric-opacity")).toBe(false);
+    expect(current.style.values.has("--lyric-filter")).toBe(false);
   });
   it("does not write unchanged spans or animate empty panels", () => {
     const h = harness(2500); const current = row(0, 1000);

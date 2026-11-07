@@ -1,7 +1,7 @@
 /*
  * Album-art accent extraction. House rule (Phantom-style restraint): the
  * extracted color retints the ACCENT layer only — progress fill, separator,
- * lyric marker — never the neutral chrome.
+ * waveform, lyric break dots — never the neutral chrome or lyric text.
  *
  * Pipeline: downscale to 24×24 on a canvas → score pixels for "vibrancy"
  * (saturated, mid-lightness) into hue buckets → weighted-average the winning
