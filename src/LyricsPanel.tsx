@@ -300,11 +300,11 @@ const ENTRANCE_DONE_MS = 800;
 
 export type LyricsScale = "base" | "focus";
 
-/** Per-scale clothes + physics â€” same grammar, two rooms. The focus values
- * are the Soundboard design (panel verdict, 2026-07-12): 44px uniform rows
- * (recession by opacity, with uniform layout size), current line anchored slightly
- * deeper (0.46), and The Hang's asymmetric mask grafted on â€” the deep
- * bottom ramp is what makes the room read "a sentence, not a page". */
+/** Per-scale clothes + physics, same grammar in two rooms. Both use uniform
+ * layout rows with recession by paint only (per-line opacity and a resting
+ * ink scale), so no line ever rewraps as the highlight moves. Focus is the
+ * compact view scaled up to 44px with a darker fade (2026-11-07 redesign;
+ * it replaced the 2026-07-12 Soundboard tiers and asymmetric mask). */
 const SCALE = {
   base: {
     row: "px-3 py-1.5 text-base leading-normal tracking-[0.025em]",
