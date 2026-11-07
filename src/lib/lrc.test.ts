@@ -9,7 +9,7 @@
  * break, and short gaps stay as they were (previous line current).
  */
 import { describe, expect, it } from "vitest";
-import { attachWords, currentLineIndex, parseLrc, wordWipe, wordWipeFraction, wordFillEnd, type LyricLine } from "./lrc";
+import { attachWords, currentLineIndex, msUntilNextLine, wordTimedStarts, parseLrc, wordWipe, wordWipeFraction, wordFillEnd, type LyricLine } from "./lrc";
 
 /** Lines that render as the five-dot rest row. */
 function breaks(lines: LyricLine[]): LyricLine[] {
@@ -372,5 +372,35 @@ describe("source timing protects a missed line entrance", () => {
     expect(attachWords([{...lines[0],text:"one (oh)"},lines[1]],late)[0].words).toEqual(late);
     expect(attachWords([lines[0]],late)[0].words).toEqual(late);
     expect(attachWords([lines[0],{t:136770,text:"overlap"}],late)[0].words).toEqual(late);
+  });
+});
+
+// Thien, 2026-11-07 (LOONA "Hi High"): a long line stayed current after its
+// words finished while the next line's words were already filling, because
+// the line index waited for the LRC stamp.
+describe("the line advances when its words start painting", () => {
+  const w = (t: number, line_t: number) => ({ t, end: t + 300, text: "w", line_t });
+  const lines: LyricLine[] = [
+    { t: 10_000, text: "long line", words: [w(10_000, 10_000), w(13_000, 10_000)] },
+    { t: 15_000, text: "next", words: [w(14_200, 15_000), w(14_600, 15_000)] },
+  ];
+  it("moves the start to the first word's onset minus the word lead", () => {
+    const starts = wordTimedStarts(lines, 160);
+    expect(starts.map(s => s.t)).toEqual([9_840, 14_040]);
+    expect(currentLineIndex(starts, 14_039, 0)).toBe(0);
+    expect(currentLineIndex(starts, 14_040, 0)).toBe(1);
+    expect(msUntilNextLine(starts, 0, 14_000, 0)).toBe(40);
+  });
+  it("never delays a line past its stamp", () => {
+    const late = [lines[0], { ...lines[1], words: [w(15_500, 15_000)] }];
+    expect(wordTimedStarts(late, 0)[1].t).toBe(15_000);
+  });
+  it("keeps the stamp when words would leapfrog the previous line", () => {
+    const leap = [lines[0], { ...lines[1], words: [w(9_000, 15_000)] }];
+    expect(wordTimedStarts(leap, 0)[1].t).toBe(15_000);
+  });
+  it("leaves break rows and unaligned lines on their stamps", () => {
+    const rows: LyricLine[] = [{ t: 0, text: "", end: 9_000 }, { t: 9_000, text: "plain" }];
+    expect(wordTimedStarts(rows, 160).map(s => s.t)).toEqual([0, 9_000]);
   });
 });
