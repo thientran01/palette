@@ -25,6 +25,13 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Typing in History searches every song you've played, not just the ones already scrolled into view.
 - Holding an arrow key in Search's History now moves one row per key repeat, smoothly. It used to re-format every play time on each press and fall several rows behind.
 - Album covers in the player, queue and Search are sharper. Palette now shrinks each cover to the exact pixels of its box with a high-quality filter instead of leaving it to the browser, and Spotify rows load the 300px cover instead of the 64px one, which was blurry at any Windows scaling above 100%.
+- Lyrics are calmer: lines fade evenly the further they are from the current one, above and below.
+- Focus mode: lyrics fill the right side of the screen.
+- Lyric lines wrap more cleanly: short ad-libs like "(oh-oh)" stay on one row, and Korean words no longer split between syllables.
+
+### Fixed
+
+- A lyric line no longer jumps from one row to two when it becomes the current line.
 
 ## [1.0.11] - 2026-11-07
 
