@@ -31,9 +31,7 @@ import { Envelope, reactiveOn, subscribeBands } from "./lib/reactive";
  * song-block wave overcorrected — now 19 capsules at 780×100 (⅔ the
  * console's width — Thien's Figma pass, 2026-07-14: 19 capsules stretched on
  * ~31px gaps read calmer than a dense picket), still clearly narrower
- * than the console. QUIETED 2026-11-06 (Thien): 520×48 with 6px capsules
- * (box 60px — Focus.tsx's --horizon-mb counts it) so the horizon stops
- * competing with the current lyric line. Still under the gentle symmetric peak envelope (roomPeak) so it
+ * than the console. Still under the gentle symmetric peak envelope (roomPeak) so it
  * reads as one intentional instrument (tall bass center, tapered edges)
  * instead of a random picket. Same choreography at every size.
  * boxH/aliveW/restW size the container: sm/md morph width between rest and
@@ -45,7 +43,7 @@ const GEOM = {
   sm: { bar: "h-[9px] w-[2px]", dot: "h-[2px] w-[2px]", survivor: "h-[3px] w-[3px]", dropBlur: "blur-[1.5px]", boxH: "h-[11px]", aliveW: "w-[18px]", restW: "w-[5px]" },
   md: { bar: "h-[18px] w-[4px]", dot: "h-[3px] w-[3px]", survivor: "h-[4px] w-[4px]", dropBlur: "blur-[2px]", boxH: "h-[20px]", aliveW: "w-[46px]", restW: "w-[6px]" },
   lg: { bar: "h-[26px] w-[5px]", dot: "h-[5px] w-[5px]", survivor: "h-[7px] w-[7px]", dropBlur: "blur-[3px]", boxH: "h-[30px]", aliveW: "w-[85px]", restW: "w-[85px]" },
-  room: { bar: "h-[48px] w-[6px]", dot: "h-[4px] w-[4px]", survivor: "h-[6px] w-[6px]", dropBlur: "blur-[3px]", boxH: "h-[60px]", aliveW: "w-[520px]", restW: "w-[520px]" },
+  room: { bar: "h-[100px] w-[12px]", dot: "h-[6px] w-[6px]", survivor: "h-[10px] w-[10px]", dropBlur: "blur-[4px]", boxH: "h-[120px]", aliveW: "w-[780px]", restW: "w-[780px]" },
 } as const;
 /** The constant-footprint, purely-decorative standalone renditions. */
 const HERO: ReadonlySet<Size> = new Set(["lg", "room"]);

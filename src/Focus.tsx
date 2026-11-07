@@ -472,7 +472,7 @@ export default function Focus() {
     // no-lyrics cluster can anchor off the SAME geometry (see its seat).
     <div
       key={phase}
-      className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg [--art:min(560px,46vh,100vh_-_660px,40vw_-_390px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)] [--horizon-mb:calc((93vh_-_152px_-_var(--stack-top)_-_var(--art))/2)]"
+      className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg [--art:min(560px,46vh,100vh_-_660px,40vw_-_390px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)] [--horizon-mb:calc((93vh_-_212px_-_var(--stack-top)_-_var(--art))/2)]"
     >
       {/* Corner exit: hover-revealed + the has-[:focus-visible] keyboard
           reveal (the widget's contract). The contract-bracket verb, going
