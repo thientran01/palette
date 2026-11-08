@@ -334,9 +334,9 @@ const SCALE = {
     breakRow: "h-8 px-3 py-1",
     breakDot: "h-[6px] w-[6px]",
     breakGap: "gap-1",
-    // The accent dot left of the current line: the break dots' size, centered
-    // on the first text line (6px padding + half the 24px line - 3px).
-    dot: "top-[15px] h-[6px] w-[6px]",
+    // The accent line left of the current lyric (the pre-redesign marker's
+    // size, a hair thicker), centered on the row.
+    bar: "top-[calc(50%-8px)] h-4 w-[3px]",
   },
   focus: {
     // The compact view's proportions scaled up (Thien, 2026-11-07: the
@@ -370,8 +370,7 @@ const SCALE = {
     breakRow: "px-6 py-3",
     breakDot: "h-[12px] w-[12px]",
     breakGap: "gap-2",
-    // 16px padding + half the 66px line - 6px.
-    dot: "top-[43px] h-[12px] w-[12px]",
+    bar: "top-[calc(50%-18px)] h-9 w-[5px]",
   },
 } as const satisfies Record<LyricsScale, unknown>;
 
@@ -422,24 +421,25 @@ function recedeBlur(scale: LyricsScale, distance: number, browsing: boolean): nu
   return table[String(distance)] ?? 0;
 }
 
-/** Rows further apart than this hop by pop instead of stretching across the
- * panel (a seek, not the song moving on). */
-const DOT_HOP_MAX_ROWS = 3;
+/** Rows further apart than this grow in place instead of stretching across
+ * the panel (a seek, not the song moving on). */
+const BAR_HOP_MAX_ROWS = 3;
 
-function dotOf(list: HTMLElement, lines: LyricLine[], i: number | null): HTMLElement | null {
+function barOf(list: HTMLElement, lines: LyricLine[], i: number | null): HTMLElement | null {
   if (i === null || i < 0 || !lines[i] || lines[i].end !== undefined) return null;
-  return (list.children[i] as HTMLElement | undefined)?.querySelector<HTMLElement>("[data-dot]") ?? null;
+  return (list.children[i] as HTMLElement | undefined)?.querySelector<HTMLElement>("[data-bar]") ?? null;
 }
 
-/** The accent dot's motion. Each sung row owns a dot that's visible only while
- * that row is current, so it follows its row through any layout change (a
- * break opening or closing). On a line change the NEW row's dot plays from the
- * old dot's spot: a droplet hop whose leading edge reaches the new line
- * first, stretched to about two thirds of the gap and slightly thinned, then
- * the trailing edge catches up. Appearing (first line, after a break, a long
- * seek) is a small overshoot pop; going into a break shrinks the old dot
- * away. Event-driven only: nothing moves while a line holds. */
-function useAccentDot(
+/** The accent line's motion. Each sung row owns a bar that's visible only
+ * while that row is current, so it follows its row through any layout change
+ * (a break opening or closing). On a line change the NEW row's bar plays from
+ * the old bar's spot as a droplet hop: its leading end reaches the new line
+ * first, stretched over about two thirds of the gap and slightly thinned,
+ * then the trailing end catches up. Appearing (first line, after a break, a
+ * long seek) grows it from its center with a small overshoot; going into a
+ * break shrinks it away. Event-driven only: nothing moves while a line
+ * holds. */
+function useAccentBar(
   list: React.RefObject<HTMLDivElement | null>,
   lines: LyricLine[], idx: number, delayFirstMs: number,
 ): void {
@@ -454,34 +454,35 @@ function useAccentDot(
     prevLines.current = lines;
     if (from === idx) return;
     if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-    const now = dotOf(root, lines, idx);
-    const old = dotOf(root, lines, from);
+    const now = barOf(root, lines, idx);
+    const old = barOf(root, lines, from);
     const ease = `cubic-bezier(${EASE.inOut.join(",")})`;
     const out = `cubic-bezier(${EASE.out.join(",")})`;
     if (!now) {
-      old?.animate([{ transform: "scale(1)", opacity: 1 }, { transform: "scale(0)", opacity: 0 }],
+      old?.animate([{ transform: "scaleY(1)", opacity: 1 }, { transform: "scaleY(0)", opacity: 0 }],
         { duration: DUR[3], easing: ease });
       return;
     }
-    const pop = () => now.animate(
-      [{ transform: "scale(0)", opacity: 0 }, { transform: "scale(1.3)", opacity: 1, offset: 0.55 }, { transform: "scale(1)", opacity: 1 }],
+    const grow = () => now.animate(
+      [{ transform: "scaleY(0)", opacity: 0 }, { transform: "scaleY(1.2)", opacity: 1, offset: 0.55 }, { transform: "scaleY(1)", opacity: 1 }],
       { duration: DUR[5], easing: out, delay: first ? delayFirstMs : 0, fill: "backwards" });
     const oldRow = old?.parentElement;
     const newRow = now.parentElement;
-    if (!old || !oldRow || !newRow) { pop(); return; }
-    const dy = oldRow.offsetTop - newRow.offsetTop; // old spot, in the new dot's frame
-    const d = now.offsetHeight;
+    if (!old || !oldRow || !newRow) { grow(); return; }
     const top = now.offsetTop;
+    const h = now.offsetHeight;
+    // The old bar's spot, in the new bar's frame (rows can differ in height).
+    const dy = oldRow.offsetTop + old.offsetTop - (newRow.offsetTop + top);
     const gap = Math.abs(dy);
-    if (gap > newRow.offsetHeight * DOT_HOP_MAX_ROWS + 8) { pop(); return; }
+    if (gap > newRow.offsetHeight * BAR_HOP_MAX_ROWS + 8) { grow(); return; }
     const reach = gap * 0.65; // stretch at the midpoint
     const mid = dy < 0
-      ? { top: `${top - reach}px`, height: `${reach + d}px` } // moving down: bottom edge leads
-      : { top: `${top}px`, height: `${reach + d}px` }; // moving up: top edge leads
+      ? { top: `${top - reach}px`, height: `${reach + h}px` } // moving down: bottom end leads
+      : { top: `${top}px`, height: `${reach + h}px` }; // moving up: top end leads
     now.animate([
-      { top: `${top + dy}px`, height: `${d}px`, transform: "scaleX(1)" },
-      { ...mid, transform: "scaleX(0.75)", offset: 0.45 },
-      { top: `${top}px`, height: `${d}px`, transform: "scaleX(1)" },
+      { top: `${top + dy}px`, height: `${h}px`, transform: "scaleX(1)" },
+      { ...mid, transform: "scaleX(0.7)", offset: 0.45 },
+      { top: `${top}px`, height: `${h}px`, transform: "scaleX(1)" },
     ], { duration: DUR[5], easing: ease });
   }, [list, lines, idx, delayFirstMs]);
 }
@@ -566,11 +567,11 @@ const LyricLineRow = memo(function LyricLineRow({
     >
       <span
         aria-hidden
-        data-dot
+        data-bar
         // The album accent, like the waveform and progress fill, never on the
-        // words. Its motion (pop in, droplet hop between lines, shrink out)
-        // is useAccentDot's; the static state is just on or off.
-        className={`pointer-events-none absolute left-0 rounded-full bg-accent [transition:background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].dot} ${
+        // words. Its motion (grow in, droplet hop between lines, shrink out)
+        // is useAccentBar's; the static state is just on or off.
+        className={`pointer-events-none absolute left-0 rounded-full bg-accent [transition:background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].bar} ${
           current ? "opacity-100" : "opacity-0"
         }`}
       />
@@ -757,9 +758,9 @@ export function LyricsPanel({
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs, karaoke);
-  // On a real arrival the dot pops in as the closing beat, with the anchor
+  // On a real arrival the line grows in as the closing beat, with the anchor
   // row's ignite (index.css: 540ms hold).
-  useAccentDot(listRef, lines, idx, entrance ? 540 : 0);
+  useAccentBar(listRef, lines, idx, entrance ? 540 : 0);
   const [autoOffset, setAutoOffset] = useState(0);
   // Wheel-scrolling pauses auto-follow; it resumes via the "Now" chip,
   // scrolling back into the re-latch band, or a short idle (see RELATCH_BAND
