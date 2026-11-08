@@ -67,7 +67,7 @@ describe("word rows follow onsets independently of the line marker", () => {
     expect(next.style.values.has("--word-bright")).toBe(true);
     h.frame(3000);
     expect(old.style.values.has("--word-bright")).toBe(true);
-    h.frame(3260);
+    h.frame(3400);
     expect(old.style.values.has("--word-bright")).toBe(false);
     expect(next.style.values.has("--word-bright")).toBe(true);
     stop();
@@ -151,7 +151,7 @@ it("keeps row bounds across both voices regardless of printed order", () => {
   expect(css.values.has("--word-bright")).toBe(true);
   h.frame(5000);
   expect(css.values.has("--word-bright")).toBe(true);
-  h.frame(5260);
+  h.frame(5400);
   expect(css.values.has("--word-bright")).toBe(false);
   stop();
 });

@@ -58,3 +58,37 @@ The driver draws each word's share of the cursor as `--wipe`, the light's
 center in that span's own px, with an 11 px soft edge each side: −12 px
 is dark and width + 12 px is fully lit, so a word the cursor has passed
 has no half-lit tail while the row waits through a rest.
+
+## The voice (`src-tauri/src/voice.rs`, `src/lib/voiceMotion.ts`)
+
+Every word lifts 1 px while it sounds and settles over 260 ms after its
+release, so a run of syllables reads as one travelling wave.
+
+Held words also carry a voice track, made by the karaoke worker right
+after the alignment and the second ear:
+
+- The stretches around held notes (a word's onset to 120 ms past its end;
+  neighbours within 2 s share one stretch) are separated by the same Kim
+  Vocal 2 ear, the most held singing per pass first, within 10 passes
+  (about 64 s on Thien's PC) and no stretch started 150 s after the align
+  began.
+- Every 10 ms: YIN pitch on the separated vocal (70–1000 Hz), and RMS
+  loudness over 40 ms. Octave slips are folded back onto the note's
+  median. Pitch is saved in cents from A440 with a 30 ms mean; loudness is
+  scaled 0–100 against the song's held notes (20th–95th percentile) with a
+  quick attack and slow release.
+- Pitch from the mix instead of the separated vocal agreed on 62% of
+  voiced frames for Laufey "Haunted" and 12% for tripleS "Baby Flower".
+
+On the whole of "Haunted" (69 held notes) the budget voiced 29 in 9
+passes; analysis took 0.4 s of CPU, so the separator is the whole cost.
+
+On screen, a held note lifts with loudness (up to 1.2 px more), swells up
+to 3.5% across the hold, and moves 1 px per 55 cents away from the pitch
+80 ms into the note (clamped to ±2.2 px): vibrato is a gentle sway and a
+slide is a drift. Unvoiced frames hold the last pitch. Short syllables
+never follow pitch. Reduced motion turns the pose off.
+
+Saved syncs carry `detail_v` 3 once their held notes were listened to.
+With the separator installed, an older sync relearns on its next full
+listen (its words stay on screen meanwhile).
