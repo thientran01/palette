@@ -367,7 +367,7 @@ const SCALE = {
     breakGap: "gap-1",
     // The accent line left of the current lyric (the pre-redesign marker's
     // size, a hair thicker). barH is its one-text-line height in px; a
-    // wrapped line's bar grows by each extra text line (useAccentBar).
+    // wrapped line's bar grows by each extra text line (placeAccentBar).
     bar: "w-[3px]",
     barH: 16,
   },
@@ -1160,7 +1160,8 @@ export function LyricsPanel({
           </span>
         )}
       </div>
-      {/* Return-to-now chip â€” neutral chrome, on the edge the live line sits past, outside the re-latch
+      {/* Return-to-now chip â€” neutral chrome, on the edge the live line
+       * sits past, outside the re-latch
        * band only (inside it the line is on screen and a wheel-back
        * re-latches anyway). 32px offsets clear the 28px mask fade. Exits
        * plain with the browse, per the house transition rule. */}
