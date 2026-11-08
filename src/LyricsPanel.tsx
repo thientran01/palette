@@ -27,7 +27,7 @@ import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
 import { isProvisionalDuration, trackIdOf } from "./lib/trackId";
-import { driveWordRows, type WordRow } from "./lib/wordWipeDriver";
+import { driveWordRows, WIPE_FEATHER_PX, type WordRow } from "./lib/wordWipeDriver";
 import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
@@ -129,8 +129,10 @@ function useWordWipe(
       const index = Number(el.dataset.wordRow);
       const words = lines[index]?.words;
       if (!words?.length) continue;
+      const spans = Array.from(el.querySelectorAll<HTMLElement>("[data-word]"));
+      // offsetWidth is the laid-out width, unaffected by the ink's scale.
       rows.push({ index, words, style: el.style, el,
-        spans: Array.from(el.querySelectorAll<HTMLElement>("[data-word]"), span => span.style) });
+        spans: spans.map(span => span.style), widths: spans.map(span => span.offsetWidth) });
     }
     return driveWordRows(rows, currentLine, leadMs, posClock, {
       request: cb => requestAnimationFrame(cb), cancel: id => cancelAnimationFrame(id),
@@ -138,9 +140,11 @@ function useWordWipe(
   }, [list, lines, currentLine, leadMs, enabled]);
 }
 
-/** Soft edge on the wipe, in px â€” a hard stop strobes at 60fps. */
-const WIPE_FEATHER = "5px";
-const WORD_GRADIENT = `linear-gradient(to right, var(--word-bright, currentColor) calc(var(--wipe, 0%) - 16px), var(--word-sheen, var(--word-bright, currentColor)) calc(var(--wipe, 0%) - ${WIPE_FEATHER}), currentColor calc(var(--wipe, 0%) + ${WIPE_FEATHER}))`;
+/** Soft edge on the wipe, either side of the light's center (--wipe, in
+ * the span's own px). A hard stop strobes at 60fps; 11px reads as one
+ * moving light. No white sheen on the filling word and no halo when it
+ * completes: at one word per ~100ms syllable those flickered (2026-11-08). */
+const WORD_GRADIENT = `linear-gradient(to right, var(--word-bright, currentColor) calc(var(--wipe, -${WIPE_FEATHER_PX + 1}px) - ${WIPE_FEATHER_PX}px), currentColor calc(var(--wipe, -${WIPE_FEATHER_PX + 1}px) + ${WIPE_FEATHER_PX}px))`;
 
 export type LyricsState =
   // "none" = a definitive served miss (LRCLIB has no lyrics for this track);

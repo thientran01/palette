@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { attachWords, parseLrc } from "./lrc";
-import { driveWordRows, type WordRow } from "./wordWipeDriver";
+import { driveWordRows, WIPE_FEATHER_PX, type WordRow } from "./wordWipeDriver";
 
 function style() {
   const values = new Map<string, string>();
@@ -8,6 +8,12 @@ function style() {
     setProperty: vi.fn((key: string, value: string | null) => { values.set(key, value ?? ""); }),
     removeProperty: vi.fn((key: string) => { const old = values.get(key) ?? ""; values.delete(key); return old; }),
   };
+}
+/** A span's lit share from its --wipe (px): 0 dark, 1 fully lit. Test rows
+ * carry no measured widths, so the driver estimates 10px per letter. */
+function lit(span: { values: Map<string, string> }, letters = 4): number {
+  const edge = WIPE_FEATHER_PX + 1;
+  return (parseFloat(span.values.get("--wipe")!) + edge) / (10 * letters + 2 * edge);
 }
 function row(index: number, t: number, end = t + 1000) {
   const css = style(); const span = style();
@@ -48,9 +54,9 @@ describe("data-wiping marks only the rows being painted", () => {
 describe("word rows follow onsets independently of the line marker", () => {
   it("paints an upcoming word before its line becomes current", () => {
     const h = harness(2800); const upcoming = row(1, 3000);
-    const stop = driveWordRows([upcoming], 0, 210, h.clock, h.frames);
+    const stop = driveWordRows([upcoming], 0, 300, h.clock, h.frames);
     expect(upcoming.style.values.get("--word-bright")).toBe("rgb(var(--fg))");
-    expect(parseFloat(upcoming.spans[0].values.get("--wipe")!)).toBeGreaterThan(0);
+    expect(lit(upcoming.spans[0])).toBeGreaterThan(0);
     expect(h.pending.size).toBe(1);
     stop();
   });
@@ -69,7 +75,8 @@ describe("word rows follow onsets independently of the line marker", () => {
   it("clears future highlights on a backward seek and recomputes their wipe", () => {
     const h = harness(3200); const upcoming = row(1, 3000);
     const stop = driveWordRows([upcoming], 0, 0, h.clock, h.frames);
-    expect(upcoming.spans[0].values.get("--wipe")).toBe("20.0%");
+    const before = lit(upcoming.spans[0]);
+    expect(before).toBeGreaterThan(0); expect(before).toBeLessThan(1);
     h.anchor(1000, false);
     expect(upcoming.style.values.has("--word-bright")).toBe(false);
     expect(upcoming.style.values.has("--word-peak")).toBe(false);
@@ -78,8 +85,8 @@ describe("word rows follow onsets independently of the line marker", () => {
     expect(upcoming.style.values.has("--lyric-filter")).toBe(false);
     expect(h.pending.size).toBe(0);
     h.anchor(3020, true);
-    const wipe = parseFloat(upcoming.spans[0].values.get("--wipe")!);
-    expect(wipe).toBeGreaterThan(0); expect(wipe).toBeLessThan(100);
+    const wipe = lit(upcoming.spans[0]);
+    expect(wipe).toBeGreaterThan(0); expect(wipe).toBeLessThan(before);
     stop();
   });
   it("runs one loop, cancels on pause, and releases subscriptions on cleanup", () => {
@@ -125,11 +132,12 @@ it("advances lead and backing spans independently without filling future lead wo
   const spans=words.map(() => style());
   const h=harness(149000);
   const stop=driveWordRows([{index:0,words,spans,style:style()}],0,0,h.clock,h.frames);
-  expect(spans[0].values.get("--wipe")).toBe("100.0%");
-  expect(spans[1].values.get("--wipe")).toBe("0.0%");
-  expect(parseFloat(spans[2].values.get("--wipe")!)).toBeGreaterThan(0);
+  const letters=words.map(w=>[...w.text].length);
+  expect(lit(spans[0],letters[0])).toBeCloseTo(1,6);
+  expect(lit(spans[1],letters[1])).toBeCloseTo(0,6);
+  expect(lit(spans[2],letters[2])).toBeGreaterThan(0);
   h.anchor(148190,false);
-  expect(spans.every(s=>s.values.get("--wipe")==="0.0%")).toBe(true);
+  expect(spans.every((s,i)=>Math.abs(lit(s,letters[i]))<1e-9)).toBe(true);
   expect(h.pending.size).toBe(0);
   stop();
 });
@@ -148,44 +156,36 @@ it("keeps row bounds across both voices regardless of printed order", () => {
   stop();
 });
 
-it("blooms after filling, fades on the playback clock, and resets on seek", () => {
+// One soft light moves through the row: no white sheen on the filling word
+// and no halo when it completes (they flickered at syllable rate).
+it("writes only the wipe: no sheen or completion halo", () => {
   const h=harness(1010);const current=row(1,1000,1500);
   const stop=driveWordRows([current],0,0,h.clock,h.frames);
-  expect(current.spans[0].values.get("--word-bloom")).toBe("none");
-  h.frame(1500);
-  expect(current.spans[0].values.get("--wipe")).toBe("100.0%");
-  expect(current.spans[0].values.get("--word-bloom")).toContain("var(--word-halo, transparent)");
-  expect(current.style.values.has("--word-halo")).toBe(true);
-  h.anchor(1600,false);
-  const paused=current.spans[0].values.get("--word-bloom");
-  expect(h.pending.size).toBe(0);
-  h.frame(1650);
-  expect(current.spans[0].values.get("--word-bloom")).toBe(paused);
-  h.anchor(1700,true);
-  expect(current.spans[0].values.get("--word-bloom")).not.toBe(paused);
-  h.anchor(1010,true);
-  expect(current.spans[0].values.get("--word-bloom")).toBe("none");
-  h.frame(1500);h.frame(1760);
-  expect(current.style.values.has("--word-halo")).toBe(false);
+  h.frame(1300);h.frame(1500);h.frame(1600);
+  const written=new Set([...current.spans[0].setProperty.mock.calls.map(c=>c[0]),...current.style.setProperty.mock.calls.map(c=>c[0])]);
+  expect([...written].filter(k=>/sheen|bloom|halo|peak/.test(k))).toEqual([]);
+  expect(lit(current.spans[0])).toBeCloseTo(1,6);
   stop();
-  expect(h.pending.size).toBe(0);
 });
 
-it("waits through acoustic subword holds and applies the existing lead offset", () => {
+it("slows on a held letter and applies the existing lead offset", () => {
   const current=row(0,1000,2000);
   const detailed={...current,words:[{t:1000,end:2000,text:"hallway",points:[
     {t:1000,fraction:0},{t:1200,fraction:.5},{t:1900,fraction:.5},{t:2000,fraction:1},
   ]}]};
   const h=harness(1100);
   const stop=driveWordRows([detailed],0,220,h.clock,h.frames);
-  expect(current.spans[0].values.get("--word-bloom")).toBe("none");
-  h.frame(1700);
-  expect(current.spans[0].values.get("--word-bloom")).toBe("none");
+  // 220ms lead: the clock at 1680 is the song at 1900, where the held
+  // first half ends; it took the whole hold, not 200ms.
+  h.frame(1230);
+  expect(lit(current.spans[0],7)).toBeLessThan(.4);
+  h.frame(1680);
+  expect(lit(current.spans[0],7)).toBeCloseTo(.5,6);
+  // The second half gets the letter pace (55ms a letter), not 100ms.
   h.frame(1780);
-  expect(current.spans[0].values.get("--wipe")).toBe("100.0%");
-  expect(current.spans[0].values.get("--word-bloom")).toContain("12.00px");
-  h.frame(2040);
-  expect(current.spans[0].values.get("--word-bloom")).toBe("none");
+  expect(lit(current.spans[0],7)).toBeLessThan(1);
+  h.frame(1880);
+  expect(lit(current.spans[0],7)).toBeCloseTo(1,6);
   stop();
 });
 
@@ -195,8 +195,7 @@ it("does not rewrite identical CSS values as fractional progress changes", () =>
   r.spans[0].setProperty.mockClear();
   h.frame(1100.001);
   expect(r.spans[0].setProperty).not.toHaveBeenCalled();
-  h.frame(1200);
-  expect(r.spans[0].setProperty).toHaveBeenCalledWith("--wipe","10.0%");
-  expect(r.spans[0].setProperty).not.toHaveBeenCalledWith("--word-sheen",expect.anything());
+  h.frame(1300);
+  expect(r.spans[0].setProperty).toHaveBeenCalledWith("--wipe",expect.stringMatching(/^-?\d+\.\dpx$/));
   stop();
 });

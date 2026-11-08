@@ -474,7 +474,6 @@ body {
  * no idle loop. Layout is always measured at full size; only the inner ink
  * scales and blurs. */
 .lyric-row {
-  --lyric-peak: 255 255 255;
   /* Balance the last rows of a wrapped line so a short tail ("oh)") isn't
    * left alone. Depends only on the text and the row width, so a line wraps
    * the same whether it's current or not. overflow-wrap is the escape hatch
@@ -483,7 +482,6 @@ body {
   text-wrap: pretty;
   overflow-wrap: anywhere;
 }
-[data-theme="light"] .lyric-row { --lyric-peak: var(--fg); }
 .lyric-ink {
   display: block;
   /* Shrink to the words (wrapping is unchanged: a line that needs the full
@@ -541,7 +539,6 @@ button.lyric-row:hover { --lyric-filter: none; }
 @media (prefers-reduced-motion: reduce) {
   .lyric-ink { transform: none; transition: none; filter: none; }
   .lyric-row .lyric-ink { animation: none; }
-  .lyric-row [data-word] { --word-sheen: var(--word-bright, currentColor) !important; }
 }
 
 /* The word wipe paints each word as a gradient clipped to its glyphs, and
@@ -565,12 +562,7 @@ button.lyric-row:hover { --lyric-filter: none; }
   will-change: filter;
 }
 
-/* A brief onset bloom on the glyphs; the row background stays clear. */
 .lyric-ink { position: relative; }
-.lyric-row [data-word] { text-shadow: var(--word-bloom, none); }
-@media (prefers-reduced-motion: reduce) {
-  .lyric-row [data-word] { text-shadow: none; }
-}
 
 /* Quiet inset scrollbar, sharing the Settings thumb treatment. */
 .sync-scroll { scrollbar-gutter: stable; }
