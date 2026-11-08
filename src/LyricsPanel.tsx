@@ -682,8 +682,21 @@ export function LyricsPanel({
   // the layout effect force a reflow at translateY(0) BEFORE the offset
   // lands, which arms the transform transition and slides the whole list
   // ~hundreds of px on mount. Transition class only after the first paint.
+  // Two frames, not a plain effect: a mount inside a click (closing the
+  // queue remounts focus's lyric column) flushes passive effects before the
+  // first paint, which armed the transition early and slid the list down
+  // from the top to the current line on every queue close.
   const [anchored, setAnchored] = useState(false);
-  useEffect(() => setAnchored(true), []);
+  useEffect(() => {
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => setAnchored(true));
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
+  }, []);
 
   // Head/tail scroll room so the FIRST and LAST lines can rise to the anchor
   // band instead of jamming against the top/bottom frame with nothing past

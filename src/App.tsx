@@ -979,17 +979,17 @@ function ExpandedView({
   // surface (its big cover is the identity), so the header fades only there.
   const headerShown = active !== "album";
 
-  // Peer-layer visibility: opaque, same footprint, OPACITY-ONLY crossfade —
-  // in 200ms / out 140ms EASE.out, visibility deferred past the fade so a
+  // Peer-layer visibility: opaque, same footprint, an opacity + 2px-blur
+  // swap (.view-on/.view-off in index.css) — out 120ms, in 180ms starting
+  // 40ms later, so lyric lines and queue rows are never both legible at
+  // half strength (the old 200/140 overlapping crossfade printed one over
+  // the other; Thien, 2026-11-08). Visibility deferred past the fade so a
   // hidden layer neither eats clicks nor ghosts. No scale/transform: a scale
   // exhale reads as a panel opening and lets the layer behind peek at the
   // edges (both were live bugs, 2026-07-12). `inert` drops the inactive
   // layers from hit-testing and the a11y tree. (prefers-reduced-motion is
   // handled by the global transition kill in index.css.)
-  const layer = (on: boolean): string =>
-    on
-      ? "opacity-100 [transition:opacity_200ms_var(--ease-out-tk)]"
-      : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),visibility_0s_140ms]";
+  const layer = (on: boolean): string => (on ? "view-on" : "view-off");
 
   // The track-change slide (2026-07-23): content INSIDE a layer swaps with a
   // small directional drift — the LAYERS themselves still crossfade in
