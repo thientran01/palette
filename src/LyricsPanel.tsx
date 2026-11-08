@@ -27,6 +27,7 @@ import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
 import { driveWordRows, type WordRow } from "./lib/wordWipeDriver";
 import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
+import { DUR, EASE } from "./lib/tokens";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
  * next line boundary, recomputed on every kernel anchor event (seek, pause,
@@ -333,6 +334,9 @@ const SCALE = {
     breakRow: "h-8 px-3 py-1",
     breakDot: "h-[6px] w-[6px]",
     breakGap: "gap-1",
+    // The accent dot left of the current line: the break dots' size, centered
+    // on the first text line (6px padding + half the 24px line - 3px).
+    dot: "top-[15px] h-[6px] w-[6px]",
   },
   focus: {
     // The compact view's proportions scaled up (Thien, 2026-11-07: the
@@ -366,6 +370,8 @@ const SCALE = {
     breakRow: "px-6 py-3",
     breakDot: "h-[12px] w-[12px]",
     breakGap: "gap-2",
+    // 16px padding + half the 66px line - 6px.
+    dot: "top-[43px] h-[12px] w-[12px]",
   },
 } as const satisfies Record<LyricsScale, unknown>;
 
@@ -414,6 +420,70 @@ function recedeBlur(scale: LyricsScale, distance: number, browsing: boolean): nu
   if (distance === 0 || browsing) return 0;
   const table = SCALE[scale].blur as Record<string, number | undefined>;
   return table[String(distance)] ?? 0;
+}
+
+/** Rows further apart than this hop by pop instead of stretching across the
+ * panel (a seek, not the song moving on). */
+const DOT_HOP_MAX_ROWS = 3;
+
+function dotOf(list: HTMLElement, lines: LyricLine[], i: number | null): HTMLElement | null {
+  if (i === null || i < 0 || !lines[i] || lines[i].end !== undefined) return null;
+  return (list.children[i] as HTMLElement | undefined)?.querySelector<HTMLElement>("[data-dot]") ?? null;
+}
+
+/** The accent dot's motion. Each sung row owns a dot that's visible only while
+ * that row is current, so it follows its row through any layout change (a
+ * break opening or closing). On a line change the NEW row's dot plays from the
+ * old dot's spot: a droplet hop whose leading edge reaches the new line
+ * first, stretched to about two thirds of the gap and slightly thinned, then
+ * the trailing edge catches up. Appearing (first line, after a break, a long
+ * seek) is a small overshoot pop; going into a break shrinks the old dot
+ * away. Event-driven only: nothing moves while a line holds. */
+function useAccentDot(
+  list: React.RefObject<HTMLDivElement | null>,
+  lines: LyricLine[], idx: number, delayFirstMs: number,
+): void {
+  const prev = useRef<number | null>(null);
+  const prevLines = useRef(lines);
+  useLayoutEffect(() => {
+    const root = list.current;
+    if (!root) return;
+    const from = prevLines.current === lines ? prev.current : null;
+    const first = prev.current === null;
+    prev.current = idx;
+    prevLines.current = lines;
+    if (from === idx) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const now = dotOf(root, lines, idx);
+    const old = dotOf(root, lines, from);
+    const ease = `cubic-bezier(${EASE.inOut.join(",")})`;
+    const out = `cubic-bezier(${EASE.out.join(",")})`;
+    if (!now) {
+      old?.animate([{ transform: "scale(1)", opacity: 1 }, { transform: "scale(0)", opacity: 0 }],
+        { duration: DUR[3], easing: ease });
+      return;
+    }
+    const pop = () => now.animate(
+      [{ transform: "scale(0)", opacity: 0 }, { transform: "scale(1.3)", opacity: 1, offset: 0.55 }, { transform: "scale(1)", opacity: 1 }],
+      { duration: DUR[5], easing: out, delay: first ? delayFirstMs : 0, fill: "backwards" });
+    const oldRow = old?.parentElement;
+    const newRow = now.parentElement;
+    if (!old || !oldRow || !newRow) { pop(); return; }
+    const dy = oldRow.offsetTop - newRow.offsetTop; // old spot, in the new dot's frame
+    const d = now.offsetHeight;
+    const top = now.offsetTop;
+    const gap = Math.abs(dy);
+    if (gap > newRow.offsetHeight * DOT_HOP_MAX_ROWS + 8) { pop(); return; }
+    const reach = gap * 0.65; // stretch at the midpoint
+    const mid = dy < 0
+      ? { top: `${top - reach}px`, height: `${reach + d}px` } // moving down: bottom edge leads
+      : { top: `${top}px`, height: `${reach + d}px` }; // moving up: top edge leads
+    now.animate([
+      { top: `${top + dy}px`, height: `${d}px`, transform: "scaleX(1)" },
+      { ...mid, transform: "scaleX(0.75)", offset: 0.45 },
+      { top: `${top}px`, height: `${d}px`, transform: "scaleX(1)" },
+    ], { duration: DUR[5], easing: ease });
+  }, [list, lines, idx, delayFirstMs]);
 }
 
 /** One lyric line. Memoized so a line advance reconciles the two rows whose
@@ -494,6 +564,16 @@ const LyricLineRow = memo(function LyricLineRow({
         opacity === 0 ? "pointer-events-none" : seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
+      <span
+        aria-hidden
+        data-dot
+        // The album accent, like the waveform and progress fill, never on the
+        // words. Its motion (pop in, droplet hop between lines, shrink out)
+        // is useAccentDot's; the static state is just on or off.
+        className={`pointer-events-none absolute left-0 rounded-full bg-accent [transition:background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].dot} ${
+          current ? "opacity-100" : "opacity-0"
+        }`}
+      />
       <span className="lyric-ink">
       {timed
         ? words.map((w, wi) => (
@@ -677,6 +757,9 @@ export function LyricsPanel({
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs, karaoke);
+  // On a real arrival the dot pops in as the closing beat, with the anchor
+  // row's ignite (index.css: 540ms hold).
+  useAccentDot(listRef, lines, idx, entrance ? 540 : 0);
   const [autoOffset, setAutoOffset] = useState(0);
   // Wheel-scrolling pauses auto-follow; it resumes via the "Now" chip,
   // scrolling back into the re-latch band, or a short idle (see RELATCH_BAND

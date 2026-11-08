@@ -57,10 +57,12 @@ describe("depth of field", () => {
   it("softens even the next line in focus mode, where the type is 44px", () => {
     expect(filters("focus", 0).slice(0, 4)).toEqual(["none", "blur(0.6px)", "blur(1.5px)", "blur(2.5px)"]);
   });
-  it("has no accent bar on the current line", () => {
+  it("shows the accent only as the current line's dot, never on the words", () => {
     const html = renderToStaticMarkup(<LyricsPanel seekable={true} leadMs={0} lines={lines} />);
     expect(html).not.toContain("data-marker");
-    expect(html).not.toContain("bg-accent");
+    expect((html.match(/data-dot[^>]*bg-accent[^>]*opacity-100/g) ?? []).length).toBe(1);
+    expect((html.match(/bg-accent/g) ?? []).length).toBe(lines.length);
+    expect(html).not.toMatch(/text-accent/);
   });
 });
 
