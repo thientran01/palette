@@ -34,6 +34,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 - A lyric line no longer jumps from one row to two when it becomes the current line.
 - Karaoke words on Spotify no longer start up to 0.4 s early on some plays and on time on others. Spotify reports each new song as starting a little before its audio really does, and Palette used to keep that head start for the whole song, by a different amount every play. Now it eases back onto Spotify's timeline in the first couple of seconds, so one word-timing setting fits every song.
+- Karaoke words no longer race through each line with no rhythm on songs Palette learned while it couldn't hear the music (for example when Windows wouldn't let it capture Spotify's audio). Those songs now show line karaoke and relearn word timing the next time they play in full, and a listen that doesn't pick up the vocals is no longer saved.
 
 ## [1.0.11] - 2026-11-07
 
