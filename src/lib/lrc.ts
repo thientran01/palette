@@ -157,8 +157,31 @@ export const VOCAL_LEAD_MS: Record<NowPlaying["player"], number> = {
   none: 250, // unreachable (no lyrics without a session) — table completeness
 };
 
+/** Line starts as the karaoke rows actually light up. The word driver paints
+ * a row from its first word's onset (minus the word lead), and the aligner
+ * often hears a line begin before its LRC stamp, so a long line used to stay
+ * current while the next one was already filling (Thien, 2026-11-07). A row
+ * becomes current at whichever comes first, its stamp or its first painted
+ * word. Never later than the stamp (a late acoustic entrance keeps the
+ * source time), and never at or before the previous row's start: words that
+ * would leapfrog a line are implausible, so that line keeps its stamp. */
+export function wordTimedStarts(lines: LyricLine[], wordLeadMs: number): { t: number }[] {
+  const out: { t: number }[] = [];
+  let prev = Number.NEGATIVE_INFINITY;
+  for (const line of lines) {
+    let t = line.t;
+    if (line.end === undefined && line.words?.length) {
+      const onset = line.words.reduce((m, w) => Math.min(m, w.t), Infinity) - wordLeadMs;
+      if (onset < t && onset > prev) t = onset;
+    }
+    out.push({ t });
+    prev = t;
+  }
+  return out;
+}
+
 /** Index of the line active at `positionMs` (-1 before the first line). */
-export function currentLineIndex(lines: LyricLine[], positionMs: number, leadMs: number): number {
+export function currentLineIndex(lines: readonly { t: number }[], positionMs: number, leadMs: number): number {
   const p = positionMs + leadMs;
   let lo = 0;
   let hi = lines.length - 1;
@@ -180,7 +203,7 @@ export function currentLineIndex(lines: LyricLine[], positionMs: number, leadMs:
  * `idx === currentLineIndex(lines, positionMs)` — a position at the boundary
  * already belongs to the next line. */
 export function msUntilNextLine(
-  lines: LyricLine[],
+  lines: readonly { t: number }[],
   idx: number,
   positionMs: number,
   leadMs: number,
