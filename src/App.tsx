@@ -2082,7 +2082,10 @@ function App() {
           height: MODE_SIZES[mode][1] - SHELL_GUTTER_PX,
         }}
       >
-      {/* Crossfading content layers, clipped by the gliding shell above. */}
+      {/* Crossfading content layers, clipped by the gliding shell above,
+          on an opaque text plane (index.css .text-plane) so their text gets
+          ClearType in the transparent window. */}
+      <div className="text-plane absolute inset-0">
       <AnimatePresence>
         <motion.div key={mode} {...morph} className="absolute inset-0">
         <ModeContent mode={mode} corner={corner}>
@@ -2291,6 +2294,7 @@ function App() {
         </ModeContent>
         </motion.div>
       </AnimatePresence>
+      </div>
       {/* Inside the persistent shell but OUTSIDE the content swap: the shell
           never fades, so the corner chrome never fades with content — and
           seated on the shell it tracks the visible box in every dock corner

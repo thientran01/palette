@@ -28,6 +28,23 @@ function harness(pos = 0, playing = true) {
   };
 }
 
+describe("data-wiping marks only the rows being painted", () => {
+  it("sets it while a row is active and clears it after, and on stop", () => {
+    const h = harness(2200);
+    const attrs = new Map<string, boolean>();
+    const el = { toggleAttribute: vi.fn((name: string, on?: boolean) => { attrs.set(name, !!on); return !!on; }) };
+    const live = { ...row(0, 2000, 2400), el };
+    const stop = driveWordRows([live], -1, 0, h.clock, h.frames);
+    expect(attrs.get("data-wiping")).toBe(true);
+    h.anchor(9000, false);
+    expect(attrs.get("data-wiping")).toBe(false);
+    h.anchor(2200, false);
+    expect(attrs.get("data-wiping")).toBe(true);
+    stop();
+    expect(attrs.get("data-wiping")).toBe(false);
+  });
+});
+
 describe("word rows follow onsets independently of the line marker", () => {
   it("paints an upcoming word before its line becomes current", () => {
     const h = harness(2800); const upcoming = row(1, 3000);
