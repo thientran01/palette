@@ -7,6 +7,7 @@ mod dock;
 mod focus;
 mod history;
 mod karaoke;
+mod keyhook;
 mod lastfm;
 mod library;
 mod loopback;
@@ -244,6 +245,7 @@ pub(crate) fn register_all(app: &AppHandle) {
         let _ = gs.unregister(prev.chord.as_str());
     }
     let mut infos = Vec::with_capacity(9);
+    let mut hooked: Vec<(String, keyhook::Action)> = Vec::new();
     for def in hotkey_defs() {
         let chord = resolve_chord(app, def.id, def.default_chord);
         let action = def.action;
@@ -262,6 +264,11 @@ pub(crate) fn register_all(app: &AppHandle) {
         if let Err(e) = result {
             log::warn!("hotkey {} ({chord}) failed to register: {e}", def.id);
         }
+        // Only chords RegisterHotKey reserved go to the keyboard hook: a
+        // chord another app owns stays that app's.
+        if registered {
+            hooked.push((chord.clone(), action));
+        }
         infos.push(HotkeyInfo {
             id: def.id.to_string(),
             label: def.label.to_string(),
@@ -276,6 +283,7 @@ pub(crate) fn register_all(app: &AppHandle) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = infos.clone();
     }
+    keyhook::set_chords(&hooked);
     let _ = app.emit("hotkeys-changed", &infos);
 }
 
@@ -339,6 +347,9 @@ async fn set_hotkeys_capture(app: AppHandle, active: bool) {
         let _reg = REG_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The keyboard hook answers before RegisterHotKey, so it must go
+        // quiet too or the capture would still never see a bound chord.
+        keyhook::set_chords(&[]);
         let gs = app.global_shortcut();
         for prev in hotkey_snapshot(&app) {
             let _ = gs.unregister(prev.chord.as_str());
@@ -1670,6 +1681,9 @@ pub fn run() {
             // shortcut's OS-registration result so the prefs Hotkeys UI can
             // surface a reserved-combo failure instead of a silent eprintln,
             // and the prefs rebind/reset commands re-run this exact path.
+            // The keyboard hook (keyhook.rs) delivers the same chords where
+            // a game silences RegisterHotKey; register_all fills its table.
+            keyhook::install(app.handle());
             register_all(app.handle());
 
             // Self-update: one silent check at launch against the latest
