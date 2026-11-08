@@ -1,9 +1,12 @@
-//! Native MDX-Net vocal separation for the development-only vocal trial
+//! Native MDX-Net vocal separation: the karaoke review's second ear on
+//! the lines it doubts (`VocalEar`), and the development-only vocal trial
 //! (`vocal_preview.rs`). Runs Kim Vocal 2 through the ONNX Runtime the
 //! acoustic aligner already loads, so no Python or torch is involved.
+//! docs/specs/2026-11-08-karaoke-sync-review.md has the second ear.
 //!
 //! The model wants 44.1kHz stereo. Loopback captures 48kHz stereo, so the
-//! trial records that alongside the usual 16kHz mono and resamples here.
+//! recorder keeps that alongside the usual 16kHz mono when the model is
+//! installed, and this resamples it.
 //! A mono 16kHz recording (the cpal fallback path) still works: it is
 //! upsampled and duplicated, which can't restore what the downmix lost.
 //!
@@ -13,7 +16,7 @@
 //! STFT, keep the chunk's middle (n_fft/2 trimmed from each side).
 use ort::{session::Session, value::Tensor};
 use rustfft::{num_complex::Complex, Fft, FftPlanner};
-use std::{path::Path, sync::Arc};
+use std::{ops::Range, path::Path, sync::Arc};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -121,6 +124,51 @@ impl VocalSeparator {
         Ok(to_i16_normalized(&vocals))
     }
 
+    /// Separated vocals for `range` of the 16kHz recording only: the
+    /// review's second ear (`VocalEar`) on doubted lines, seconds instead
+    /// of the whole song. A second of context on each side keeps the
+    /// separator's chunk edges out of the lines. Stereo, when kept, is
+    /// sliced at the matching instants.
+    pub fn vocals_window(
+        &mut self,
+        stereo: Option<&Stereo>,
+        mono16k: &[i16],
+        range: Range<usize>,
+        target_hz: u32,
+    ) -> Result<Vec<i16>> {
+        if range.start >= range.end || range.end > mono16k.len() || target_hz == 0 {
+            return Err("invalid vocal window".into());
+        }
+        let Range { start: a, end: b } = padded(range.clone(), mono16k.len(), target_hz);
+        let vocals = match stereo.filter(|s| s.rate > 0 && s.interleaved.len() % 2 == 0) {
+            Some(s) => {
+                let at = |i: usize| {
+                    ((i as u64 * s.rate as u64 / target_hz as u64) as usize).min(s.frames())
+                };
+                let frames = &s.interleaved[at(a) * 2..at(b) * 2];
+                let to_f = |v: &i16| *v as f32 / 32768.0;
+                let left: Vec<f32> = frames.iter().step_by(2).map(to_f).collect();
+                let right: Vec<f32> = frames.iter().skip(1).step_by(2).map(to_f).collect();
+                let mono = self.separate(&left, &right, s.rate)?;
+                let mut v = to_target_grid(&mono, s.rate, target_hz);
+                // Box decimation can land a sample short or long of the
+                // recorder's own grid for this slice.
+                v.resize(b - a, 0.0);
+                v
+            }
+            None => {
+                let mono: Vec<f32> = mono16k[a..b].iter().map(|&v| v as f32 / 32768.0).collect();
+                self.separate(&mono, &mono, target_hz)?
+            }
+        };
+        if vocals.len() != b - a {
+            return Err("separated window has the wrong length".into());
+        }
+        // Gain from the padded span, as the whole-song path takes it from
+        // the whole song: a quiet line inside a loud passage stays quiet.
+        Ok(to_i16_normalized(&vocals)[range.start - a..range.end - a].to_vec())
+    }
+
     /// Mono vocal estimate at `rate`, same length as the input channels.
     pub fn separate(&mut self, left: &[f32], right: &[f32], rate: u32) -> Result<Vec<f32>> {
         if left.len() != right.len() || left.is_empty() || rate == 0 {
@@ -182,6 +230,57 @@ impl VocalSeparator {
             *v *= COMPENSATE;
         }
         Ok((out_l, out_r))
+    }
+}
+
+/// What `vocals_window` separates for `range`: a second more each side,
+/// inside the recording.
+fn padded(range: Range<usize>, len: usize, rate: u32) -> Range<usize> {
+    let pad = rate as usize;
+    range.start.saturating_sub(pad)..(range.end + pad).min(len)
+}
+
+/// Model passes `separate` makes over `samples` at `rate`: `demix` pads
+/// the 44.1kHz signal to whole GEN-sample steps, one pass a step.
+pub fn passes(samples: usize, rate: u32) -> usize {
+    (samples * MODEL_RATE as usize).div_ceil(rate.max(1) as usize) / GEN + 1
+}
+
+/// The separator as the review's second ear (`acoustic::SecondEar`) on
+/// one recording: the capture's stereo when the recorder kept it.
+pub struct VocalEar<'a> {
+    pub separator: &'a mut VocalSeparator,
+    pub stereo: Option<&'a Stereo>,
+    pub mono16k: &'a [i16],
+    pub target_hz: u32,
+    /// No stretch starts after this. A busy PC can take several times as
+    /// long a pass (one whole-song separation took 527s instead of about
+    /// 210s, pulse.log 2026-10-31); the lines left keep the mix's timing.
+    pub deadline: Option<std::time::Instant>,
+    /// Separator input so far, in recording samples, and the passes it took.
+    pub heard: usize,
+    pub passes: usize,
+}
+
+impl crate::acoustic::SecondEar for VocalEar<'_> {
+    fn hear(&mut self, range: Range<usize>) -> Result<Vec<i16>> {
+        if self
+            .deadline
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
+            return Err("out of time".into());
+        }
+        self.heard += padded(range.clone(), self.mono16k.len(), self.target_hz).len();
+        self.passes += crate::acoustic::SecondEar::passes(self, range.clone());
+        self.separator
+            .vocals_window(self.stereo, self.mono16k, range, self.target_hz)
+    }
+
+    fn passes(&self, range: Range<usize>) -> usize {
+        passes(
+            padded(range, self.mono16k.len(), self.target_hz).len(),
+            self.target_hz,
+        )
     }
 }
 
@@ -421,6 +520,21 @@ mod tests {
         );
         let ramp: Vec<f32> = (0..6).map(|i| i as f32).collect();
         assert_eq!(to_target_grid(&ramp, 48_000, 16_000), [1.0, 4.0]);
+    }
+
+    #[test]
+    fn the_second_ear_counts_padded_whole_passes() {
+        let hz = 16_000;
+        // One pass holds 5.75s of audio; a 182.6s song took 32
+        // (pulse.log, 2026-10-31).
+        assert_eq!(passes(hz as usize * 5, hz), 1);
+        assert_eq!(passes(hz as usize * 6, hz), 2);
+        assert_eq!(passes(182_600 * 16, hz), 32);
+        // The same span at the capture rate costs the same.
+        assert_eq!(passes(48_000 * 6, 48_000), passes(hz as usize * 6, hz));
+        // A second of context each side, never past the recording.
+        assert_eq!(padded(20_000..30_000, 100_000, hz), 4_000..46_000);
+        assert_eq!(padded(5_000..95_000, 100_000, hz), 0..100_000);
     }
 
     #[test]

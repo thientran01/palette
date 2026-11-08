@@ -230,8 +230,9 @@ struct Rec {
     acc: f32,
     n: u32,
     samples: Vec<f32>,
-    /// Interleaved stereo at `rate_in`, kept only for the vocal trial's
-    /// separator. Dropped (not the recording) if a packet arrives without it.
+    /// Interleaved stereo at `rate_in`, kept only for the separator (the
+    /// review's second ear, or the vocal trial). Dropped (not the
+    /// recording) if a packet arrives without it.
     stereo: Option<Vec<i16>>,
     peak: f32,
     /// Wall clock at the first delivered block + input frames received
@@ -739,7 +740,8 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         acc: 0.0,
         n: 0,
         samples: Vec::with_capacity(TARGET_HZ as usize * 240),
-        stereo: crate::vocal_preview::enabled().then(Vec::new),
+        stereo: (crate::vocal_preview::enabled() || acoustic::second_ear_installed())
+            .then(Vec::new),
         peak: 0.0,
         started: None,
         received: 0,
@@ -1021,7 +1023,7 @@ fn write_dump(
         pcm.extend_from_slice(&v.to_le_bytes());
     }
     write_atomic(&dir.join("pcm.i16"), &pcm)?;
-    // Vocal trial only: lets the separator be replayed offline at `rate_in`.
+    // Kept for the separator: lets it be replayed offline at `rate_in`.
     if let Some(stereo) = &rec.stereo {
         let bytes: Vec<u8> = stereo.iter().flat_map(|s| s.to_le_bytes()).collect();
         write_atomic(&dir.join("stereo.i16"), &bytes)?;
@@ -1898,6 +1900,7 @@ mod tests {
     #[test]
     fn only_the_replaced_acoustic_recipe_stays_readable() {
         assert!(superseded("mms-int8/1", acoustic::RECIPE));
+        assert!(superseded("mms-int8/2", acoustic::RECIPE));
         assert!(!superseded("other/9", acoustic::RECIPE));
         assert!(!acoustic::EARLIER_RECIPES.contains(&acoustic::RECIPE));
         // Without the acoustic model, and in the vocal trial's own caches,

@@ -34,6 +34,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Lyric lines wrap more cleanly: short ad-libs like "(oh-oh)" stay on one row, and Korean words no longer split between syllables.
 - The current lyric line is the only sharp, full-size line: the others are drawn a little smaller and go softly out of focus the further they are from it, and a new line lights up left to right as it starts. Hovering a line brings it into focus. The accent line beside it now moves with the lyrics as they scroll, so it stays put while each new line slides into it, and it stretches to cover a line that wraps onto two rows. It grows in when singing starts and shrinks away during instrumental breaks.
 - Focus mode shows at most three lyric lines above the current one, and on tall screens the current line sits higher to match.
+- Karaoke word sync now double-checks itself. Palette measures how sure it is of each word, gives the lines it doubts a second listen on just the vocals, separated from the music, and keeps whichever version it's surest of. On a 79-song test set, words more than 0.3 s off dropped from 5.1% to 3.6%. The second listen needs the Kim Vocal 2 model beside the karaoke model and adds up to about a minute and a half of background work per song. Saved syncs keep showing and relearn the next time each song is played in full.
 
 ### Fixed
 

@@ -4,7 +4,8 @@
 //!
 //!   cargo run --release --example karaoke_bench -- <jamendolyrics-dir> <model-dir> <out-dir>
 //!       [--only <a,b>] [--mix-only] [--cached-only] [--diagnostics] [--dumps <dir>]
-//!       [--lead-ms <n>] [--shard k/n] [--variant <name>=<knob>:<v>,...]... [--report]
+//!       [--ear mono|stereo] [--lead-ms <n>] [--shard k/n]
+//!       [--variant <name>=<knob>:<v>,...]... [--report]
 //!
 //! Per song: ffmpeg decodes the MP3 to 48kHz float stereo (the usual
 //! loopback device rate); mono = channel mean box-decimated to 16kHz and
@@ -23,8 +24,9 @@
 //! <out-dir> inside the repo.
 //!
 //! Each `--variant` overrides `Knobs` fields (guide, late, last, cap,
-//! capbase, vocable, connected; booleans as 0/1) on top of what each
-//! pipeline ships (`Knobs::MIX` / `Knobs::TRIAL`), and writes
+//! capbase, vocable, connected, review in percent, blend, passes; booleans
+//! as 0/1) on top of what each pipeline ships (`Knobs::MIX` /
+//! `Knobs::TRIAL`), and writes
 //! songs-lead<n>-<name>/; with several, compare-lead<n>.md puts them
 //! side by side against the first. Model emissions are cached per window in
 //! <out-dir>/emissions, so decoder-only candidates rescore without the
@@ -32,7 +34,10 @@
 //! `--dumps <karaoke-dumps dir>` instead reports how far each variant moves
 //! words on the app's own unlabelled dumps (drift-dumps.md).
 //! `--diagnostics` stores the aligner's per-line diagnostics (including each
-//! entry retry and whether it was accepted) beside the scores. The process
+//! entry retry and whether it was accepted) beside the scores. `--ear`
+//! gives the mix its second ear (`align_reviewed`) on the capture's stereo
+//! or on the mono recording, with the separated stretches cached in
+//! <out-dir>/ear-stereo or ear-mono. The process
 //! runs at idle priority. docs/specs/2026-10-31-karaoke-sync-fixes.md has
 //! the decisions this produced.
 //!
@@ -40,9 +45,9 @@
 //! near-perfect stamp; "rest" scores only the words after it.
 
 use pulse_lib::{
-    acoustic::{AcousticAligner, EmissionCache, Knobs},
+    acoustic::{AcousticAligner, EmissionCache, Knobs, SecondEar},
     align::{parse_lrc, tokenize, TimeMap, TimedLine, Word},
-    separation::{to_target_grid, Stereo, VocalSeparator, MODEL_FILE},
+    separation::{to_target_grid, Stereo, VocalEar, VocalSeparator, MODEL_FILE},
 };
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -391,6 +396,10 @@ impl Variant {
                 "capbase" => k.cap_base_ms = int(),
                 "vocable" => k.vocable_tolerance_ms = int(),
                 "connected" => k.connected_retry = int() != 0,
+                // Percent: review:50 doubts lines with a word under 0.50.
+                "review" => k.review_below = int() as f32 / 100.0,
+                "blend" => k.review_blend = int() != 0,
+                "passes" => k.review_passes = int().max(0) as usize,
                 _ => die(format!("variant {}: unknown knob {key}", self.name)),
             }
         }
@@ -480,6 +489,11 @@ fn main() {
     let report_only = flag("--report", false).is_some();
     let cached_only = flag("--cached-only", false).is_some();
     let diagnostics = flag("--diagnostics", false).is_some();
+    let ear = flag("--ear", true).map(|v| match v.as_str() {
+        "mono" => false,
+        "stereo" => true,
+        _ => die("--ear mono|stereo"),
+    });
     let dumps = flag("--dumps", true);
     let shard: Option<(usize, usize)> = flag("--shard", true).map(|v| {
         v.split_once('/')
@@ -506,7 +520,7 @@ fn main() {
         });
     }
     let [dataset, models, out] = args.as_slice() else {
-        die("usage: karaoke_bench <jamendolyrics-dir> <model-dir> <out-dir> [--only a,b] [--mix-only] [--cached-only] [--diagnostics] [--dumps dir] [--lead-ms n] [--shard k/n] [--variant name=knob:v,..]... [--report]");
+        die("usage: karaoke_bench <jamendolyrics-dir> <model-dir> <out-dir> [--only a,b] [--mix-only] [--cached-only] [--diagnostics] [--ear mono|stereo] [--dumps dir] [--lead-ms n] [--shard k/n] [--variant name=knob:v,..]... [--report]");
     };
     let (dataset, models, out) = (
         PathBuf::from(dataset),
@@ -537,6 +551,7 @@ fn main() {
             lead_ms,
             variants: &variants,
             diagnostics,
+            ear,
         };
         for d in [&run.vocals_dir, &run.emissions_dir] {
             std::fs::create_dir_all(d).unwrap_or_else(|e| die(e));
@@ -571,6 +586,36 @@ struct Run<'a> {
     lead_ms: i64,
     variants: &'a [Variant],
     diagnostics: bool,
+    /// Second ear for doubted mix lines: Some(stereo input?).
+    ear: Option<bool>,
+}
+
+/// The production second ear (`VocalEar`), each stretch it hears cached.
+struct CachedEar<'a> {
+    ear: VocalEar<'a>,
+    dir: PathBuf,
+    stem: &'a str,
+    /// Passes the stretches cost, cached or not.
+    passes: usize,
+}
+
+impl SecondEar for CachedEar<'_> {
+    fn hear(&mut self, r: std::ops::Range<usize>) -> Result<Vec<i16>, String> {
+        self.passes += self.ear.passes(r.clone());
+        let path = self
+            .dir
+            .join(format!("{}-{}-{}.i16", self.stem, r.start, r.end));
+        if let Some(v) = read_i16(&path).filter(|v| v.len() == r.len()) {
+            return Ok(v);
+        }
+        let v = self.ear.hear(r)?;
+        write_i16(&path, &v);
+        Ok(v)
+    }
+
+    fn passes(&self, r: std::ops::Range<usize>) -> usize {
+        self.ear.passes(r)
+    }
 }
 
 impl Run<'_> {
@@ -590,7 +635,7 @@ impl Run<'_> {
             false,
         )
         .unwrap_or_else(|e| die(e));
-        let mut separator = (!mix_only && !cached_only).then(|| {
+        let mut separator = ((!mix_only && !cached_only) || self.ear.is_some()).then(|| {
             VocalSeparator::load(&self.models.join(MODEL_FILE)).unwrap_or_else(|e| die(e))
         });
         for (k, song) in list.iter().enumerate() {
@@ -669,6 +714,11 @@ impl Run<'_> {
                     }
                 }
             };
+            // The second ear's input: the capture's stereo, or (mono) none.
+            let ear_stereo = (self.ear == Some(true)).then(|| Stereo {
+                interleaved: quantize(&stereo),
+                rate: CAPTURE_HZ,
+            });
             drop(stereo);
 
             let emissions_path = self.emissions_dir.join(format!("{}.bin", song.stem));
@@ -681,14 +731,50 @@ impl Run<'_> {
                 let mut detail = serde_json::Map::new();
                 let mut diag = self.diagnostics.then(|| (Vec::new(), Vec::new()));
                 let t = Instant::now();
-                match aligner.align_with_knobs(
-                    &pcm,
-                    &timed,
-                    &map,
-                    false,
-                    variant.knobs(Knobs::MIX),
-                    diag.as_mut().map(|d| &mut d.0),
-                ) {
+                let knobs = variant.knobs(Knobs::MIX);
+                let mixed = match (self.ear, separator.as_mut()) {
+                    (Some(_), Some(sep)) if knobs.review_below > 0.0 => {
+                        let dir = self.out.join(if ear_stereo.is_some() {
+                            "ear-stereo"
+                        } else {
+                            "ear-mono"
+                        });
+                        let _ = std::fs::create_dir_all(&dir);
+                        let mut ear = CachedEar {
+                            ear: VocalEar {
+                                separator: sep,
+                                stereo: ear_stereo.as_ref(),
+                                mono16k: &pcm,
+                                target_hz: TARGET_HZ,
+                                deadline: None,
+                                heard: 0,
+                                passes: 0,
+                            },
+                            dir,
+                            stem: &song.stem,
+                            passes: 0,
+                        };
+                        let words = aligner.align_reviewed(
+                            &pcm,
+                            &timed,
+                            &map,
+                            knobs,
+                            &mut ear,
+                            diag.as_mut().map(|d| &mut d.0),
+                        );
+                        detail.insert("ear_passes".into(), ear.passes.into());
+                        words
+                    }
+                    _ => aligner.align_with_knobs(
+                        &pcm,
+                        &timed,
+                        &map,
+                        false,
+                        knobs,
+                        diag.as_mut().map(|d| &mut d.0),
+                    ),
+                };
+                match mixed {
                     Ok(words) => {
                         detail.insert("mix".into(), score(&lines, &words));
                     }
