@@ -28,7 +28,6 @@ import type { NowPlaying } from "./types";
 import { isProvisionalDuration, trackIdOf } from "./lib/trackId";
 import { driveWordRows, type WordRow } from "./lib/wordWipeDriver";
 import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
-import { DUR, EASE } from "./lib/tokens";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
  * next line boundary, recomputed on every kernel anchor event (seek, pause,
@@ -358,8 +357,10 @@ const SCALE = {
     breakDot: "h-[6px] w-[6px]",
     breakGap: "gap-1",
     // The accent line left of the current lyric (the pre-redesign marker's
-    // size, a hair thicker), centered on the row.
-    bar: "top-[calc(50%-8px)] h-4 w-[3px]",
+    // size, a hair thicker). barH is its one-text-line height in px; a
+    // wrapped line's bar grows by each extra text line (useAccentBar).
+    bar: "w-[3px]",
+    barH: 16,
   },
   focus: {
     // The compact view's proportions scaled up (Thien, 2026-11-07: the
@@ -393,7 +394,8 @@ const SCALE = {
     breakRow: "px-6 py-3",
     breakDot: "h-[12px] w-[12px]",
     breakGap: "gap-2",
-    bar: "top-[calc(50%-18px)] h-9 w-[5px]",
+    bar: "w-[5px]",
+    barH: 36,
   },
 } as const satisfies Record<LyricsScale, unknown>;
 
@@ -444,70 +446,70 @@ function recedeBlur(scale: LyricsScale, distance: number, browsing: boolean): nu
   return table[String(distance)] ?? 0;
 }
 
-/** Rows further apart than this grow in place instead of stretching across
- * the panel (a seek, not the song moving on). */
-const BAR_HOP_MAX_ROWS = 3;
-
-function barOf(list: HTMLElement, lines: LyricLine[], i: number | null): HTMLElement | null {
-  if (i === null || i < 0 || !lines[i] || lines[i].end !== undefined) return null;
-  return (list.children[i] as HTMLElement | undefined)?.querySelector<HTMLElement>("[data-bar]") ?? null;
-}
-
-/** The accent line's motion. Each sung row owns a bar that's visible only
- * while that row is current, so it follows its row through any layout change
- * (a break opening or closing). On a line change the NEW row's bar plays from
- * the old bar's spot as a droplet hop: its leading end reaches the new line
- * first, stretched over about two thirds of the gap and slightly thinned,
- * then the trailing end catches up. Appearing (first line, after a break, a
- * long seek) grows it from its center with a small overshoot; going into a
- * break shrinks it away. Event-driven only: nothing moves while a line
- * holds. */
+/** The accent line's motion. One bar lives in the scrolling list and is
+ * moved to the current row with the SAME transition as the list's own scroll
+ * (220ms in-out), so once the line is anchored the bar holds still on screen
+ * and the lyrics flow through it; while the highlight walks down at the
+ * start of a song it glides with them. Its height eases to the new line's
+ * text height (one row or wrapped). An earlier droplet hop on its own curve
+ * read as lagging and bouncy against the scroll (Thien, 2026-11-08).
+ * Appearing (first line, after a break) grows it from its center; going into
+ * a break shrinks it away. Event-driven: nothing moves while a line holds. */
 function useAccentBar(
   list: React.RefObject<HTMLDivElement | null>,
-  lines: LyricLine[], idx: number, delayFirstMs: number,
-): void {
-  const prev = useRef<number | null>(null);
-  const prevLines = useRef(lines);
-  useLayoutEffect(() => {
+  bar: React.RefObject<HTMLSpanElement | null>,
+  lines: LyricLine[], idx: number, scale: LyricsScale, delayFirstMs: number,
+): () => void {
+  const shownY = useRef<number | null>(null);
+  const first = useRef(true);
+  const place = () => {
     const root = list.current;
-    if (!root) return;
-    const from = prevLines.current === lines ? prev.current : null;
-    const first = prev.current === null;
-    prev.current = idx;
-    prevLines.current = lines;
-    if (from === idx) return;
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-    const now = barOf(root, lines, idx);
-    const old = barOf(root, lines, from);
-    const ease = `cubic-bezier(${EASE.inOut.join(",")})`;
-    const out = `cubic-bezier(${EASE.out.join(",")})`;
-    if (!now) {
-      old?.animate([{ transform: "scaleY(1)", opacity: 1 }, { transform: "scaleY(0)", opacity: 0 }],
-        { duration: DUR[3], easing: ease });
+    const el = bar.current;
+    if (!root || !el) return;
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    // background-color: an art change retints it like every accent surface.
+    const tint = "background-color 220ms var(--ease-out-tk)";
+    const move = `transform 220ms var(--ease-in-out-tk), height 220ms var(--ease-in-out-tk), ${tint}`;
+    const sung = idx >= 0 && lines[idx] && lines[idx].end === undefined;
+    const row = sung ? (root.children[idx] as HTMLElement | undefined) : undefined;
+    if (!row) {
+      if (shownY.current !== null) {
+        el.style.transition = reduced ? "none" : `transform 200ms var(--ease-in-out-tk), opacity 200ms var(--ease-in-out-tk), ${tint}`;
+        el.style.transform = `translateY(${shownY.current}px) scaleY(0)`;
+        el.style.opacity = "0";
+      }
+      shownY.current = null;
       return;
     }
-    const grow = () => now.animate(
-      [{ transform: "scaleY(0)", opacity: 0 }, { transform: "scaleY(1.2)", opacity: 1, offset: 0.55 }, { transform: "scaleY(1)", opacity: 1 }],
-      { duration: DUR[5], easing: out, delay: first ? delayFirstMs : 0, fill: "backwards" });
-    const oldRow = old?.parentElement;
-    const newRow = now.parentElement;
-    if (!old || !oldRow || !newRow) { grow(); return; }
-    const top = now.offsetTop;
-    const h = now.offsetHeight;
-    // The old bar's spot, in the new bar's frame (rows can differ in height).
-    const dy = oldRow.offsetTop + old.offsetTop - (newRow.offsetTop + top);
-    const gap = Math.abs(dy);
-    if (gap > newRow.offsetHeight * BAR_HOP_MAX_ROWS + 8) { grow(); return; }
-    const reach = gap * 0.65; // stretch at the midpoint
-    const mid = dy < 0
-      ? { top: `${top - reach}px`, height: `${reach + h}px` } // moving down: bottom end leads
-      : { top: `${top}px`, height: `${reach + h}px` }; // moving up: top end leads
-    now.animate([
-      { top: `${top + dy}px`, height: `${h}px`, transform: "scaleX(1)" },
-      { ...mid, transform: "scaleX(0.7)", offset: 0.45 },
-      { top: `${top}px`, height: `${h}px`, transform: "scaleX(1)" },
-    ], { duration: DUR[5], easing: ease });
-  }, [list, lines, idx, delayFirstMs]);
+    const cs = getComputedStyle(row);
+    const lineH = parseFloat(cs.lineHeight) || 0;
+    const content = row.offsetHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const h = Math.round(Math.max(content - lineH, 0) + SCALE[scale].barH);
+    const y = Math.round(row.offsetTop + row.offsetHeight / 2 - h / 2);
+    if (shownY.current === null) {
+      // Appear: seat it at the line, then grow from its center.
+      el.style.transition = "none";
+      el.style.height = `${h}px`;
+      el.style.transform = `translateY(${y}px) scaleY(0)`;
+      el.style.opacity = "0";
+      void el.offsetHeight;
+      const delay = first.current ? delayFirstMs : 0;
+      el.style.transition = reduced ? "none"
+        : `transform 220ms var(--ease-out-tk) ${delay}ms, opacity 140ms var(--ease-out-tk) ${delay}ms, ${tint}`;
+    } else {
+      el.style.transition = reduced ? "none" : move;
+      el.style.height = `${h}px`;
+    }
+    el.style.transform = `translateY(${y}px) scaleY(1)`;
+    el.style.opacity = "1";
+    shownY.current = y;
+    first.current = false;
+  };
+  const placeRef = useRef(place);
+  placeRef.current = place;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => placeRef.current(), [idx, lines, scale]);
+  return () => placeRef.current();
 }
 
 /** One lyric line. Memoized so a line advance reconciles the two rows whose
@@ -588,16 +590,6 @@ const LyricLineRow = memo(function LyricLineRow({
         opacity === 0 ? "pointer-events-none" : seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
-      <span
-        aria-hidden
-        data-bar
-        // The album accent, like the waveform and progress fill, never on the
-        // words. Its motion (grow in, droplet hop between lines, shrink out)
-        // is useAccentBar's; the static state is just on or off.
-        className={`pointer-events-none absolute left-0 rounded-full bg-accent [transition:background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].bar} ${
-          current ? "opacity-100" : "opacity-0"
-        }`}
-      />
       <span className="lyric-ink">
       {timed
         ? words.map((w, wi) => (
@@ -783,7 +775,10 @@ export function LyricsPanel({
   useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs, karaoke);
   // On a real arrival the line grows in as the closing beat, with the anchor
   // row's ignite (index.css: 540ms hold).
-  useAccentBar(listRef, lines, idx, entrance ? 540 : 0);
+  const barRef = useRef<HTMLSpanElement>(null);
+  const placeBar = useAccentBar(listRef, barRef, lines, idx, scale, entrance ? 540 : 0);
+  const placeBarRef = useRef(placeBar);
+  placeBarRef.current = placeBar;
   const [autoOffset, setAutoOffset] = useState(0);
   // Wheel-scrolling pauses auto-follow; it resumes via the "Now" chip,
   // scrolling back into the re-latch band, or a short idle (see RELATCH_BAND
@@ -887,7 +882,10 @@ export function LyricsPanel({
   useEffect(() => {
     const list = listRef.current;
     if (!list) return;
-    const ro = new ResizeObserver(() => applyAnchorRef.current());
+    const ro = new ResizeObserver(() => {
+      applyAnchorRef.current();
+      placeBarRef.current(); // a break opening/closing moves the current row
+    });
     ro.observe(list);
     return () => ro.disconnect();
   }, []);
@@ -1043,7 +1041,7 @@ export function LyricsPanel({
           commands.seekAbs(Math.max(line.t - leadMs, 0));
           relatch(); // hand control back to auto-follow
         }}
-        className={`flex flex-col gap-1 will-change-transform ${
+        className={`relative flex flex-col gap-1 will-change-transform ${
           browsing || !anchored ? "" : "[transition:transform_220ms_var(--ease-in-out-tk)]"
         } ${entering ? "lyrics-entering" : ""}`}
         style={{
@@ -1081,6 +1079,15 @@ export function LyricsPanel({
         <div ref={creditsRef}>
           <CreditsBlock credits={credits} scale={scale} />
         </div>
+        {/* The accent line (useAccentBar). Last child, so list.children[i]
+         * stays row i. The album accent, like the waveform and progress
+         * fill, never on the words. */}
+        <span
+          ref={barRef}
+          aria-hidden
+          data-bar
+          className={`pointer-events-none absolute left-0 top-0 rounded-full bg-accent opacity-0 ${SCALE[scale].bar}`}
+        />
       </div>
       {/* Word-lead caption: the one piece of feedback the nudge hotkeys
        * give. Same chip grammar AND the same per-scale top seat as the

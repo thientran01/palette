@@ -60,8 +60,8 @@ describe("depth of field", () => {
   it("shows the accent only as the current line's bar, never on the words", () => {
     const html = renderToStaticMarkup(<LyricsPanel seekable={true} leadMs={0} lines={lines} />);
     expect(html).not.toContain("data-marker");
-    expect((html.match(/data-bar[^>]*bg-accent[^>]*opacity-100/g) ?? []).length).toBe(1);
-    expect((html.match(/bg-accent/g) ?? []).length).toBe(lines.length);
+    expect((html.match(/data-bar[^>]*bg-accent/g) ?? []).length).toBe(1);
+    expect((html.match(/bg-accent/g) ?? []).length).toBe(1);
     expect(html).not.toMatch(/text-accent/);
   });
 });
