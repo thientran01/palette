@@ -119,6 +119,20 @@ struct Inner {
     /// <device>" tag that explains a quiet waveform (the audio is elsewhere,
     /// not paused). None = local/unknown. Cleared with the tokens.
     active_device: Option<SpotifyDevice>,
+    /// The current track's LARGEST cover (640px on Spotify), off the same
+    /// enrichment read. Focus shows it in place of the ~300px GSMTC thumbnail,
+    /// which is upscaled almost 2x in a 560px box. Cleared with the tokens.
+    now_cover: Option<NowCover>,
+}
+
+/// The playing track's full-size cover, tagged with the title and artist it
+/// belongs to. The enrichment read can land a beat after a skip, so the
+/// frontend uses it only while these match what GSMTC says is playing.
+#[derive(Serialize, Clone, PartialEq)]
+pub struct NowCover {
+    pub title: String,
+    pub artist: String,
+    pub url: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -320,8 +334,10 @@ fn emit_status(app: &AppHandle) {
     );
     // Every connection transition also re-syncs the device tag — a disconnect
     // (clear_tokens ran first) emits None, so the tag can never outlive the
-    // session. Per-track updates emit separately from enrich_now.
+    // session. Per-track updates emit separately from enrich_now. Same for
+    // the full-size cover.
     emit_device(app);
+    emit_now_cover(app);
 }
 
 /// Emit the current active device (or null) to the frontend. Paired with the
@@ -329,6 +345,11 @@ fn emit_status(app: &AppHandle) {
 fn emit_device(app: &AppHandle) {
     let device = lock(&app.state::<SpotifyAuth>()).active_device.clone();
     let _ = app.emit("spotify-device", device);
+}
+
+fn emit_now_cover(app: &AppHandle) {
+    let cover = lock(&app.state::<SpotifyAuth>()).now_cover.clone();
+    let _ = app.emit("spotify-now-cover", cover);
 }
 
 /// Serializes ALL mutations of the token file (commit_token_write's atomic
@@ -381,6 +402,7 @@ fn clear_tokens(app: &AppHandle) {
         inner.tokens = None;
         inner.now_uri = None;
         inner.active_device = None;
+        inner.now_cover = None;
         path
     };
     let Some(path) = path else { return };
@@ -964,6 +986,18 @@ pub(crate) fn small_image(images: &serde_json::Value) -> Option<String> {
         .map(String::from)
 }
 
+/// The widest image (Spotify's 640px rung for albums). Images come
+/// largest-first, so a list with no usable widths falls back to the FIRST.
+pub(crate) fn large_image(images: &serde_json::Value) -> Option<String> {
+    let imgs = images.as_array()?;
+    imgs.iter()
+        .filter(|i| i["width"].as_i64().is_some())
+        .max_by_key(|i| i["width"].as_i64().unwrap_or(0))
+        .or_else(|| imgs.first())
+        .and_then(|i| i["url"].as_str())
+        .map(String::from)
+}
+
 /// Parse one queue/currently-playing item. Non-track items (episodes) map
 /// with best-effort fields; anything without a uri is dropped by the caller.
 pub(crate) fn parse_track(v: &serde_json::Value) -> Option<QueueTrack> {
@@ -1418,8 +1452,31 @@ pub fn enrich_now(app: &AppHandle) {
             "GET",
             "https://api.spotify.com/v1/me/player/currently-playing",
         ) {
-            if let Some(t) = parse_track(&v["item"]) {
-                update_now(&app, &t);
+            let track = parse_track(&v["item"]);
+            if let Some(t) = &track {
+                update_now(&app, t);
+            }
+            // Same read: the full-size cover for Focus. Tagged with the
+            // track it belongs to; emitted only on a real change.
+            let cover = track.and_then(|t| {
+                large_image(&v["item"]["album"]["images"]).map(|url| NowCover {
+                    title: t.title,
+                    artist: t.artist,
+                    url,
+                })
+            });
+            let cover_changed = {
+                let auth = app.state::<SpotifyAuth>();
+                let mut inner = lock(&auth);
+                if inner.tokens.is_some() && inner.now_cover != cover {
+                    inner.now_cover = cover;
+                    true
+                } else {
+                    false
+                }
+            };
+            if cover_changed {
+                emit_now_cover(&app);
             }
             // Same read, no extra call: capture WHICH device is playing so the
             // UI can explain a quiet waveform (audio is elsewhere, not paused).
@@ -1539,6 +1596,13 @@ pub async fn spotify_device(app: AppHandle) -> Option<SpotifyDevice> {
     lock(&app.state::<SpotifyAuth>()).active_device.clone()
 }
 
+/// Seed for the "spotify-now-cover" event, for a Focus window that opens
+/// between track changes.
+#[tauri::command]
+pub async fn spotify_now_cover(app: AppHandle) -> Option<NowCover> {
+    lock(&app.state::<SpotifyAuth>()).now_cover.clone()
+}
+
 /// The connected account's display name (prefs "Connected as {name}"), via a
 /// GET /me. Falls back to the account id, then None. Blocking HTTP on the
 /// dedicated pool. Never destroys tokens (api_call's own 401 path handles a
@@ -1615,7 +1679,7 @@ pub async fn spotify_search(app: AppHandle, query: String, limit: Option<u32>) -
 
 #[cfg(test)]
 mod tests {
-    use super::small_image;
+    use super::{large_image, small_image};
     use serde_json::json;
 
     #[test]
@@ -1626,6 +1690,19 @@ mod tests {
             {"url": "tiny", "width": 64, "height": 64},
         ]);
         assert_eq!(small_image(&imgs).as_deref(), Some("mid"));
+    }
+
+    #[test]
+    fn large_image_takes_the_widest_rung() {
+        let imgs = json!([
+            {"url": "mid", "width": 300, "height": 300},
+            {"url": "big", "width": 640, "height": 640},
+            {"url": "tiny", "width": 64, "height": 64},
+        ]);
+        assert_eq!(large_image(&imgs).as_deref(), Some("big"));
+        let upload = json!([{"url": "upload", "width": null, "height": null}]);
+        assert_eq!(large_image(&upload).as_deref(), Some("upload"));
+        assert_eq!(large_image(&json!([])), None);
     }
 
     #[test]
