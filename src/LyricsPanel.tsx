@@ -458,18 +458,29 @@ function recedeBlur(scale: LyricsScale, distance: number, browsing: boolean): nu
  * its center; going into a break shrinks it away. Earlier versions lived in
  * the list or hopped on their own curve and overshot their line (Thien,
  * 2026-11-08). */
+/** How long a newly shown bar tracks its row frame by frame: the list's
+ * 220ms scroll plus a break's 330ms hold and 260ms fold, with slack. */
+const APPEAR_GLUE_MS = 900;
+type AccentBarState = { y: number | null; first: boolean; raf?: number };
+
 function placeAccentBar(
   el: HTMLSpanElement, row: HTMLElement | null, offset: number, scale: LyricsScale,
-  shown: { y: number | null; first: boolean }, opts: { instant: boolean; delayFirstMs: number },
+  shown: AccentBarState, opts: { instant: boolean; delayFirstMs: number },
 ): void {
   const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  // background-color: an art change retints it like every accent surface.
+  // Position (translate) and grow/shrink (scale) are separate properties so
+  // an instant re-seat never cuts a grow-in short. background-color: an art
+  // change retints it like every accent surface.
   const tint = "background-color 220ms var(--ease-out-tk)";
+  const grow = (delay: number) =>
+    `scale 220ms var(--ease-out-tk) ${delay}ms, opacity 140ms var(--ease-out-tk) ${delay}ms`;
   if (!row) {
+    cancelAnimationFrame(shown.raf ?? 0);
+    shown.raf = undefined;
     if (shown.y !== null) {
       el.style.transition = reduced ? "none"
-        : `transform 200ms var(--ease-in-out-tk), opacity 200ms var(--ease-in-out-tk), ${tint}`;
-      el.style.transform = `translateY(${shown.y}px) scaleY(0)`;
+        : `scale 200ms var(--ease-in-out-tk), opacity 200ms var(--ease-in-out-tk), ${tint}`;
+      el.style.scale = "1 0";
       el.style.opacity = "0";
     }
     shown.y = null;
@@ -481,21 +492,52 @@ function placeAccentBar(
   const h = Math.round(Math.max(content - lineH, 0) + SCALE[scale].barH);
   const y = Math.round(row.offsetTop + row.offsetHeight / 2 - h / 2 - offset);
   if (shown.y === null) {
-    // Appear: seat it at the line, then grow from its center.
+    // Appear: grow from its center beside the line where the line is on
+    // screen, and stay glued to it (one write per frame) while the list
+    // scrolls it up and the break folds away, since that motion isn't one
+    // curve the bar could share. Seating it at the target instead lit an
+    // empty spot, or the next line, before the lyric got there.
+    const box = el.parentElement;
+    const glue = () => {
+      const b = box?.getBoundingClientRect();
+      const r = row.getBoundingClientRect();
+      return b ? Math.round(r.top - b.top + r.height / 2 - h / 2) : y;
+    };
     el.style.transition = "none";
     el.style.height = `${h}px`;
-    el.style.transform = `translateY(${y}px) scaleY(0)`;
+    el.style.translate = `0 ${glue()}px`;
+    el.style.scale = "1 0";
     el.style.opacity = "0";
     void el.offsetHeight;
-    const delay = shown.first ? opts.delayFirstMs : 0;
-    el.style.transition = reduced ? "none"
-      : `transform 220ms var(--ease-out-tk) ${delay}ms, opacity 140ms var(--ease-out-tk) ${delay}ms, ${tint}`;
-  } else {
-    el.style.transition = reduced || opts.instant ? tint
-      : `transform 220ms var(--ease-in-out-tk), height 220ms var(--ease-in-out-tk), ${tint}`;
+    el.style.transition = reduced ? "none" : `translate 0s, ${grow(shown.first ? opts.delayFirstMs : 0)}, ${tint}`;
+    cancelAnimationFrame(shown.raf ?? 0);
+    if (!reduced) {
+      const until = performance.now() + APPEAR_GLUE_MS + (shown.first ? opts.delayFirstMs : 0);
+      const follow = () => {
+        if (!row.isConnected || shown.y === null) return;
+        el.style.translate = `0 ${glue()}px`;
+        shown.raf = performance.now() < until ? requestAnimationFrame(follow) : undefined;
+      };
+      shown.raf = requestAnimationFrame(follow);
+    }
+  } else if (opts.instant && shown.raf !== undefined) {
+    // Still glued after appearing: the frame loop already tracks the row.
     el.style.height = `${h}px`;
+    shown.y = y;
+    return;
+  } else {
+    cancelAnimationFrame(shown.raf ?? 0);
+    shown.raf = undefined;
+    // A line change moves with the list's own scroll; a layout change (a
+    // break folding away, a resize) or a browse re-seats it at once, since
+    // the row itself has already moved there.
+    el.style.transition = reduced ? "none" : opts.instant
+      ? `translate 0s, height 0s, ${grow(0)}, ${tint}`
+      : `translate 220ms var(--ease-in-out-tk), height 220ms var(--ease-in-out-tk), ${grow(0)}, ${tint}`;
+    el.style.height = `${h}px`;
+    el.style.translate = `0 ${y}px`;
   }
-  el.style.transform = `translateY(${y}px) scaleY(1)`;
+  el.style.scale = "1 1";
   el.style.opacity = "1";
   shown.y = y;
   shown.first = false;
@@ -763,7 +805,7 @@ export function LyricsPanel({
   const listRef = useRef<HTMLDivElement>(null);
   useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs, karaoke);
   const barRef = useRef<HTMLSpanElement>(null);
-  const barShown = useRef<{ y: number | null; first: boolean }>({ y: null, first: true });
+  const barShown = useRef<AccentBarState>({ y: null, first: true });
   const [autoOffset, setAutoOffset] = useState(0);
   // Wheel-scrolling pauses auto-follow; it resumes via the "Now" chip,
   // scrolling back into the re-latch band, or a short idle (see RELATCH_BAND
@@ -851,10 +893,10 @@ export function LyricsPanel({
     const raw = idx < 0 ? 0 : line.offsetTop + line.offsetHeight / 2 - anchor;
     return Math.round(Math.min(Math.max(raw, 0), maxOffset()));
   };
-  const applyAnchor = () => {
+  const applyAnchor = (layoutOnly = false) => {
     const target = autoTarget();
     if (target !== null) setAutoOffset(target);
-    placeBar(target, false);
+    placeBar(target, layoutOnly);
   };
   // The accent line (placeAccentBar) follows the offset the list is heading
   // to: the browse offset while wheel-browsing (instant, like the list), else
@@ -887,7 +929,7 @@ export function LyricsPanel({
   useEffect(() => {
     const list = listRef.current;
     if (!list) return;
-    const ro = new ResizeObserver(() => applyAnchorRef.current());
+    const ro = new ResizeObserver(() => applyAnchorRef.current(true));
     ro.observe(list);
     return () => ro.disconnect();
   }, []);
