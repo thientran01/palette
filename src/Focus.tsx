@@ -51,14 +51,16 @@ import {
   onSpotifyJumpCancel,
 } from "./lib/backend";
 import { useArt, useArtAccent } from "./lib/artAccent";
+import { useFullCover } from "./lib/fullCover";
 import { VOCAL_LEAD_MS } from "./lib/lrc";
 import * as posClock from "./lib/posClock";
 import { initReactive } from "./lib/reactive";
-import { DUR, EASE } from "./lib/tokens";
+import { DUR, EASE, SLIDE_REST, slideX } from "./lib/tokens";
 import { DeviceTag } from "./DeviceTag";
 import { LyricsPanel, lyricsKeyOf, lyricsVerdictOf, useLyrics, useSeatHold } from "./LyricsPanel";
 import { useCredits } from "./Credits";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
+import { trackIdOf } from "./lib/trackId";
 import {
   armSuppression,
   clearSuppression,
@@ -76,6 +78,31 @@ import { IN_TAURI, type NowPlaying, type SpotifyDevice } from "./types";
  * answer to "where are the lyrics", and once read it shouldn't sit under the
  * metadata forever. The reserved slot keeps its height, so nothing moves. */
 const NO_LYRICS_CAPTION_MS = 4000;
+
+/** The .view-off fade (index.css) — the lyric column stays mounted this long
+ * after the queue opens so it can fade instead of blinking out. */
+const VIEW_OFF_MS = 120;
+
+/** How a lyric column that mounts arrives, decided once at mount (a class
+ * that changed later would restart its animation): the once-per-takeover
+ * entrance brings its own cascade; a remount from closing the queue takes the
+ * peer-view swap's view-in; any other plain arrival (lyrics resolving into a
+ * HELD split) gets the fast title-in beat — the seat's own crossfade no
+ * longer covers the resolve, which lands after it. */
+function LyricArrival({
+  entrance,
+  afterQueue,
+  children,
+}: {
+  entrance: boolean;
+  afterQueue: boolean;
+  children: React.ReactNode;
+}) {
+  const [arrival] = useState(() =>
+    entrance ? "" : afterQueue ? "view-in" : "animate-[caption-in_90ms_var(--ease-out-tk)_both]",
+  );
+  return <div className={`flex min-h-0 min-w-0 flex-1 flex-col ${arrival}`}>{children}</div>;
+}
 
 /** Identity fields — the same re-render gate App.tsx uses (position lives
  * in posClock, never in React state). */
@@ -223,7 +250,8 @@ export default function Focus() {
         // track→track consumes; vanish/appear RESETS to forward and still
         // CLEARS the note (a new session can't inherit the last skip's -1,
         // and a stranded note can't misdirect a later advance — App's rule).
-        const nextKey = lyricsKeyOf(next);
+        // Song identity (lib/trackId.ts): a late duration is not a skip.
+        const nextKey = trackIdOf(next);
         if (nextKey !== lastTrackKey.current) {
           const noted = takeTrackDir();
           setTrackDir(nextKey !== null && lastTrackKey.current !== null ? noted : 1);
@@ -241,6 +269,9 @@ export default function Focus() {
   useEffect(() => initTrackDir(), []);
   const artUrl = useArt(np?.art_id ?? null);
   useArtAccent(artUrl);
+  // Spotify's 640px cover when connected (lib/fullCover); the accent above
+  // keeps reading the GSMTC cover, a local data URL.
+  const coverUrl = useFullCover(np, artUrl);
   const lyrics = useLyrics(np);
   const credits = useCredits(np);
   useEffect(() => initReactive(), []);
@@ -269,7 +300,7 @@ export default function Focus() {
   const [announceText, setAnnounceText] = useState("");
   const announcedKey = useRef<string | null>(null);
   useEffect(() => {
-    const key = lyricsKeyOf(np);
+    const key = trackIdOf(np);
     if (!np || !key || key === announcedKey.current || announceSuppressed) return;
     const first = announcedKey.current === null;
     announcedKey.current = key;
@@ -313,6 +344,23 @@ export default function Focus() {
   // Esc peels one layer: the queue panel first, then the room.
   const queueOpenRef = useRef(queueOpen);
   queueOpenRef.current = queueOpen;
+  // The lyric column outlives a queue open by its 120ms view-off fade, then
+  // unmounts (see the column below). queueClosedAt marks a close so the
+  // remount takes the swap's view-in arrival, not the resolve beat.
+  const [lyricsAway, setLyricsAway] = useState(queueOpen);
+  const queueClosedAt = useRef<number | null>(null);
+  useEffect(() => {
+    if (!queueOpen) {
+      if (lyricsAway) queueClosedAt.current = performance.now();
+      setLyricsAway(false);
+      return;
+    }
+    const t = window.setTimeout(() => setLyricsAway(true), VIEW_OFF_MS);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queueOpen]);
+  const queueClosedRecently = () =>
+    queueClosedAt.current !== null && performance.now() - queueClosedAt.current < 400;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -424,16 +472,18 @@ export default function Focus() {
   const slideInT = { duration: reducedMotion ? 0 : DUR[1] / 1000, ease: slideEase };
   const slideOutT = { duration: reducedMotion ? 0 : DUR[1] / 1000, ease: slideEase };
   const compositionOutT = { duration: reducedMotion ? 0 : DUR[2] / 1000, ease: slideEase };
+  // Transform strings, not `x`: compositor-run (lib/tokens.ts slideX).
   const seatVariants = {
-    enter: (dx: number) => ({ opacity: 0, x: dx }),
+    enter: (dx: number) => ({ opacity: 0, transform: slideX(dx) }),
     center: (dx: number) => ({
       opacity: 1,
-      x: 0,
+      transform: slideX(0),
+      transitionEnd: SLIDE_REST,
       transition: dx !== 0 ? slideInT : swapTiming,
     }),
     exit: (dx: number) => ({
       opacity: 0,
-      x: -dx,
+      transform: slideX(-dx),
       pointerEvents: "none" as const,
       transition: dx !== 0 ? slideOutT : compositionOutT,
     }),
@@ -564,7 +614,7 @@ export default function Focus() {
                   <div className="flex min-h-0 shrink-0 flex-col pt-(--stack-top)">
                     <IdentityStack
                       np={np}
-                      artUrl={artUrl}
+                      artUrl={coverUrl}
                       caption={caption}
                       captionExpired={captionExpired}
                       centered={false}
@@ -585,19 +635,16 @@ export default function Focus() {
                         its right edge — and a first-lyrics resolve behind
                         the cover would burn the once-per-takeover cascade
                         unseen (its spend is queue-gated below to match).
-                        Closing the queue mounts lyrics fresh; the panel
-                        re-anchors itself. */}
-                    {lyricsLive && !queueOpen && (
-                      // Plain arrivals (lyrics resolving into a HELD split, or
-                      // a queue close re-revealing the column) get the title-in
-                      // beat — the seat's own crossfade no longer covers the
-                      // resolve, which lands after it. The once-per-takeover
-                      // entrance stays unwrapped so choreography never stacks.
+                        The unmount waits out the column's 120ms view-off
+                        fade (lyricsAway), so opening the queue swaps like
+                        expanded's layers instead of the lines blinking out.
+                        Closing the queue mounts lyrics fresh (view-in); the
+                        panel re-anchors itself. */}
+                    {lyricsLive && !lyricsAway && (
                       <div
-                        className={`flex min-h-0 min-w-0 flex-1 flex-col ${
-                          entrance ? "" : "animate-[caption-in_90ms_var(--ease-out-tk)_both]"
-                        }`}
+                        className={`flex min-h-0 min-w-0 flex-1 flex-col ${queueOpen ? "view-off" : "view-on"}`}
                       >
+                      <LyricArrival entrance={entrance} afterQueue={queueClosedRecently()}>
                         <LyricsPanel
                           karaoke={karaoke}
                           lines={lyrics.lines}
@@ -608,6 +655,7 @@ export default function Focus() {
                           credits={credits}
                           durationMs={np.duration_ms}
                         />
+                      </LyricArrival>
                       </div>
                     )}
                   </div>
@@ -648,7 +696,7 @@ export default function Focus() {
                   <div className="mb-[calc(var(--horizon-mb)_+_1vh_-_32px)]">
                     <IdentityStack
                       np={np}
-                      artUrl={artUrl}
+                      artUrl={coverUrl}
                       caption={caption}
                       captionExpired={captionExpired}
                       centered
@@ -680,9 +728,7 @@ export default function Focus() {
               data-focus-content
               inert={!queueOpen}
               className={`pointer-events-auto mt-[11vh] flex h-[calc(var(--stack-top)_+_var(--art)_-_11vh)] min-w-0 max-w-[40rem] flex-1 flex-col bg-surface ${
-                queueOpen
-                  ? "opacity-100 [transition:opacity_200ms_var(--ease-out-tk)]"
-                  : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),visibility_0s_140ms]"
+                queueOpen ? "view-on" : "view-off"
               }`}
             >
               <QueuePanel np={np} connected={spotify.connected} open={queueOpen} scale="room" />

@@ -705,7 +705,7 @@ mod tests {
             );
         }
         let me = std::process::id();
-        let Some((aumid, _, _, status)) = crate::media::tick_key() else {
+        let Some((aumid, _, _, status, _)) = crate::media::tick_key() else {
             eprintln!("probe: no GSMTC session — start music first");
             return;
         };

@@ -26,6 +26,7 @@ import { planRoll, rollOffsetAt, singingEndMs, type RollPlan } from "./lib/credi
 import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
+import { isProvisionalDuration, trackIdOf } from "./lib/trackId";
 import { driveWordRows, type WordRow } from "./lib/wordWipeDriver";
 import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
 
@@ -164,6 +165,12 @@ export function lyricsKeyOf(np: NowPlaying | null): string | null {
     : null;
 }
 
+/** How long a lookup waits when the new song still reports the previous
+ * song's duration (isProvisionalDuration). Two heartbeats: the correction
+ * normally lands on the first, and a genuine equal-duration pair only pays
+ * this once. */
+const PROVISIONAL_DURATION_WAIT_MS = 1000;
+
 /** Fetch + parse synced lyrics per track; "none" is a definitive miss. */
 export function useLyrics(np: NowPlaying | null): LyricsState {
   const [state, setState] = useState<LyricsState>({ status: "none", key: null });
@@ -193,6 +200,9 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
   // A library event reloads the current identity, not its playback position.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+  // The last song this hook keyed and its duration, for spotting a skip
+  // whose first payload still carries the previous song's duration.
+  const lastSong = useRef<{ id: string | null; durationMs: number } | null>(null);
   useEffect(() => {
     if (!key || !np) {
       lastKey.current = null;
@@ -201,23 +211,36 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
     }
     if (key === lastKey.current) return;
     lastKey.current = key;
+    const id = trackIdOf(np);
+    // A stale duration's lookup would miss (LRCLIB matches duration ±4s) or
+    // win the race and seat lines that the corrected key then tears down:
+    // the lyric body entering twice. Wait briefly for the correction (the
+    // next heartbeat snapshot, ~500ms); it re-keys this effect, which
+    // cancels the timer and fetches at once.
+    const provisional = isProvisionalDuration(lastSong.current, id, np.duration_ms);
+    lastSong.current = { id, durationMs: np.duration_ms };
     setState({ status: "loading" });
     let alive = true;
     const request = ++fetchSerial.current;
-    void commands.lyrics(np.artist, np.title, np.album, np.duration_ms).then((l) => {
-      if (!alive || lastKey.current !== key || request !== fetchSerial.current) return;
-      const parsed = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
-      const lines = l.words && l.words.length > 0 ? attachWords(parsed, l.words) : parsed;
-      setState(
-        lines.length > 0
-          ? { status: "synced", lines, key }
-          : l.offline
-            ? { status: "offline", key }
-            : { status: "none", key },
-      );
-    });
+    const fetchNow = () => {
+      void commands.lyrics(np.artist, np.title, np.album, np.duration_ms).then((l) => {
+        if (!alive || lastKey.current !== key || request !== fetchSerial.current) return;
+        const parsed = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
+        const lines = l.words && l.words.length > 0 ? attachWords(parsed, l.words) : parsed;
+        setState(
+          lines.length > 0
+            ? { status: "synced", lines, key }
+            : l.offline
+              ? { status: "offline", key }
+              : { status: "none", key },
+        );
+      });
+    };
+    const timer = provisional ? window.setTimeout(fetchNow, PROVISIONAL_DURATION_WAIT_MS) : null;
+    if (timer === null) fetchNow();
     return () => {
       alive = false;
+      if (timer !== null) window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
@@ -691,8 +714,21 @@ export function LyricsPanel({
   // the layout effect force a reflow at translateY(0) BEFORE the offset
   // lands, which arms the transform transition and slides the whole list
   // ~hundreds of px on mount. Transition class only after the first paint.
+  // Two frames, not a plain effect: a mount inside a click (closing the
+  // queue remounts focus's lyric column) flushes passive effects before the
+  // first paint, which armed the transition early and slid the list down
+  // from the top to the current line on every queue close.
   const [anchored, setAnchored] = useState(false);
-  useEffect(() => setAnchored(true), []);
+  useEffect(() => {
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => setAnchored(true));
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
+  }, []);
 
   // Head/tail scroll room so the FIRST and LAST lines can rise to the anchor
   // band instead of jamming against the top/bottom frame with nothing past

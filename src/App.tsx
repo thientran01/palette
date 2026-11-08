@@ -38,9 +38,10 @@ import { useArt, useArtAccent } from "./lib/artAccent";
 import { crispCanvas, useCrispArt } from "./lib/crispArt";
 import * as posClock from "./lib/posClock";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
+import { trackIdOf } from "./lib/trackId";
 import { initReactive } from "./lib/reactive";
 import { MODE_SIZES, WINDOW_MAX, type Mode } from "./lib/sizes";
-import { DUR, EASE } from "./lib/tokens";
+import { DUR, EASE, SLIDE_REST, slideX } from "./lib/tokens";
 import {
   armSuppression,
   clearSuppression,
@@ -261,14 +262,7 @@ function ModeButton({
           duration: reducedMotion ? 0 : DUR[2] / 1000,
           ease: [...EASE.out] as [number, number, number, number],
         },
-        // Without this, whileTap's scale runs on motion's default spring —
-        // press feedback must ride the tokens like every other button.
-        scale: {
-          duration: reducedMotion ? 0 : DUR[1] / 1000,
-          ease: [...EASE.out] as [number, number, number, number],
-        },
       }}
-      whileTap={{ scale: reducedMotion || disabled ? 1 : 0.95 }}
       aria-label={label}
       title={label}
       aria-disabled={disabled || undefined}
@@ -282,8 +276,12 @@ function ModeButton({
         if (e.detail === 0) pulse(); // keyboard never fires pointerdown
         onClick();
       }}
-      className={`grid h-7 w-7 place-items-center rounded-md transition-colors duration-2 ease-out-tk ${
-        disabled ? "pointer-events-none text-muted" : "text-fg hover:bg-fg/10"
+      // Press scale is the CSS one every IconButton uses (the native `scale`
+      // property, 90ms), not whileTap: Motion ticks whileTap on the main
+      // thread, and this press releases right into the mode change's
+      // re-render. `scale` composes with the transform layoutId owns.
+      className={`grid h-7 w-7 place-items-center rounded-md [transition:color_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk),scale_90ms_var(--ease-out-tk)] ${
+        disabled ? "pointer-events-none text-muted" : "text-fg hover:bg-fg/10 active:scale-95"
       }`}
     >
       <span ref={scope} className="grid place-items-center will-change-transform">
@@ -473,6 +471,31 @@ const CORNER_SEAT: Record<DockCorner, string> = {
   "top-right": "right-0 top-0",
   "bottom-left": "bottom-0 left-0",
   "bottom-right": "bottom-0 right-0",
+};
+
+/** The right-click menu's box: anchored at the cursor, clamped so the whole
+ * menu stays inside the fixed window at ANY corner (the cursor can sit far
+ * from the docked corner on a wide shell, where corner-derived growth alone
+ * would push the menu off the far window edge). Its pop-in grows from the
+ * cursor itself, which is the menu's top-left corner unless the clamp moved
+ * the box. */
+function menuPlacement(at: { x: number; y: number }): React.CSSProperties {
+  const left = Math.max(4, Math.min(at.x, WINDOW_MAX[0] - WIDGET_MENU_W - 4));
+  const top = Math.max(4, Math.min(at.y, WINDOW_MAX[1] - WIDGET_MENU_H - 4));
+  // Clamped into the box: a far-clamped menu grows from its nearest edge.
+  const ox = Math.max(0, Math.min(at.x - left, WIDGET_MENU_W));
+  const oy = Math.max(0, Math.min(at.y - top, WIDGET_MENU_H));
+  return { left, top, transformOrigin: `${ox}px ${oy}px` };
+}
+
+/** Where the queue popover grows from: the edge that faces the shell (it
+ * sits above a bottom-docked widget, below a top-docked one), at the docked
+ * side it aligns to. */
+const POPOVER_ORIGIN: Record<DockCorner, string> = {
+  "top-left": "origin-top-left",
+  "top-right": "origin-top-right",
+  "bottom-left": "origin-bottom-left",
+  "bottom-right": "origin-bottom-right",
 };
 
 /**
@@ -892,6 +915,9 @@ function ExpandedView({
   // false throughout, and the stale timestamp would let the next track's
   // instant resolve wrongly earn the cascade.
   const trackKey = lyricsKeyOf(np);
+  // What the header's track-fade spans compare: the song, not the lyrics
+  // lookup key (a duration straggler must not read as a second change).
+  const songKey = trackIdOf(np);
 
   // The non-queue seat. THE INTERLUDE NEVER MOVES THE SURFACE — only verdicts
   // do: while the new track's verdict is pending (within HOLD_GRACE_MS) and
@@ -957,17 +983,17 @@ function ExpandedView({
   // surface (its big cover is the identity), so the header fades only there.
   const headerShown = active !== "album";
 
-  // Peer-layer visibility: opaque, same footprint, OPACITY-ONLY crossfade —
-  // in 200ms / out 140ms EASE.out, visibility deferred past the fade so a
+  // Peer-layer visibility: opaque, same footprint, an opacity + 2px-blur
+  // swap (.view-on/.view-off in index.css) — out 120ms, in 180ms starting
+  // 40ms later, so lyric lines and queue rows are never both legible at
+  // half strength (the old 200/140 overlapping crossfade printed one over
+  // the other; Thien, 2026-11-08). Visibility deferred past the fade so a
   // hidden layer neither eats clicks nor ghosts. No scale/transform: a scale
   // exhale reads as a panel opening and lets the layer behind peek at the
   // edges (both were live bugs, 2026-07-12). `inert` drops the inactive
   // layers from hit-testing and the a11y tree. (prefers-reduced-motion is
   // handled by the global transition kill in index.css.)
-  const layer = (on: boolean): string =>
-    on
-      ? "opacity-100 [transition:opacity_200ms_var(--ease-out-tk)]"
-      : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),visibility_0s_140ms]";
+  const layer = (on: boolean): string => (on ? "view-on" : "view-off");
 
   // The track-change slide (2026-07-23): content INSIDE a layer swaps with a
   // small directional drift — the LAYERS themselves still crossfade in
@@ -986,13 +1012,15 @@ function ExpandedView({
   // "still" mounts without theater — the earned cascade owns that entrance.
   // Exits carry pointerEvents none (the PR #48 inert-exiting rule): the old
   // panel's click-to-seek lines must not eat a click meant for the new track.
+  // Offsets are transform strings (slideX), not `x`, so the slide runs on the
+  // compositor while the new track renders (lib/tokens.ts).
   const contentSlide = {
-    still: { opacity: 1, x: 0 },
-    enter: (dx: number) => ({ opacity: 0, x: dx }),
-    center: { opacity: 1, x: 0 },
+    still: { opacity: 1, ...SLIDE_REST },
+    enter: (dx: number) => ({ opacity: 0, transform: slideX(dx) }),
+    center: { opacity: 1, transform: slideX(0), transitionEnd: SLIDE_REST },
     exit: (dx: number) => ({
       opacity: 0,
-      x: -dx,
+      transform: slideX(-dx),
       pointerEvents: "none" as const,
       transition: slideOut,
     }),
@@ -1006,7 +1034,7 @@ function ExpandedView({
     // without the column stacking two covers for the exit beat.
     exit: (dx: number) => ({
       opacity: 0,
-      x: -dx,
+      transform: slideX(-dx),
       position: "absolute" as const,
       left: 0,
       right: 0,
@@ -1051,7 +1079,7 @@ function ExpandedView({
                   holds its seat — the living instance never slides. */}
               <TrackFadeSpan
                 key={`xt:${slideEpoch}`}
-                k={trackKey}
+                k={songKey}
                 suppress={slideSuppressed}
                 dx={headerDx}
                 className="block min-w-0"
@@ -1075,7 +1103,7 @@ function ExpandedView({
                 15px title above already does; 13px here visibly stepped). */}
             <TrackFadeSpan
               key={`xa:${slideEpoch}`}
-              k={trackKey}
+              k={songKey}
               suppress={slideSuppressed}
               dx={headerDx}
               className="block min-w-0"
@@ -1492,7 +1520,10 @@ function App() {
   // report, 2026-07-23; invisible in the mock, which emits atomically).
   // Keyed on the epoch, stragglers update content IN PLACE inside the one
   // running slide. Bursts faster than the window also merge — one slide
-  // per mash, landing on the right content.
+  // per mash, landing on the right content. The window alone wasn't enough:
+  // the duration straggler rides the next heartbeat (~500ms, past the
+  // window), so the key itself is now the song identity (lib/trackId.ts)
+  // and a late duration never counts as a change at all.
   const [slideEpoch, setSlideEpoch] = useState(0);
   const epochAt = useRef(0);
   useEffect(
@@ -1510,7 +1541,9 @@ function App() {
         // (quick-review catch). Known-and-accepted: a play_now jump's first
         // suppressed intermediate consumes the note; harmless while Next is
         // the only intermediate producer (its note ≡ the forward default).
-        const nextKey = lyricsKeyOf(next);
+        // Song identity, not lyricsKeyOf: a late duration or album update is
+        // the same song and must not start a second slide (lib/trackId.ts).
+        const nextKey = trackIdOf(next);
         if (nextKey !== lastTrackKey.current) {
           // ALWAYS consume (clears the slot) so a note stranded by a vanish
           // can't misdirect a later unrelated advance inside its TTL — but
@@ -1618,7 +1651,7 @@ function App() {
   const [announceText, setAnnounceText] = useState("");
   const announcedKey = useRef<string | null>(null);
   useEffect(() => {
-    const key = lyricsKeyOf(np);
+    const key = trackIdOf(np);
     if (!np || !key || key === announcedKey.current || announceSuppressed) return;
     const first = announcedKey.current === null;
     announcedKey.current = key;
@@ -2101,7 +2134,7 @@ function App() {
               <p className="flex min-w-0 flex-1 items-center text-xs font-medium text-fg">
                 <TrackFadeSpan
                   key={`t:${slideEpoch}`}
-                  k={lyricsKeyOf(np)}
+                  k={trackIdOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
                   className="min-w-0 truncate"
@@ -2115,7 +2148,7 @@ function App() {
                 </span>
                 <TrackFadeSpan
                   key={`a:${slideEpoch}`}
-                  k={lyricsKeyOf(np)}
+                  k={trackIdOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
                   className="min-w-0 flex-1 truncate font-normal text-muted"
@@ -2200,7 +2233,7 @@ function App() {
                   <p className="min-w-0 truncate text-[15px] font-medium text-fg">
                     <TrackFadeSpan
                       key={`ct:${slideEpoch}`}
-                      k={lyricsKeyOf(np)}
+                      k={trackIdOf(np)}
                       suppress={announceSuppressed}
                       dx={trackDir * SLIDE_PX.card}
                       className="inline-block max-w-full truncate align-top"
@@ -2220,7 +2253,7 @@ function App() {
                   <p className="min-w-0 flex-1 truncate text-xs leading-4 text-muted">
                     <TrackFadeSpan
                       key={`ca:${slideEpoch}`}
-                      k={lyricsKeyOf(np)}
+                      k={trackIdOf(np)}
                       suppress={announceSuppressed}
                       dx={trackDir * SLIDE_PX.card}
                       className="inline-block max-w-full truncate align-top"
@@ -2300,12 +2333,18 @@ function App() {
         ref={popoverRef}
         inert={!popoverVisible}
         onMouseDown={(e) => e.stopPropagation()}
+        // The reveal grows out of the widget: a 0.97 scale anchored on the
+        // edge that faces the shell, at the docked side, rides the 140ms fade
+        // (both ways, transitions so a quick re-toggle reverses mid-flight).
+        // Opacity alone read as a panel appearing from nowhere. The native
+        // `scale` property leaves offsetHeight alone, so the hit-rect
+        // measurement below never sees it.
         className={`absolute z-30 flex flex-col rounded-xl border border-border/10 bg-surface p-1.5 shadow-xl shadow-black/40 ${
           corner.endsWith("right") ? "right-1.5" : "left-1.5"
-        } ${
+        } ${POPOVER_ORIGIN[corner]} ${
           popoverVisible
-            ? "visible opacity-100 [transition:opacity_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),max-height_200ms_var(--ease-in-out-tk)]"
-            : "invisible opacity-0 [transition:opacity_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),max-height_200ms_var(--ease-in-out-tk),visibility_0s_140ms]"
+            ? "visible scale-100 opacity-100 [transition:opacity_140ms_var(--ease-out-tk),scale_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),max-height_200ms_var(--ease-in-out-tk)]"
+            : "invisible scale-[0.97] opacity-0 [transition:opacity_140ms_var(--ease-out-tk),scale_140ms_var(--ease-out-tk),top_200ms_var(--ease-in-out-tk),bottom_200ms_var(--ease-in-out-tk),max-height_200ms_var(--ease-in-out-tk),visibility_0s_140ms]"
         }`}
         style={{
           width: POPOVER_W,
@@ -2353,14 +2392,7 @@ function App() {
       )}
       {menu && (
         <WidgetMenu
-          style={{
-            // Anchor at the cursor, clamped so the whole menu stays inside the
-            // fixed window at ANY corner — the cursor can sit far from the
-            // docked corner on a wide shell, where corner-derived growth alone
-            // would push the menu off the far window edge.
-            left: Math.max(4, Math.min(menu.x, WINDOW_MAX[0] - WIDGET_MENU_W - 4)),
-            top: Math.max(4, Math.min(menu.y, WINDOW_MAX[1] - WIDGET_MENU_H - 4)),
-          }}
+          style={menuPlacement(menu)}
           spotifyConnected={spotifyConnected}
           showhideChord={showhideChord}
           onClose={() => setMenu(null)}
