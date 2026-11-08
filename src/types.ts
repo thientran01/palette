@@ -89,6 +89,14 @@ export interface SpotifyStatus {
  * builds it for non-Computer devices). Its presence means "the audio is
  * elsewhere" — the substrate for the "Playing on <name>" tag that explains a
  * quiet waveform. null = local / none / not connected. */
+/** The playing Spotify track's full-size (640px) cover, tagged with the
+ *  track it belongs to (spotify.rs NowCover). */
+export interface NowCover {
+  title: string;
+  artist: string;
+  url: string;
+}
+
 export interface SpotifyDevice {
   name: string;
   kind: "phone" | "speaker" | "tv" | "car" | "other";
