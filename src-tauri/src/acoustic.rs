@@ -1259,7 +1259,8 @@ fn mix_ears(a: &[f32], b: &[f32]) -> Result<Vec<f32>> {
     }
     let mut out = Vec::with_capacity(a.len());
     let mut row = [0f32; CLASSES];
-    for (fa, fb) in a.chunks_exact(CLASSES).zip(b.chunks_exact(CLASSES)) {
+    let (fa, fb) = (a.as_chunks::<CLASSES>().0, b.as_chunks::<CLASSES>().0);
+    for (fa, fb) in fa.iter().zip(fb) {
         for ((cell, &x), &y) in row.iter_mut().zip(fa).zip(fb) {
             let m = x.max(y);
             *cell = m + ((x - m).exp() + (y - m).exp()).ln();
