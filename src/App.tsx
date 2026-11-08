@@ -38,6 +38,7 @@ import { useArt, useArtAccent } from "./lib/artAccent";
 import { crispCanvas, useCrispArt } from "./lib/crispArt";
 import * as posClock from "./lib/posClock";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
+import { trackIdOf } from "./lib/trackId";
 import { initReactive } from "./lib/reactive";
 import { MODE_SIZES, WINDOW_MAX, type Mode } from "./lib/sizes";
 import { DUR, EASE, SLIDE_REST, slideX } from "./lib/tokens";
@@ -914,6 +915,9 @@ function ExpandedView({
   // false throughout, and the stale timestamp would let the next track's
   // instant resolve wrongly earn the cascade.
   const trackKey = lyricsKeyOf(np);
+  // What the header's track-fade spans compare: the song, not the lyrics
+  // lookup key (a duration straggler must not read as a second change).
+  const songKey = trackIdOf(np);
 
   // The non-queue seat. THE INTERLUDE NEVER MOVES THE SURFACE — only verdicts
   // do: while the new track's verdict is pending (within HOLD_GRACE_MS) and
@@ -1075,7 +1079,7 @@ function ExpandedView({
                   holds its seat — the living instance never slides. */}
               <TrackFadeSpan
                 key={`xt:${slideEpoch}`}
-                k={trackKey}
+                k={songKey}
                 suppress={slideSuppressed}
                 dx={headerDx}
                 className="block min-w-0"
@@ -1099,7 +1103,7 @@ function ExpandedView({
                 15px title above already does; 13px here visibly stepped). */}
             <TrackFadeSpan
               key={`xa:${slideEpoch}`}
-              k={trackKey}
+              k={songKey}
               suppress={slideSuppressed}
               dx={headerDx}
               className="block min-w-0"
@@ -1516,7 +1520,10 @@ function App() {
   // report, 2026-07-23; invisible in the mock, which emits atomically).
   // Keyed on the epoch, stragglers update content IN PLACE inside the one
   // running slide. Bursts faster than the window also merge — one slide
-  // per mash, landing on the right content.
+  // per mash, landing on the right content. The window alone wasn't enough:
+  // the duration straggler rides the next heartbeat (~500ms, past the
+  // window), so the key itself is now the song identity (lib/trackId.ts)
+  // and a late duration never counts as a change at all.
   const [slideEpoch, setSlideEpoch] = useState(0);
   const epochAt = useRef(0);
   useEffect(
@@ -1534,7 +1541,9 @@ function App() {
         // (quick-review catch). Known-and-accepted: a play_now jump's first
         // suppressed intermediate consumes the note; harmless while Next is
         // the only intermediate producer (its note ≡ the forward default).
-        const nextKey = lyricsKeyOf(next);
+        // Song identity, not lyricsKeyOf: a late duration or album update is
+        // the same song and must not start a second slide (lib/trackId.ts).
+        const nextKey = trackIdOf(next);
         if (nextKey !== lastTrackKey.current) {
           // ALWAYS consume (clears the slot) so a note stranded by a vanish
           // can't misdirect a later unrelated advance inside its TTL — but
@@ -1642,7 +1651,7 @@ function App() {
   const [announceText, setAnnounceText] = useState("");
   const announcedKey = useRef<string | null>(null);
   useEffect(() => {
-    const key = lyricsKeyOf(np);
+    const key = trackIdOf(np);
     if (!np || !key || key === announcedKey.current || announceSuppressed) return;
     const first = announcedKey.current === null;
     announcedKey.current = key;
@@ -2125,7 +2134,7 @@ function App() {
               <p className="flex min-w-0 flex-1 items-center text-xs font-medium text-fg">
                 <TrackFadeSpan
                   key={`t:${slideEpoch}`}
-                  k={lyricsKeyOf(np)}
+                  k={trackIdOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
                   className="min-w-0 truncate"
@@ -2139,7 +2148,7 @@ function App() {
                 </span>
                 <TrackFadeSpan
                   key={`a:${slideEpoch}`}
-                  k={lyricsKeyOf(np)}
+                  k={trackIdOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
                   className="min-w-0 flex-1 truncate font-normal text-muted"
@@ -2224,7 +2233,7 @@ function App() {
                   <p className="min-w-0 truncate text-[15px] font-medium text-fg">
                     <TrackFadeSpan
                       key={`ct:${slideEpoch}`}
-                      k={lyricsKeyOf(np)}
+                      k={trackIdOf(np)}
                       suppress={announceSuppressed}
                       dx={trackDir * SLIDE_PX.card}
                       className="inline-block max-w-full truncate align-top"
@@ -2244,7 +2253,7 @@ function App() {
                   <p className="min-w-0 flex-1 truncate text-xs leading-4 text-muted">
                     <TrackFadeSpan
                       key={`ca:${slideEpoch}`}
-                      k={lyricsKeyOf(np)}
+                      k={trackIdOf(np)}
                       suppress={announceSuppressed}
                       dx={trackDir * SLIDE_PX.card}
                       className="inline-block max-w-full truncate align-top"

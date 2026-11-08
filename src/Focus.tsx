@@ -60,6 +60,7 @@ import { DeviceTag } from "./DeviceTag";
 import { LyricsPanel, lyricsKeyOf, lyricsVerdictOf, useLyrics, useSeatHold } from "./LyricsPanel";
 import { useCredits } from "./Credits";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
+import { trackIdOf } from "./lib/trackId";
 import {
   armSuppression,
   clearSuppression,
@@ -249,7 +250,8 @@ export default function Focus() {
         // track→track consumes; vanish/appear RESETS to forward and still
         // CLEARS the note (a new session can't inherit the last skip's -1,
         // and a stranded note can't misdirect a later advance — App's rule).
-        const nextKey = lyricsKeyOf(next);
+        // Song identity (lib/trackId.ts): a late duration is not a skip.
+        const nextKey = trackIdOf(next);
         if (nextKey !== lastTrackKey.current) {
           const noted = takeTrackDir();
           setTrackDir(nextKey !== null && lastTrackKey.current !== null ? noted : 1);
@@ -298,7 +300,7 @@ export default function Focus() {
   const [announceText, setAnnounceText] = useState("");
   const announcedKey = useRef<string | null>(null);
   useEffect(() => {
-    const key = lyricsKeyOf(np);
+    const key = trackIdOf(np);
     if (!np || !key || key === announcedKey.current || announceSuppressed) return;
     const first = announcedKey.current === null;
     announcedKey.current = key;
