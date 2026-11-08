@@ -129,7 +129,7 @@ function useWordWipe(
       const index = Number(el.dataset.wordRow);
       const words = lines[index]?.words;
       if (!words?.length) continue;
-      rows.push({ index, words, style: el.style,
+      rows.push({ index, words, style: el.style, el,
         spans: Array.from(el.querySelectorAll<HTMLElement>("[data-word]"), span => span.style) });
     }
     return driveWordRows(rows, currentLine, leadMs, posClock, {
@@ -352,7 +352,9 @@ const SCALE = {
     // Non-current ink is drawn slightly smaller than its layout box
     // (paint-only, so wrapping never changes).
     restScale: 0.97,
-    mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
+    // Height of the surface-colored fades at the viewport's top and bottom
+    // edges (the edge fades at the end of LyricsPanel).
+    fade: "h-7",
     chipTop: "top-8",
     chipBottom: "bottom-8",
     // Break-row dots â€” #79's original tuning: h-8 matches the base lyric row
@@ -377,9 +379,9 @@ const SCALE = {
     recede: { "-3": 0.1, "-2": 0.2, "-1": 0.38, "1": 0.38, "2": 0.2, "3": 0.1 },
     restScale: 0.97,
     // Same lighting as the compact view: the per-line fade (recede) does
-    // the dimming, and the mask only softens the very edges of the box
-    // (2026-11-07; the old 260px ramps left most lines half-masked).
-    mask: "[mask-image:linear-gradient(transparent,black_72px,black_calc(100%-72px),transparent)]",
+    // the dimming, and the edge fades only soften the very edges of the box
+    // (2026-11-07; the old 260px ramps left most lines half-faded).
+    fade: "h-[72px]",
     chipTop: "top-64",
     chipBottom: "bottom-84",
     // Break-row dots scaled up for the room â€” bigger dots on a wider gap so
@@ -510,14 +512,15 @@ const LyricLineRow = memo(function LyricLineRow({
       <span className="lyric-ink">
       {timed
         ? words.map((w, wi) => (
-            // Every span wears the same gradient; useWordWipe moves only
+            // Every span carries the same gradient (drawn only while the
+            // row is data-wiping, see index.css); useWordWipe moves only
             // its --wipe stop, so a word boundary is a style write, not
             // a re-render or a class swap.
             <span
               key={`${w.t}-${wi}`}
               data-word
-              className="inline-block bg-clip-text [-webkit-text-fill-color:transparent]"
-              style={{ backgroundImage: WORD_GRADIENT }}
+              className="inline-block"
+              style={{ "--word-gradient": WORD_GRADIENT } as React.CSSProperties}
             >
               {w.text}
             </span>
@@ -927,7 +930,7 @@ export function LyricsPanel({
     <div
       ref={viewportRef}
       onWheel={onWheel}
-      className={`relative min-h-0 flex-1 overflow-hidden ${SCALE[scale].mask}`}
+      className="relative min-h-0 flex-1 overflow-hidden"
       aria-label="Lyrics"
     >
       <div
@@ -949,7 +952,7 @@ export function LyricsPanel({
           commands.seekAbs(Math.max(line.t - leadMs, 0));
           relatch(); // hand control back to auto-follow
         }}
-        className={`flex flex-col gap-1 will-change-transform ${
+        className={`flex flex-col gap-1 ${
           browsing || !anchored ? "" : "[transition:transform_220ms_var(--ease-in-out-tk)]"
         } ${entering ? "lyrics-entering" : ""}`}
         style={{
@@ -988,6 +991,20 @@ export function LyricsPanel({
           <CreditsBlock credits={credits} scale={scale} />
         </div>
       </div>
+      {/* Edge fades: surface-colored gradients painted OVER the lines, not
+       * a mask-image on the viewport. A mask (like will-change on the list,
+       * or any filter) makes Chromium draw the lines grayscale, and on
+       * Windows that is the soft, slightly blurry text Thien noticed
+       * (2026-11-08). Text under an overlay keeps ClearType. The lyrics
+       * always sit on bg-surface, so this looks the same as the old mask. */}
+      <div
+        aria-hidden
+        className={`pointer-events-none absolute inset-x-0 top-0 bg-linear-to-b from-surface to-surface/0 ${SCALE[scale].fade}`}
+      />
+      <div
+        aria-hidden
+        className={`pointer-events-none absolute inset-x-0 bottom-0 bg-linear-to-t from-surface to-surface/0 ${SCALE[scale].fade}`}
+      />
       {/* Word-lead caption: the one piece of feedback the nudge hotkeys
        * give. Same chip grammar AND the same per-scale top seat as the
        * return-to-now button (the focus room's ladder starts far lower).

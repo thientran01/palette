@@ -1380,6 +1380,9 @@ export default function Search() {
         }}
         className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border/10 bg-surface shadow-xl shadow-black/40"
       >
+        {/* Opaque text plane inside the rounded card, so the pane's text
+            gets ClearType in this transparent window (index.css). */}
+        <div className="text-plane flex min-h-0 flex-1 flex-col">
         {/* Search row — the search's one verb. */}
         <div className="flex items-center gap-3 px-5 pb-3 pt-4">
           <span className={searching ? "text-fg" : "text-muted"}>
@@ -1673,6 +1676,7 @@ export default function Search() {
         <p aria-live="polite" className="m-0 min-h-[30px] border-t border-border/10 px-5 py-1.5 text-[12px] leading-[18px] text-muted">
           {note}
         </p>
+        </div>
       </div>
     </div>
   );

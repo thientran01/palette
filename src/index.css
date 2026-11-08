@@ -112,6 +112,25 @@ body {
   user-select: none;
 }
 
+/* Text plane: an opaque, rectangular, composited layer for text in a
+ * TRANSPARENT window (the widget, search). Chromium only draws ClearType
+ * (subpixel) text into a layer it knows is opaque; the transparent page
+ * itself never is, and neither is a rounded card (its corners show the
+ * desktop), so without this every glyph falls back to grayscale and reads
+ * soft on Windows (Thien, 2026-11-04 and 2026-11-08). Put it on a plain
+ * rectangle INSIDE the rounded, overflow-hidden card: the card's clip
+ * rounds it without making it transparent. translateZ(0), not
+ * will-change: will-change: transform turns ClearType off.
+ *
+ * Text inside still goes grayscale under a mask-image, a filter, a
+ * will-change or a running opacity/transform animation (it snaps back to
+ * ClearType when the animation ends). Fade edges with an overlay gradient
+ * instead of a mask (LyricsPanel's edge fades). */
+.text-plane {
+  transform: translateZ(0);
+  background-color: rgb(var(--surface));
+}
+
 /* Keyboard focus is always visible; accent is reserved for exactly this. */
 :focus-visible {
   outline: 2px solid rgb(var(--accent));
@@ -482,6 +501,21 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .lyric-ink { transform: none; transition: none; }
   .lyric-row [data-word] { --word-sheen: var(--word-bright, currentColor) !important; }
+}
+
+/* The word wipe paints each word as a gradient clipped to its glyphs, and
+ * clipped text is always grayscale. Worse, one clipped word turns off
+ * ClearType for every line in the same layer. So only rows the wipe driver
+ * is painting (data-wiping) wear it, each in its own layer (will-change);
+ * every other row's gradient is one flat color anyway, so it draws as
+ * plain text and keeps ClearType. */
+.lyric-row[data-wiping] [data-word] {
+  background-image: var(--word-gradient);
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.lyric-row[data-wiping] .lyric-ink {
+  will-change: transform;
 }
 
 /* A brief onset bloom on the glyphs; the row background stays clear. */

@@ -8,6 +8,10 @@ export interface WordRow {
   words: LyricWord[];
   style: Style;
   spans: Style[];
+  /** The row element: carries `data-wiping` while the row is active, which
+   * is the only time its words are drawn as a clipped gradient (index.css).
+   * A resting row is plain text, so it keeps ClearType on Windows. */
+  el?: Pick<Element, "toggleAttribute">;
 }
 export interface WipeClock {
   now(): number;
@@ -60,6 +64,7 @@ export function driveWordRows(
           row.style.removeProperty("--lyric-scale");
           row.style.removeProperty("--lyric-opacity");
         }
+        row.el?.toggleAttribute("data-wiping", active);
         track.active = active;
       }
       if (!active) continue;
@@ -120,6 +125,7 @@ export function driveWordRows(
       track.row.style.removeProperty("--word-halo");
       track.row.style.removeProperty("--lyric-scale");
       track.row.style.removeProperty("--lyric-opacity");
+      track.row.el?.toggleAttribute("data-wiping", false);
     }
   };
 }
