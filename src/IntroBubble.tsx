@@ -61,11 +61,12 @@ export function IntroBubble({
       // animate-, not transition-: this bubble conditionally mounts, and a
       // CSS transition never fires on initial mount — the old opacity
       // transition was dead code and the once-ever first-run moment popped
-      // in at 0ms (motion pass, 2026-07-16). caption-in at DUR[2]/EASE.out
-      // = the family reveal (queue popover, tooltips). Dismiss stays
+      // in at 0ms (motion pass, 2026-07-16). .pop-in at DUR[2]/EASE.out =
+      // the family reveal (queue popover, right-click menu), grown from the
+      // tether's tip so it reads as coming out of the widget. Dismiss stays
       // instant: user-commanded exits don't linger.
-      className="absolute z-40 w-[300px] animate-[caption-in_140ms_var(--ease-out-tk)_both] rounded-xl border border-border/12 bg-surface p-4 shadow-xl shadow-black/40"
-      style={pos}
+      className="pop-in absolute z-40 w-[300px] rounded-xl border border-border/12 bg-surface p-4 shadow-xl shadow-black/40"
+      style={{ ...pos, transformOrigin: `${right ? "calc(100% - 34px)" : "34px"} ${above ? "100%" : "0%"}` }}
     >
       <div className="mb-3 flex items-start gap-2">
         <p className="flex-1 text-[14px] font-semibold text-fg">Nice — Palette is listening</p>

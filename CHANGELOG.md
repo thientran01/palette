@@ -25,6 +25,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Typing in History searches every song you've played, not just the ones already scrolled into view.
 - Holding an arrow key in Search's History now moves one row per key repeat, smoothly. It used to re-format every play time on each press and fall several rows behind.
 - Album covers in the player, queue and Search are sharper. Palette now shrinks each cover to the exact pixels of its box with a high-quality filter instead of leaving it to the browser, and Spotify rows load the 300px cover instead of the 64px one, which was blurry at any Windows scaling above 100%.
+- Skipping songs, seeking and switching sizes animate more smoothly. The song-change slide and the button presses now run on the graphics card, so they no longer stutter while the new song loads. Queue rows highlight under the cursor right away instead of fading in slowly. The queue panel, the right-click menu and the welcome bubble now grow slightly out of the widget, the cursor and the bubble's pointer as they fade in.
+- Switching between lyrics and the queue (in the expanded player and focus mode) no longer shows queue rows printed over lyric lines. The old view fades and softens out quickly before the new one sharpens in, and in focus mode the lyrics no longer blink out when the queue opens or slide down from the top when it closes.
 - Focus mode's big album cover is sharp now when Spotify is connected. It shows Spotify's 640px cover instead of the 300px one Windows hands Palette, which was blown up almost 2x.
 - Lyrics are calmer: lines fade evenly the further they are from the current one, above and below.
 - Focus mode: lyrics fill the right side of the screen.
@@ -36,6 +38,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 - A lyric line no longer jumps from one row to two when it becomes the current line.
 - Karaoke words on Spotify no longer start up to 0.4 s early on some plays and on time on others. Spotify reports each new song as starting a little before its audio really does, and Palette used to keep that head start for the whole song, by a different amount every play. Now it eases back onto Spotify's timeline in the first couple of seconds, so one word-timing setting fits every song.
+- Karaoke words no longer race through each line with no rhythm on songs Palette learned while it couldn't hear the music (for example when Windows wouldn't let it capture Spotify's audio). Those songs now show line karaoke and relearn word timing the next time they play in full, and a listen that doesn't pick up the vocals is no longer saved.
 
 ## [1.0.11] - 2026-11-07
 

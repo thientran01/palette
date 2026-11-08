@@ -10,7 +10,7 @@ use crate::separation::Stereo;
 use crate::settings::{self, write_atomic};
 use crate::spotify;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -149,6 +149,19 @@ const MAX_SAMPLES: usize = 16_000 * 60 * 8;
 const ARM_NEAR_START_MS: i64 = 8_000;
 const PEAK_ABORT: f32 = 1e-3;
 const MIN_LINE_COVERAGE: u32 = 30;
+/// A listen that never heard the vocals still decodes. With no voice in
+/// the emissions, CTC gives every letter its minimum one or two 20ms
+/// frames, so a whole line's highlight races past in well under a second
+/// with no rhythm. On 2026-11-04 Spotify's process capture never
+/// delivered, the device-mix fallback heard near silence that still
+/// cleared PEAK_ABORT, and 21 songs saved timing like that. Across 279
+/// saved syncs on Thien's PC, a collapsed song's median line ran 57–87ms
+/// per word and every real one ran at least 183ms, fast rap included.
+const COLLAPSED_MS_PER_WORD: i64 = 120;
+/// Lines with this many spoken words or more are judged...
+const COLLAPSE_MIN_WORDS: usize = 3;
+/// ...and a song needs this many of them before it is judged at all.
+const COLLAPSE_MIN_LINES: usize = 8;
 /// v5 binds word times to the exact synced LRC as well as the aligner recipe.
 /// Older files lack source identity and must be recorded again.
 const STORE_V: u32 = 5;
@@ -431,7 +444,46 @@ fn read_file_inner(path: &Path, synced: Option<&str>, prune: bool) -> Vec<Word> 
         }
         return Vec::new();
     }
+    // Saved before the guard in commit_recording existed. Line karaoke
+    // beats a racing highlight, and has_file then relearns the song.
+    if collapsed(&file.words) {
+        if prune {
+            let _ = std::fs::remove_file(path);
+        }
+        return Vec::new();
+    }
     file.words
+}
+
+/// True when the median judged line spends under COLLAPSED_MS_PER_WORD per
+/// spoken word: the aligner found no vocals and packed every word into its
+/// minimum frames.
+fn collapsed(words: &[Word]) -> bool {
+    // line_t -> (first onset, last end, spoken words)
+    let mut lines: HashMap<i64, (i64, i64, usize)> = HashMap::new();
+    for w in words {
+        let Some(line_t) = w.line_t else {
+            continue;
+        };
+        if !w.text.chars().any(char::is_alphanumeric) {
+            continue;
+        }
+        let end = w.end.unwrap_or(w.t).max(w.t);
+        let line = lines.entry(line_t).or_insert((w.t, end, 0));
+        line.0 = line.0.min(w.t);
+        line.1 = line.1.max(end);
+        line.2 += 1;
+    }
+    let mut per_word: Vec<i64> = lines
+        .values()
+        .filter(|(_, _, n)| *n >= COLLAPSE_MIN_WORDS)
+        .map(|(first, last, n)| (last - first) / *n as i64)
+        .collect();
+    if per_word.len() < COLLAPSE_MIN_LINES {
+        return false;
+    }
+    let mid = per_word.len() / 2;
+    *per_word.select_nth_unstable(mid).1 < COLLAPSED_MS_PER_WORD
 }
 
 /// A song saved under an acoustic recipe the current one replaced keeps its
@@ -1195,6 +1247,20 @@ fn commit_recording(
         log::info!("karaoke: align missed {} — leaving line karaoke", rec.title);
         return;
     }
+    if collapsed(&words) {
+        // Not a miss: the capture, not the song, failed, so the next
+        // listen may hear it.
+        sync_state(
+            &rec.key,
+            "failed",
+            "This listen didn’t pick up the vocals. Word sync was not saved; play it again to retry.",
+        );
+        log::warn!(
+            "karaoke: {} aligned with no vocal evidence (every line collapsed) — not saved",
+            rec.title
+        );
+        return;
+    }
     let root = karaoke_dir.parent().unwrap_or(karaoke_dir);
     let _library_guard = crate::sync_library::lock();
     if !crate::sync_library::current_locked(root, &rec.key, rec.library_revision) {
@@ -1730,6 +1796,71 @@ mod tests {
         write_file(&dir, "abc", "[00:01.00]one two", &words).unwrap();
         let got = read_file(&dir.join("abc.json"), Some("[00:01.00]one two"));
         assert_eq!(got, words);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `lines` LRC rows four seconds apart, each with `n` spoken words of
+    /// `ms` and a comma token between them, the way the aligner saves them.
+    fn song(lines: i64, n: i64, ms: i64) -> Vec<Word> {
+        let mut words = Vec::new();
+        for l in 0..lines {
+            let line_t = 10_000 + l * 4_000;
+            for i in 0..n {
+                let t = line_t + 500 + i * ms;
+                words.push(Word {
+                    t,
+                    text: "la".into(),
+                    end: Some(t + ms),
+                    line_t: Some(line_t),
+                    points: Vec::new(),
+                });
+                words.push(Word {
+                    t: t + ms,
+                    text: ", ".into(),
+                    end: Some(t + ms),
+                    line_t: Some(line_t),
+                    points: Vec::new(),
+                });
+            }
+        }
+        words
+    }
+
+    // Shapes from Thien's saved syncs: deaf listens ran 57–87ms per word,
+    // the fastest real song (a rap verse) 183ms.
+    #[test]
+    fn deaf_listen_collapses_and_fast_rap_does_not() {
+        assert!(collapsed(&song(40, 6, 40)));
+        assert!(collapsed(&song(40, 6, 87)));
+        assert!(!collapsed(&song(40, 6, 183)));
+        assert!(!collapsed(&song(40, 6, 300)));
+    }
+
+    #[test]
+    fn too_little_evidence_is_not_judged() {
+        // Seven judged lines, or lines of one or two words, say nothing.
+        assert!(!collapsed(&song(7, 6, 40)));
+        assert!(!collapsed(&song(40, 2, 40)));
+        // Words without a source line are ignored, not grouped together.
+        let mut loose = song(40, 6, 40);
+        loose.iter_mut().for_each(|w| w.line_t = None);
+        assert!(!collapsed(&loose));
+    }
+
+    #[test]
+    fn collapsed_saved_sync_is_dropped_so_the_song_relearns() {
+        let dir =
+            std::env::temp_dir().join(format!("pulse-karaoke-collapsed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let source = "[00:10.00]la la la la la la";
+        write_file(&dir, "deaf", source, &song(40, 6, 40)).unwrap();
+        let path = dir.join("deaf.json");
+        assert!(read_file_preserving(&path, Some(source)).is_empty());
+        assert!(path.is_file(), "the preserving read leaves the file alone");
+        assert!(!has_file(&dir, "deaf", Some(source)));
+        assert!(!path.is_file());
+        write_file(&dir, "heard", source, &song(40, 6, 250)).unwrap();
+        assert!(!read_file(&dir.join("heard.json"), Some(source)).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
