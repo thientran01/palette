@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Changed
+
+- Word karaoke follows Japanese singing much more closely. It used to listen for every kanji in its Chinese reading (水面 as "shuimian", 一人 as "1 ren"), for っ as "tsu" and for きょ as "ki-yo". っ, small kana and ー are now heard as sung. With the optional Japanese dictionary installed beside the karaoke model, kanji and numbers get their Japanese readings and the particles は and へ are heard as "wa" and "e". On five Japanese songs, lines the aligner doubts went from 45% to 23%. Saved syncs relearn on each song's next full listen.
+
 ### Fixed
 
 - Word karaoke now learns most Japanese songs. Lyrics with a long-vowel bar (トートロジー), a repeat mark (悠々) or a kanji number (一人) used to make the whole song give up on word sync every time it played, so it stayed on line timing forever (Yorushika's あぶく, for one). Numbers written in digits (By 11, 7個目, 11년째) no longer stop a song either. If a line still has a word Palette can't sound out, only that line stays on line timing.
