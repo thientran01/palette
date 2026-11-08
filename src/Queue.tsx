@@ -505,10 +505,19 @@ const QueueRowBase = function QueueRow({
           ? "z-10 bg-surface-2 shadow-lg shadow-black/40"
           : settleDy
             ? "z-0 hover:bg-fg/5"
-            : "z-0 [transition:transform_140ms_var(--ease-out-tk),background-color_600ms_var(--ease-out-tk)] hover:bg-fg/5"
-      } ${flash && !dragging ? "bg-accent/15" : ""}`}
+            : "z-0 [transition:transform_140ms_var(--ease-out-tk),background-color_140ms_var(--ease-out-tk)] hover:bg-fg/5"
+      }`}
       style={!dragging && settleDy ? { transform: `translateY(${settleDy}px)` } : undefined}
     >
+      {/* The newly-queued wash is its own layer (.row-flash, Search's
+          RowFlash): it lands at once, holds, then fades by opacity. It used
+          to be the row's background riding a 600ms background transition,
+          which the hover shared, so every hover took 600ms to fade in and
+          trailed the cursor. -z-10 keeps it under the row's content (the
+          row's z-0 is the stacking context), over the hover wash. */}
+      {flash && !dragging && (
+        <span aria-hidden className="row-flash pointer-events-none absolute inset-0 -z-10 rounded-[inherit] bg-accent/15" />
+      )}
       <RowThumb url={track.art_url} size={s.thumb} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className={`truncate ${s.title} font-medium text-fg`}>{track.title}</span>
@@ -696,7 +705,7 @@ export function QueuePanel({
     [],
   );
 
-  // Newly-queued flash (900ms accent wash, fades on the 600ms bg transition).
+  // Newly-queued flash (the row's .row-flash wash, mounted for 900ms).
   // Per-uri timers: more-like-this lands rows ~120ms apart, and a single
   // slot would snap each earlier wash off mid-fade (quick-review catch).
   const [flashUris, setFlashUris] = useState<ReadonlySet<string>>(new Set());

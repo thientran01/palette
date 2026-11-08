@@ -275,6 +275,72 @@ body {
   }
 }
 
+/* Pop-out surfaces that mount on demand (the right-click menu, the first-run
+ * bubble): the 140ms family reveal plus a 0.97 → 1 scale, grown from where
+ * they come from. The element sets transform-origin (the cursor, the
+ * tether). The native `scale` property, so nothing it does fights an inline
+ * transform. Never from 0: a surface that starts at nothing reads as coming
+ * from nowhere. The queue popover does the same with transitions (App.tsx),
+ * since it stays mounted. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    scale: 0.97;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+.pop-in {
+  animation: pop-in 140ms var(--ease-out-tk) both;
+}
+
+/* Peer-view swap (expanded's lyrics · album · queue layers, focus's lyric
+ * column ⇄ queue): the outgoing view fades out fast and softens into a 2px
+ * blur; the incoming one starts as the old is nearly gone, then sharpens in.
+ * These views are dense text in the same box, so a plain overlapping
+ * crossfade showed both at half strength, queue rows printed over lyric
+ * lines (Thien, 2026-11-08: "it just looks weird"). The overlap keeps it one
+ * motion instead of a blink to empty; the blur blends the two states
+ * where they do meet. The strong ease-out has the old view down to ~20%
+ * by 40ms, which is when the new one starts. Opacity and filter only: the
+ * views never move, and filter rests at none so settled text keeps its
+ * normal rendering.
+ * Transitions, so toggling back mid-swap reverses from where it is. */
+.view-on {
+  opacity: 1;
+  filter: none;
+  transition:
+    opacity 180ms var(--ease-out-tk) 40ms,
+    filter 180ms var(--ease-out-tk) 40ms;
+}
+.view-off {
+  visibility: hidden;
+  opacity: 0;
+  filter: blur(2px);
+  transition:
+    opacity 120ms var(--ease-out-tk),
+    filter 120ms var(--ease-out-tk),
+    visibility 0s 120ms;
+}
+/* The same arrival for a view that MOUNTS into the swap (focus's lyric
+ * column comes back fresh when the queue closes). */
+@keyframes view-in {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: none;
+  }
+}
+.view-in {
+  animation: view-in 180ms var(--ease-out-tk) 40ms both;
+}
+
 /* The persistent widget shell (App.tsx): mode changes tween the box out of
  * the docked corner (a morph of an on-screen element → EASE.inOut); a
  * dock-corner change FLIPs `translate` back to 0 (a drag-release response →
