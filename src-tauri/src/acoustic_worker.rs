@@ -1,9 +1,9 @@
 //! One bounded acoustic worker, with an idle-expiring model. Requests already
 //! run behind karaoke's ALIGNING guard; no inference touches the media thread.
 use crate::{
-    acoustic::AcousticAligner,
+    acoustic::{AcousticAligner, Knobs},
     align::{TimeMap, TimedLine, Word},
-    separation::{Stereo, VocalSeparator},
+    separation::{Stereo, VocalEar, VocalSeparator},
 };
 use std::{
     path::PathBuf,
@@ -13,9 +13,14 @@ use std::{
 
 type Result<T> = std::result::Result<T, String>;
 const IDLE: Duration = Duration::from_secs(5 * 60);
+/// The review's second ear starts no stretch this long after the align
+/// began: its 14 passes take about 90s on Thien's PC, after the first pass
+/// over the song, so only a busy PC reaches this.
+const EAR_DEADLINE: Duration = Duration::from_secs(120);
 struct Request {
     pcm: Vec<i16>,
-    /// Full-rate stereo kept by the vocal trial; separation input only.
+    /// Full-rate stereo kept for separation (the vocal trial, or the
+    /// review's second ear); never aligned directly.
     stereo: Option<Stereo>,
     lines: Vec<TimedLine>,
     map: TimeMap,
@@ -119,6 +124,8 @@ struct Models {
     dir: PathBuf,
     aligner: AcousticAligner,
     separator: Option<VocalSeparator>,
+    /// The second ear's model failed to load: not retried every song.
+    no_second_ear: bool,
 }
 
 fn run(rx: mpsc::Receiver<Request>) {
@@ -138,17 +145,28 @@ fn run(rx: mpsc::Receiver<Request>) {
                     dir: request.dir.clone(),
                     aligner: model,
                     separator: None,
+                    no_second_ear: false,
                 });
             }
             let models = cached.as_mut().expect("model loaded");
+            let preview = crate::vocal_preview::enabled();
+            let separator_file = request.dir.join(crate::separation::MODEL_FILE);
             // The aligner initialized the ONNX Runtime the separator uses.
-            if crate::vocal_preview::enabled() && models.separator.is_none() {
-                models.separator = Some(VocalSeparator::load(
-                    &request.dir.join(crate::separation::MODEL_FILE),
-                )?);
+            // Outside the trial the separator is the review's optional
+            // second ear: used when its model sits beside the aligner's.
+            let second_ear = !models.no_second_ear && separator_file.is_file();
+            if models.separator.is_none() && (preview || second_ear) {
+                match VocalSeparator::load(&separator_file) {
+                    Ok(separator) => models.separator = Some(separator),
+                    Err(e) if preview => return Err(e),
+                    Err(e) => {
+                        models.no_second_ear = true;
+                        log::warn!("karaoke: no second ear ({e})");
+                    }
+                }
             }
             let loaded = started.elapsed();
-            let vocals = match models.separator.as_mut() {
+            let vocals = match models.separator.as_mut().filter(|_| preview) {
                 Some(separator) => {
                     let vocals = separator.vocals_16k(
                         request.stereo.as_ref(),
@@ -171,16 +189,41 @@ fn run(rx: mpsc::Receiver<Request>) {
             };
             let model = &mut models.aligner;
             let aligning = Instant::now();
+            let hz = crate::karaoke::TARGET_HZ;
+            let (mut heard, mut passes) = (0, 0);
             let result = if let Some(vocals) = vocals.as_deref() {
                 model.align_guided_entries(vocals, &request.lines, &request.map, None)
+            } else if let Some(separator) = models.separator.as_mut() {
+                let mut ear = VocalEar {
+                    separator,
+                    stereo: request.stereo.as_ref(),
+                    mono16k: &request.pcm,
+                    target_hz: hz,
+                    deadline: Some(aligning + EAR_DEADLINE),
+                    heard: 0,
+                    passes: 0,
+                };
+                let words = model.align_reviewed(
+                    &request.pcm,
+                    &request.lines,
+                    &request.map,
+                    Knobs::MIX,
+                    &mut ear,
+                    None,
+                );
+                (heard, passes) = (ear.heard, ear.passes);
+                words
             } else {
                 model.align(&request.pcm, &request.lines, &request.map)
             };
             log::info!(
-                "karaoke: model reused={}, load {:.2}s, align {:.2}s",
+                "karaoke: model reused={}, load {:.2}s, align {:.2}s, second ear on {:.1}s of {:.1}s ({} passes)",
                 reused,
                 loaded.as_secs_f64(),
-                aligning.elapsed().as_secs_f64()
+                aligning.elapsed().as_secs_f64(),
+                heard as f64 / hz as f64,
+                request.pcm.len() as f64 / hz as f64,
+                passes,
             );
             result
         }))

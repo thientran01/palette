@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     io::Read,
+    ops::Range,
     path::{Path, PathBuf},
     sync::OnceLock,
 };
@@ -17,14 +18,17 @@ const STAR: usize = 28;
 
 #[path = "entry_timing.rs"]
 mod entry_timing;
+#[path = "sync_review.rs"]
+mod review;
 
 /// Recipe pins the exported weights, normalization, window and decoder.
-/// 2: Knobs::MIX's tuned decoder (2026-10-31). Bumping it relearns every
-/// saved sync on the song's next full listen.
-pub const RECIPE: &str = "mms-int8/2";
+/// 2: Knobs::MIX's tuned decoder (2026-10-31). 3: the review and its
+/// second ear (2026-11-08). Bumping it relearns every saved sync on the
+/// song's next full listen.
+pub const RECIPE: &str = "mms-int8/3";
 /// Recipes RECIPE replaced. Words saved under them keep showing, and are
 /// never deleted on mismatch, until the next full listen relearns the song.
-pub const EARLIER_RECIPES: [&str; 1] = ["mms-int8/1"];
+pub const EARLIER_RECIPES: [&str; 2] = ["mms-int8/1", "mms-int8/2"];
 pub const MODEL_SHA256: &str = "50128ba8db1150101b9e7d3610cdfda5c8fd2637b918d151ff6aa6fde2b9c2de";
 pub const RUNTIME_SHA256: &str = "c7151fd9844ad7c7d18525f1177e9ef62d91e4a6ac3583d0be700554a2b2b1d6";
 static ASSETS: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -43,6 +47,13 @@ pub fn configure(dir: PathBuf) {
 
 pub fn assets() -> Option<&'static Path> {
     ASSETS.get().and_then(|v| v.as_deref())
+}
+
+/// The review's second ear runs when the vocal separator's model sits
+/// beside the aligner's (`acoustic_worker`). The recorder keeps the
+/// capture's stereo for it only then.
+pub fn second_ear_installed() -> bool {
+    assets().is_some_and(|dir| dir.join(crate::separation::MODEL_FILE).is_file())
 }
 
 pub(crate) fn verify_asset(path: &Path, expected: &str) -> Result<()> {
@@ -463,6 +474,17 @@ pub struct Knobs {
     /// Also trust a retried entrance the rest of the line follows straight
     /// away, however faint its first phoneme (`connected_entry_retry`).
     pub connected_retry: bool,
+    /// Second look (`sync_review.rs`): a line any of whose words' onset
+    /// holds less than this share of its posterior (within
+    /// REVIEW_RADIUS_MS of the decoded frame) is doubted, and goes to the
+    /// second ear when there is one. 0 = off.
+    pub review_below: f32,
+    /// Also decode a doubted line on both ears' emissions mixed frame by
+    /// frame (`mix_ears`), a third candidate.
+    pub review_blend: bool,
+    /// Separator passes (`SecondEar::passes`) the second ear may spend on
+    /// a song, least sure lines first. 0 = no limit.
+    pub review_passes: usize,
 }
 
 impl Knobs {
@@ -479,6 +501,9 @@ impl Knobs {
         cap_base_ms: 3000,
         vocable_tolerance_ms: 1500,
         connected_retry: true,
+        review_below: REVIEW_BELOW,
+        review_blend: true,
+        review_passes: REVIEW_PASSES,
     };
     pub const TRIAL: Knobs = Knobs::MIX;
     /// The decoder before 2026-10-31 (recipe mms-int8/1), for offline
@@ -491,6 +516,9 @@ impl Knobs {
         cap_base_ms: 0,
         vocable_tolerance_ms: 0,
         connected_retry: false,
+        review_below: 0.0,
+        review_blend: false,
+        review_passes: 0,
     };
 
     /// Where a line's window stops looking: the next stamp, or sooner when
@@ -502,6 +530,19 @@ impl Knobs {
         next_t.min(line_t + self.cap_base_ms + self.cap_per_syllable_ms * syllables as i64)
     }
 }
+
+/// How near its Viterbi frame a word's onset posterior must sit to count
+/// as support for it.
+const REVIEW_RADIUS_MS: f64 = 150.0;
+/// A line with any word under this support goes to the second ear.
+const REVIEW_BELOW: f32 = 0.5;
+/// Fourteen passes of Kim Vocal 2 (80s of audio) take about 90s on
+/// Thien's PC (6.4s a pass, pulse.log 2026-10-31). With the align itself
+/// that keeps a song's job inside the next song, which ALIGNING would
+/// otherwise skip. On JamendoLyrics they fixed 89% of what no limit did
+/// (310 of 347 words); the median song used 10. (`separation::VocalEar`
+/// also stops early on a busy PC.)
+const REVIEW_PASSES: usize = 14;
 
 /// Vowel groups in each token's romanization (the same uroman the decoder
 /// spells targets with), at least one per token: a rough sung-syllable
@@ -526,6 +567,66 @@ fn sung_syllables(tokens: &[String], romanizer: &uroman::Uroman) -> usize {
             count.max(1)
         })
         .sum()
+}
+
+/// A second listener for the lines the review doubts: the vocal separator
+/// (`separation::VocalEar`), or the bench's cached copy of it.
+pub trait SecondEar {
+    /// Separated vocals for `range` of the recording (16 kHz samples), the
+    /// same length.
+    fn hear(&mut self, range: Range<usize>) -> Result<Vec<i16>>;
+    /// What hearing `range` costs, in separator passes.
+    fn passes(&self, range: Range<usize>) -> usize;
+}
+
+struct LineDecode {
+    spans: Vec<TokenSpan>,
+    guided: Option<EntryPrior>,
+    retry: serde_json::Value,
+    original_entry: i64,
+    ratio: f64,
+    /// Posterior mass near each spoken word's onset; empty with the review off.
+    support: Vec<f32>,
+    /// The emissions this decode came from.
+    logp: Vec<f32>,
+}
+
+impl LineDecode {
+    fn doubted(&self, below: f32) -> bool {
+        below > 0.0 && self.support.iter().any(|&p| p < below)
+    }
+
+    /// How sure the model is of the line as placed: the geometric mean of
+    /// its words' support, so one lost word counts against the line.
+    fn score(&self) -> f32 {
+        let logs: f32 = self.support.iter().map(|p| p.max(1e-3).ln()).sum();
+        logs / self.support.len().max(1) as f32
+    }
+
+    fn onsets(&self, plan: &TokenPlan, begin: usize, map: &TimeMap) -> Vec<i64> {
+        plan.ranges
+            .iter()
+            .flatten()
+            .map(|r| {
+                let frame = begin as f64 + self.spans[r.start].start as f64 * self.ratio;
+                (map.intercept_ms + frame * map.slope_ms).round() as i64
+            })
+            .collect()
+    }
+}
+
+/// One line between the first pass and the words: where it was looked
+/// for, what it was looking for, and what was found.
+struct LineWork {
+    li: usize,
+    next: i64,
+    begin: usize,
+    end: usize,
+    plan: TokenPlan,
+    guide_next: Option<i64>,
+    decode: LineDecode,
+    /// The second look's diagnostics, when there was one.
+    second: serde_json::Value,
 }
 
 pub struct AcousticAligner {
@@ -607,12 +708,53 @@ impl AcousticAligner {
         diagnostics: Option<&mut Vec<serde_json::Value>>,
     ) -> Result<Vec<Word>> {
         if !guided {
-            return self.align_inner(pcm, lines, map, 500.0, diagnostics, EntryMode::None, knobs);
+            return self.align_inner(
+                pcm,
+                lines,
+                map,
+                500.0,
+                diagnostics,
+                EntryMode::None,
+                knobs,
+                None,
+            );
         }
-        let mut words =
-            self.align_inner(pcm, lines, map, 500.0, diagnostics, EntryMode::Guide, knobs)?;
+        let mut words = self.align_inner(
+            pcm,
+            lines,
+            map,
+            500.0,
+            diagnostics,
+            EntryMode::Guide,
+            knobs,
+            None,
+        )?;
         entry_timing::refine(pcm, map, &mut words);
         Ok(words)
+    }
+
+    /// The mix path with its second look: a line the review doubts is
+    /// decoded again on `ear`'s separated vocals for the same window, and
+    /// the decode the model is surest of wins (`Knobs::review_below`).
+    pub fn align_reviewed(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+        knobs: Knobs,
+        ear: &mut dyn SecondEar,
+        diagnostics: Option<&mut Vec<serde_json::Value>>,
+    ) -> Result<Vec<Word>> {
+        self.align_inner(
+            pcm,
+            lines,
+            map,
+            500.0,
+            diagnostics,
+            EntryMode::None,
+            knobs,
+            Some(ear),
+        )
     }
 
     /// Offline evidence seam on the shipped decoder (`Knobs::MIX`, the same
@@ -634,6 +776,7 @@ impl AcousticAligner {
             diagnostics,
             EntryMode::None,
             Knobs::MIX,
+            None,
         )
     }
 
@@ -653,6 +796,7 @@ impl AcousticAligner {
             None,
             EntryMode::Refine,
             Knobs::BASELINE,
+            None,
         )?;
         entry_timing::refine(pcm, map, &mut words);
         Ok(words)
@@ -675,6 +819,7 @@ impl AcousticAligner {
             diagnostics,
             EntryMode::Guide,
             Knobs::TRIAL,
+            None,
         )?;
         entry_timing::refine(pcm, map, &mut words);
         Ok(words)
@@ -691,6 +836,7 @@ impl AcousticAligner {
         mut diagnostics: Option<&mut Vec<serde_json::Value>>,
         mode: EntryMode,
         knobs: Knobs,
+        ear: Option<&mut dyn SecondEar>,
     ) -> Result<Vec<Word>> {
         let entries = mode != EntryMode::None;
         if !margin_ms.is_finite() || !(0.0..=1500.0).contains(&margin_ms) {
@@ -700,7 +846,10 @@ impl AcousticAligner {
             return Err("invalid capture time map".into());
         }
         let to_time = |sample: f64| (map.intercept_ms + sample * map.slope_ms).round() as i64;
-        let mut words = Vec::new();
+        let want = diagnostics.is_some();
+        // Every line on the recording as captured, then the second look at
+        // the doubted ones, then the words in line order.
+        let mut work: Vec<LineWork> = Vec::new();
         for (li, line) in lines.iter().enumerate() {
             let tokens = tokenize(&line.text);
             if tokens.is_empty() {
@@ -747,68 +896,62 @@ impl AcousticAligner {
             if plan.ranges.iter().all(Option::is_none) {
                 continue;
             }
-            let logp = self.emissions_for(&pcm[begin..end])?;
-            let logp = logp.as_slice();
-            let ratio = (end - begin) as f64 / (logp.len() / CLASSES) as f64;
-            let frame_ms = ratio * map.slope_ms;
-            let mut spans = ctc_spans(logp, CLASSES, &plan.targets)?;
-            let first = plan
-                .ranges
-                .iter()
-                .flatten()
-                .next()
-                .expect("spoken target")
-                .start;
-            let original_entry = to_time(begin as f64 + spans[first].start as f64 * ratio);
-            let mut guided = false;
-            let mut retry = serde_json::Value::Null;
             let guide_next = lines.get(li + 1).map(|l| l.t).or(knobs
                 .guide_last
                 .then(|| to_time(end as f64).min(line.t + 20_000)));
-            if knobs.guide
-                && first == 1
-                && guide_eligible(
-                    line,
-                    guide_next,
-                    &plan.tokens,
-                    original_entry,
-                    to_time(begin as f64),
-                    knobs.guide_late_ms,
-                )
-            {
-                let prior = EntryPrior {
-                    target: first,
-                    deadline: (line.t as f64 + 500.0
-                        - (map.intercept_ms + begin as f64 * map.slope_ms))
-                        / (ratio * map.slope_ms),
-                    penalty_per_frame: (8.0 * ratio * map.slope_ms / 1000.0) as f32,
-                };
-                if let Ok(candidate) =
-                    ctc_spans_with_prior(logp, CLASSES, &plan.targets, Some(prior))
-                {
-                    let accepted = supported_entry_retry(&spans, &candidate, first)
-                        || (knobs.connected_retry
-                            && connected_entry_retry(&spans, &candidate, first, frame_ms));
-                    if diagnostics.is_some() {
-                        retry = serde_json::json!({
-                            "entry": to_time(begin as f64 + candidate[first].start as f64 * ratio),
-                            "support": candidate[first].confidence,
-                            "original_support": spans[first].confidence,
-                            "accepted": accepted,
-                        });
-                    }
-                    if accepted {
-                        spans = candidate;
-                        guided = true;
-                    }
-                }
-            }
+            let decode = self.decode_line(
+                &pcm[begin..end],
+                begin,
+                &plan,
+                line,
+                guide_next,
+                map,
+                knobs,
+                want,
+            )?;
+            work.push(LineWork {
+                li,
+                next,
+                begin,
+                end,
+                plan,
+                guide_next,
+                decode,
+                second: serde_json::Value::Null,
+            });
+        }
+        if let Some(ear) = ear {
+            self.second_look(lines, map, knobs, &mut work, ear, want);
+        }
+        let mut words = Vec::new();
+        for LineWork {
+            li,
+            next,
+            begin,
+            end,
+            plan,
+            decode,
+            second,
+            ..
+        } in work
+        {
+            let line = &lines[li];
+            let LineDecode {
+                spans,
+                guided,
+                retry,
+                original_entry,
+                ratio,
+                support,
+                ..
+            } = decode;
             let positions = word_frames(&plan.ranges, &spans);
             let line_start = words.len();
             if let Some(rows) = diagnostics.as_deref_mut() {
                 rows.push(serde_json::json!({
                     "line_index": li, "line_t": line.t, "next_t": next,
-                    "source_guided": guided, "original_entry": original_entry, "retry": retry,
+                    "source_guided": guided.is_some(), "support": support, "second_ear": second,
+                    "original_entry": original_entry, "retry": retry,
                     "window_start": to_time(begin as f64), "window_end": to_time(end as f64),
                     "frame_ms": ratio * map.slope_ms,
                     "tokens": plan.tokens, "targets": plan.targets.iter().map(|&t| LABELS[t] as char).collect::<String>(),
@@ -860,6 +1003,129 @@ impl AcousticAligner {
         Ok(words)
     }
 
+    /// The review's repair: the doubted lines `plan_second_look` fits in
+    /// the budget, decoded again on the second ear's vocals for the same
+    /// window and, with `Knobs::review_blend`, on both ears mixed. The
+    /// decode the model is surest of keeps the line (`surest`).
+    #[allow(clippy::too_many_arguments)]
+    fn second_look(
+        &mut self,
+        lines: &[TimedLine],
+        map: &TimeMap,
+        knobs: Knobs,
+        work: &mut [LineWork],
+        ear: &mut dyn SecondEar,
+        want: bool,
+    ) {
+        let doubted: Vec<usize> = (0..work.len())
+            .filter(|&i| work[i].decode.doubted(knobs.review_below))
+            .collect();
+        let asks: Vec<(f32, Range<usize>)> = doubted
+            .iter()
+            .map(|&i| (work[i].decode.score(), work[i].begin..work[i].end))
+            .collect();
+        let plan = plan_second_look(&asks, knobs.review_passes, |r| ear.passes(r));
+        let to_time = |sample: usize| (map.intercept_ms + sample as f64 * map.slope_ms).round();
+        for (stretch, members) in plan {
+            let vocals = match ear.hear(stretch.clone()) {
+                Ok(v) if v.len() == stretch.len() => v,
+                Ok(_) => {
+                    log::warn!("karaoke: second ear returned a different stretch");
+                    continue;
+                }
+                Err(e) => {
+                    log::warn!("karaoke: second ear skipped {} lines ({e})", members.len());
+                    continue;
+                }
+            };
+            for m in members {
+                let w = &mut work[doubted[m]];
+                let line = &lines[w.li];
+                let window = &vocals[w.begin - stretch.start..w.end - stretch.start];
+                let heard = self.decode_line(
+                    window,
+                    w.begin,
+                    &w.plan,
+                    line,
+                    w.guide_next,
+                    map,
+                    knobs,
+                    want,
+                );
+                let mut candidates = match heard {
+                    Ok(vocal) => vec![vocal],
+                    Err(e) => {
+                        log::warn!("karaoke: second ear skipped a line ({e})");
+                        continue;
+                    }
+                };
+                if knobs.review_blend {
+                    let blended = mix_ears(&w.decode.logp, &candidates[0].logp).and_then(|logp| {
+                        decode_emissions(
+                            logp,
+                            window.len(),
+                            w.begin,
+                            &w.plan,
+                            line,
+                            w.guide_next,
+                            map,
+                            knobs,
+                            want,
+                        )
+                    });
+                    match blended {
+                        Ok(blended) => candidates.push(blended),
+                        Err(e) => log::warn!("karaoke: blended ears skipped a line ({e})"),
+                    }
+                }
+                let pick = surest(&w.decode, &candidates);
+                if want {
+                    w.second = serde_json::json!({
+                        "candidates": candidates.iter().map(|c| serde_json::json!({
+                            "onsets": c.onsets(&w.plan, w.begin, map),
+                            "support": c.support,
+                        })).collect::<Vec<_>>(),
+                        "own_support": w.decode.support,
+                        "taken": pick,
+                        "stretch": [to_time(stretch.start), to_time(stretch.end)],
+                    });
+                }
+                if let Some(i) = pick {
+                    w.decode = candidates.swap_remove(i);
+                }
+            }
+        }
+    }
+
+    /// One line's Viterbi path on `window` (the recording from sample
+    /// `begin`), the source-entry retry, and, when the review is on, how
+    /// much posterior each spoken word's onset holds.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_line(
+        &mut self,
+        window: &[i16],
+        begin: usize,
+        plan: &TokenPlan,
+        line: &TimedLine,
+        guide_next: Option<i64>,
+        map: &TimeMap,
+        knobs: Knobs,
+        diagnostics: bool,
+    ) -> Result<LineDecode> {
+        let logp = self.emissions_for(window)?;
+        decode_emissions(
+            logp,
+            window.len(),
+            begin,
+            plan,
+            line,
+            guide_next,
+            map,
+            knobs,
+            diagnostics,
+        )
+    }
+
     /// Model log-probabilities for one window, through the offline cache
     /// when one is installed.
     fn emissions_for(&mut self, input: &[i16]) -> Result<Vec<f32>> {
@@ -891,6 +1157,189 @@ impl AcousticAligner {
         }
         Ok(logp)
     }
+}
+
+/// `decode_line` on emissions already in hand, such as both ears mixed
+/// (`mix_ears`).
+#[allow(clippy::too_many_arguments)]
+fn decode_emissions(
+    emissions: Vec<f32>,
+    window_len: usize,
+    begin: usize,
+    plan: &TokenPlan,
+    line: &TimedLine,
+    guide_next: Option<i64>,
+    map: &TimeMap,
+    knobs: Knobs,
+    diagnostics: bool,
+) -> Result<LineDecode> {
+    let to_time = |sample: f64| (map.intercept_ms + sample * map.slope_ms).round() as i64;
+    let logp = emissions.as_slice();
+    let ratio = window_len as f64 / (logp.len() / CLASSES) as f64;
+    let frame_ms = ratio * map.slope_ms;
+    let mut spans = ctc_spans(logp, CLASSES, &plan.targets)?;
+    let first = plan
+        .ranges
+        .iter()
+        .flatten()
+        .next()
+        .expect("spoken target")
+        .start;
+    let original_entry = to_time(begin as f64 + spans[first].start as f64 * ratio);
+    let mut guided = None;
+    let mut retry = serde_json::Value::Null;
+    if knobs.guide
+        && first == 1
+        && guide_eligible(
+            line,
+            guide_next,
+            &plan.tokens,
+            original_entry,
+            to_time(begin as f64),
+            knobs.guide_late_ms,
+        )
+    {
+        let prior = EntryPrior {
+            target: first,
+            deadline: (line.t as f64 + 500.0 - (map.intercept_ms + begin as f64 * map.slope_ms))
+                / (ratio * map.slope_ms),
+            penalty_per_frame: (8.0 * ratio * map.slope_ms / 1000.0) as f32,
+        };
+        if let Ok(candidate) = ctc_spans_with_prior(logp, CLASSES, &plan.targets, Some(prior)) {
+            let accepted = supported_entry_retry(&spans, &candidate, first)
+                || (knobs.connected_retry
+                    && connected_entry_retry(&spans, &candidate, first, frame_ms));
+            if diagnostics {
+                retry = serde_json::json!({
+                    "entry": to_time(begin as f64 + candidate[first].start as f64 * ratio),
+                    "support": candidate[first].confidence,
+                    "original_support": spans[first].confidence,
+                    "accepted": accepted,
+                });
+            }
+            if accepted {
+                spans = candidate;
+                guided = Some(prior);
+            }
+        }
+    }
+    let mut support = Vec::new();
+    if knobs.review_below > 0.0 {
+        let radius = (REVIEW_RADIUS_MS / frame_ms).round() as usize;
+        match review::Posterior::new(logp, CLASSES, &plan.targets, guided) {
+            Ok(posterior) => {
+                support = plan
+                    .ranges
+                    .iter()
+                    .flatten()
+                    .map(|r| posterior.start_mass(r.start, spans[r.start].start, radius))
+                    .collect();
+            }
+            Err(e) => log::warn!("karaoke: review skipped a line ({e})"),
+        }
+    }
+    Ok(LineDecode {
+        spans,
+        guided,
+        retry,
+        original_entry,
+        ratio,
+        support,
+        logp: emissions,
+    })
+}
+
+/// Both ears' emissions for the same window as an even mixture, frame by
+/// frame: a letter either ear heard keeps at least half its probability,
+/// so a path can take each stretch from whichever ear heard it. (A product
+/// instead, where both must hear it, did worse than either ear alone.)
+fn mix_ears(a: &[f32], b: &[f32]) -> Result<Vec<f32>> {
+    if a.len() != b.len() || a.is_empty() || !a.len().is_multiple_of(CLASSES) {
+        return Err("ears disagree on the window's frames".into());
+    }
+    let mut out = Vec::with_capacity(a.len());
+    let mut row = [0f32; CLASSES];
+    for (fa, fb) in a.chunks_exact(CLASSES).zip(b.chunks_exact(CLASSES)) {
+        for ((cell, &x), &y) in row.iter_mut().zip(fa).zip(fb) {
+            let m = x.max(y);
+            *cell = m + ((x - m).exp() + (y - m).exp()).ln();
+        }
+        // Renormalized, which also takes out the halving.
+        let m = row.iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v));
+        let z = m + row.iter().map(|v| (v - m).exp()).sum::<f32>().ln();
+        out.extend(row.iter().map(|v| v - z));
+    }
+    Ok(out)
+}
+
+/// Which of `candidates` should replace `own`: the one the model is surest
+/// of, if it is strictly surer than `own`. Support is the only judge. A
+/// rule that also kept every word the mix was sure of in place blocked as
+/// many right fixes (a mix sure of the wrong copy of "wrong concept wrong
+/// concept") as wrong ones.
+fn surest(own: &LineDecode, candidates: &[LineDecode]) -> Option<usize> {
+    let mut best = (own.score(), None);
+    for (i, c) in candidates.iter().enumerate() {
+        if c.score() > best.0 {
+            best = (c.score(), Some(i));
+        }
+    }
+    best.1
+}
+
+/// What the second ear hears: `asks` holds each doubted line's score and
+/// window. Least sure first, a line joins while the passes still fit
+/// `budget` (0 = no limit). Windows that overlap, or that cost no more
+/// heard as one, share a stretch, so neighbouring doubted lines don't each
+/// pay the separator's padding and part-filled passes. Returns each
+/// stretch with the indices of its lines, the stretch holding the least
+/// sure line first, so an ear that stops early has heard the worst.
+fn plan_second_look(
+    asks: &[(f32, Range<usize>)],
+    budget: usize,
+    passes: impl Fn(Range<usize>) -> usize,
+) -> Vec<(Range<usize>, Vec<usize>)> {
+    let stretches = |chosen: &[usize]| {
+        let mut sorted = chosen.to_vec();
+        sorted.sort_by_key(|&i| asks[i].1.start);
+        let mut out: Vec<(Range<usize>, Vec<usize>)> = Vec::new();
+        for i in sorted {
+            let w = asks[i].1.clone();
+            if let Some((r, members)) = out.last_mut() {
+                let joined = r.start..r.end.max(w.end);
+                if w.start <= r.end
+                    || passes(joined.clone()) <= passes(r.clone()) + passes(w.clone())
+                {
+                    *r = joined;
+                    members.push(i);
+                    continue;
+                }
+            }
+            out.push((w, vec![i]));
+        }
+        out
+    };
+    let mut order: Vec<usize> = (0..asks.len()).collect();
+    order.sort_by(|&a, &b| asks[a].0.total_cmp(&asks[b].0));
+    let mut chosen = Vec::new();
+    let mut plan = Vec::new();
+    for i in order {
+        chosen.push(i);
+        let trial = stretches(&chosen);
+        if budget == 0 || trial.iter().map(|(r, _)| passes(r.clone())).sum::<usize>() <= budget {
+            plan = trial;
+        } else {
+            chosen.pop();
+        }
+    }
+    let least_sure = |members: &[usize]| {
+        members
+            .iter()
+            .map(|&i| asks[i].0)
+            .fold(f32::INFINITY, f32::min)
+    };
+    plan.sort_by(|a, b| least_sure(&a.1).total_cmp(&least_sure(&b.1)));
+    plan
 }
 
 /// FNV-1a over the window's samples: the emission cache key.
@@ -1496,7 +1945,7 @@ mod tests {
 
     #[test]
     fn both_paths_run_the_tuned_decoder() {
-        // These values ARE recipe mms-int8/2; changing one changes RECIPE.
+        // These values ARE recipe mms-int8/3; changing one changes RECIPE.
         let tuned = Knobs {
             guide: true,
             guide_late_ms: 700,
@@ -1505,10 +1954,102 @@ mod tests {
             cap_base_ms: 3000,
             vocable_tolerance_ms: 1500,
             connected_retry: true,
+            review_below: 0.5,
+            review_blend: true,
+            review_passes: 14,
         };
         assert_eq!(Knobs::MIX, tuned);
         assert_eq!(Knobs::TRIAL, tuned);
-        assert_eq!(RECIPE, "mms-int8/2");
+        assert_eq!(RECIPE, "mms-int8/3");
+    }
+
+    fn decode(starts: &[usize], support: &[f32]) -> LineDecode {
+        LineDecode {
+            spans: starts
+                .iter()
+                .map(|&start| TokenSpan {
+                    start,
+                    end: start + 1,
+                    confidence: 1.0,
+                })
+                .collect(),
+            guided: None,
+            retry: serde_json::Value::Null,
+            original_entry: 0,
+            // 320 samples a frame: 20ms at 16kHz.
+            ratio: 320.0,
+            support: support.to_vec(),
+            logp: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_surest_decode_keeps_the_line() {
+        // Three one-letter words; frames are 20ms.
+        let plan = TokenPlan {
+            tokens: vec!["a ".into(), "b ".into(), "c".into()],
+            targets: vec![STAR, 1, 2, 3, STAR],
+            ranges: vec![Some(1..2), Some(2..3), Some(3..4)],
+        };
+        let map = TimeMap::from_origin(0, 16_000);
+        let mix = decode(&[0, 10, 200, 0, 0], &[0.95, 0.2, 0.9]);
+        assert_eq!(mix.onsets(&plan, 0, &map), [200, 4000, 0]);
+        let vocals = decode(&[0, 12, 40, 1, 0], &[0.9, 0.95, 0.9]);
+        let blended = decode(&[0, 12, 40, 1, 0], &[0.95, 0.95, 0.95]);
+        let unsure = decode(&[0, 10, 60, 0, 0], &[0.9, 0.1, 0.9]);
+        assert_eq!(surest(&mix, std::slice::from_ref(&unsure)), None);
+        assert_eq!(surest(&mix, std::slice::from_ref(&vocals)), Some(0));
+        assert_eq!(surest(&mix, &[vocals, blended]), Some(1));
+        // A tie keeps what the mix decoded.
+        let same = decode(&[0, 12, 40, 1, 0], &[0.95, 0.2, 0.9]);
+        assert_eq!(surest(&mix, &[same]), None);
+        // One lost word weighs more than a mean would give it.
+        assert!(decode(&[0], &[0.6, 0.6]).score() > decode(&[0], &[1.0, 0.01]).score());
+    }
+
+    #[test]
+    fn the_second_look_spends_its_passes_on_the_least_sure_lines() {
+        // A pass covers 10 samples and the ear pads each stretch by one
+        // sample a side, as the separator pads by a second.
+        let passes = |r: Range<usize>| (r.len() + 2) / 10 + 1;
+        // The least sure line, its overlapping neighbour, a far line.
+        let asks = [(-3.0, 0..8), (-1.0, 7..15), (-2.0, 40..48)];
+        assert_eq!(
+            plan_second_look(&asks, 0, passes),
+            [(0..15, vec![0, 1]), (40..48, vec![2])]
+        );
+        // The stretch with the least sure line is heard first.
+        let later = [(-1.0, 0..8), (-3.0, 40..48)];
+        assert_eq!(
+            plan_second_look(&later, 0, passes),
+            [(40..48, vec![1]), (0..8, vec![0])]
+        );
+        // Two passes: the far line no longer fits, but the neighbour
+        // shares the first line's passes for free.
+        assert_eq!(plan_second_look(&asks, 2, passes), [(0..15, vec![0, 1])]);
+        assert!(plan_second_look(&asks, 1, passes).is_empty());
+        // A gap is heard along when that costs nothing more...
+        let near = [(-1.0, 0..3), (-1.0, 5..8)];
+        assert_eq!(plan_second_look(&near, 0, passes), [(0..8, vec![0, 1])]);
+        // ...and skipped when it would.
+        let far = [(-1.0, 0..8), (-1.0, 30..38)];
+        assert_eq!(plan_second_look(&far, 0, passes).len(), 2);
+    }
+
+    #[test]
+    fn blended_ears_keep_what_either_heard() {
+        let frame = |hot: usize| -> Vec<f32> {
+            let mut row = vec![-20.0f32; CLASSES];
+            row[hot] = 0.0;
+            row
+        };
+        let (a, b) = (frame(1), frame(2));
+        let mixed = mix_ears(&a, &b).unwrap();
+        let p: Vec<f32> = mixed.iter().map(|v| v.exp()).collect();
+        assert!((p.iter().sum::<f32>() - 1.0).abs() < 1e-4);
+        assert!((p[1] - 0.5).abs() < 1e-3 && (p[2] - 0.5).abs() < 1e-3);
+        assert!(mix_ears(&a, &b[..CLASSES - 1]).is_err());
+        assert!(mix_ears(&[], &[]).is_err());
     }
 
     #[test]
