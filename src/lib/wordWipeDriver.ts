@@ -1,8 +1,10 @@
 import { wordFillEnd, wordWipeFraction, WORD_ATTACK_MS, type LyricWord } from "./lrc";
 import { lineCursor } from "./lineCursor";
+import { voicePose } from "./voiceMotion";
 
-/** How long a row stays painted after its last word (DUR5). */
-const TAIL_MS = 260;
+/** How long a row stays painted after its last word: long enough for the
+ * last word's pose to settle (voiceMotion.ts release + settle). */
+const TAIL_MS = 400;
 /** Half the soft edge of the wipe, in px. Wider than the old 5px so a
  * change of pace reads as one moving light, not a stepping edge. Must
  * match WIPE_FEATHER in LyricsPanel. */
@@ -50,6 +52,7 @@ export function driveWordRows(
       const ends = row.words.map((word, i) => cursor.owns[i] ? cursor.end
         : Math.max(word.end ?? word.t + WORD_ATTACK_MS, wordFillEnd(word, row.words[i + 1]?.t)));
       return { row, widths, cursor, active: false, last: new Array<string>(row.words.length).fill(""),
+      pose: new Array<string>(row.words.length).fill(""),
       start: row.words.reduce((t, w) => Math.min(t, w.t), Infinity),
       end: row.words.reduce((t, w, i) => Math.max(t, ends[i] + TAIL_MS, w.t + 1), -Infinity),
       };
@@ -64,6 +67,13 @@ export function driveWordRows(
       const { row } = track;
       const active = row.index === currentLine || (p >= track.start && p < track.end);
       if (active !== track.active) {
+        if (!active) for (let i = 0; i < row.spans.length; i++) {
+          if (track.pose[i]) {
+            row.spans[i].removeProperty("--word-y");
+            row.spans[i].removeProperty("--word-s");
+            track.pose[i] = "";
+          }
+        }
         if (active) {
           row.style.setProperty("--word-bright", "rgb(var(--fg))");
           row.style.setProperty("--lyric-scale", "1");
@@ -94,6 +104,20 @@ export function driveWordRows(
           track.last[i] = wipe;
           row.spans[i].setProperty("--wipe", wipe);
         }
+        // The voice's pose (voiceMotion.ts): a lift while sounding, and on
+        // held notes the singer's loudness and pitch.
+        const { y, s } = voicePose(row.words[i], row.words[i + 1]?.t, p);
+        const pose = y === 0 && s === 1 ? "" : `${(-y).toFixed(2)}px ${s.toFixed(4)}`;
+        if (pose !== track.pose[i]) {
+          track.pose[i] = pose;
+          if (pose) {
+            row.spans[i].setProperty("--word-y", `${(-y).toFixed(2)}px`);
+            row.spans[i].setProperty("--word-s", s.toFixed(4));
+          } else {
+            row.spans[i].removeProperty("--word-y");
+            row.spans[i].removeProperty("--word-s");
+          }
+        }
       }
     }
   };
@@ -121,6 +145,11 @@ export function driveWordRows(
     if (raf) frames.cancel(raf);
     for (const track of tracks) if (track.active) {
       for (const prop of ROW_PROPS) track.row.style.removeProperty(prop);
+      track.row.spans.forEach((span, i) => {
+        if (!track.pose[i]) return;
+        span.removeProperty("--word-y");
+        span.removeProperty("--word-s");
+      });
       track.row.el?.toggleAttribute("data-wiping", false);
     }
   };

@@ -563,6 +563,16 @@ button.lyric-row:hover { --lyric-filter: none; }
 }
 
 .lyric-ink { position: relative; }
+/* The voice's pose on a sung word (src/lib/voiceMotion.ts): a lift while it
+ * sounds; on a held note, the singer's loudness and pitch. Paint-only, so
+ * the row never rewraps. No transition: the driver writes every frame. */
+.lyric-row [data-word] {
+  transform: translateY(var(--word-y, 0px)) scale(var(--word-s, 1));
+  transform-origin: 50% 85%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lyric-row [data-word] { transform: none; }
+}
 
 /* Quiet inset scrollbar, sharing the Settings thumb treatment. */
 .sync-scroll { scrollbar-gutter: stable; }
