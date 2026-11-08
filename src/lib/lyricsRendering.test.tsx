@@ -44,13 +44,36 @@ describe("word timing does not replace rows at line activation", () => {
   });
 });
 
+describe("depth of field", () => {
+  const lines = [0, 1, 2, 3, 4, 5, 6].map(i => ({ t: 1000 + i * 2000, text: `line ${i}` }));
+  const filters = (scale: "base" | "focus", seek: number) => {
+    const html = renderToStaticMarkup(<LyricsPanel scale={scale} seekable={true} leadMs={-seek} lines={lines} />);
+    return [...html.matchAll(/--lyric-rest-filter:([^;"]+)/g)].map(m => m[1]);
+  };
+  it("keeps the current and next lines sharp in the compact view and blurs further ones", () => {
+    // posClock is mocked at 1000ms, so line 0 is current.
+    expect(filters("base", 0)).toEqual(["none", "none", "blur(0.4px)", "blur(0.7px)", "blur(0.7px)", "blur(0.7px)", "blur(0.7px)"]);
+  });
+  it("softens even the next line in focus mode, where the type is 44px", () => {
+    expect(filters("focus", 0).slice(0, 4)).toEqual(["none", "blur(0.6px)", "blur(1.5px)", "blur(2.5px)"]);
+  });
+  it("shows the accent only as the current line's bar, never on the words", () => {
+    const html = renderToStaticMarkup(<LyricsPanel seekable={true} leadMs={0} lines={lines} />);
+    expect(html).not.toContain("data-marker");
+    expect((html.match(/data-bar[^>]*bg-accent/g) ?? []).length).toBe(1);
+    expect((html.match(/bg-accent/g) ?? []).length).toBe(1);
+    expect(html).not.toMatch(/text-accent/);
+  });
+});
+
 describe("lineDistances", () => {
   const sung = (t: number) => ({ t, text: `l${t}` });
   const brk = (t: number) => ({ t, text: "", end: t + 5000 });
-  it("counts signed distance from the current line, clamped to ±3", () => {
+  it("counts signed distance from the current line, clamped to ±4", () => {
     const lines = [sung(0), sung(1), sung(2), sung(3), sung(4), sung(5), sung(6)];
     expect(lineDistances(lines, 3)).toEqual([-3, -2, -1, 0, 1, 2, 3]);
-    expect(lineDistances(lines, 0)).toEqual([0, 1, 2, 3, 3, 3, 3]);
+    expect(lineDistances(lines, 0)).toEqual([0, 1, 2, 3, 4, 4, 4]);
+    expect(lineDistances(lines, 6)).toEqual([-4, -4, -4, -3, -2, -1, 0]);
   });
   it("skips a dormant break so the next sung line stays next", () => {
     const lines = [sung(0), sung(1), brk(2), sung(3)];

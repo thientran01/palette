@@ -23,7 +23,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Search's selection, section tabs and Play button now move instantly with the arrow and Tab keys instead of fading behind them. Queueing a song still highlights its row, which now fades out instead of blinking off.
 - Search's icons are redrawn at the exact size they're shown, so their lines sit on whole pixels and look sharp. Songs now has a music note instead of a second magnifier, and Library a stack of albums.
 - Typing in History searches every song you've played, not just the ones already scrolled into view.
-- Text in the widget and Search is sharper on Windows. It now uses ClearType instead of the softer grayscale smoothing that every line had before. The lyric fades at the top and bottom edges look the same but are drawn differently, and the line being sung word by word still uses grayscale while it's lit.
+- Text in the widget and Search is sharper on Windows. It now uses ClearType instead of the softer grayscale smoothing that every line had before. The lyric fades at the top and bottom edges look the same but are drawn differently, and the lines around it keep ClearType too. Lines blurred by the depth-of-field effect, the line being sung word by word, and the current line during its brief light-up sweep still use grayscale.
 - Holding an arrow key in Search's History now moves one row per key repeat, smoothly. It used to re-format every play time on each press and fall several rows behind.
 - Album covers in the player, queue and Search are sharper. Palette now shrinks each cover to the exact pixels of its box with a high-quality filter instead of leaving it to the browser, and Spotify rows load the 300px cover instead of the 64px one, which was blurry at any Windows scaling above 100%.
 - Skipping songs, seeking and switching sizes animate more smoothly. The song-change slide and the button presses now run on the graphics card, so they no longer stutter while the new song loads. Queue rows highlight under the cursor right away instead of fading in slowly. The queue panel, the right-click menu and the welcome bubble now grow slightly out of the widget, the cursor and the bubble's pointer as they fade in.
@@ -32,6 +32,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Lyrics are calmer: lines fade evenly the further they are from the current one, above and below.
 - Focus mode: lyrics fill the right side of the screen.
 - Lyric lines wrap more cleanly: short ad-libs like "(oh-oh)" stay on one row, and Korean words no longer split between syllables.
+- The current lyric line is the only sharp, full-size line: the others are drawn a little smaller and go softly out of focus the further they are from it, and a new line lights up left to right as it starts. Hovering a line brings it into focus. The accent line beside it now moves with the lyrics as they scroll, so it stays put while each new line slides into it, and it stretches to cover a line that wraps onto two rows. It grows in when singing starts and shrinks away during instrumental breaks.
+- Focus mode shows at most three lyric lines above the current one, and on tall screens the current line sits higher to match.
 
 ### Fixed
 
