@@ -326,8 +326,8 @@ const CASCADE_CAP = 10;
 /** Head start so the art view's exhale clears before rows land. */
 const CASCADE_BASE_MS = 90; // DUR[1]
 /** base + cap*step + row animation (200ms) + slack; also bounds the anchor
- * marker's ignite â€” keep in sync with index.css's marker rule (600ms hold +
- * 200ms caption-in = exactly this). The class is removed only AFTER every
+ * row's ignite sweep. Keep in sync with index.css's anchor ignite rule
+ * (540ms hold + 260ms sweep = exactly this). The class is removed only AFTER every
  * row animation has finished â€” ripping it off mid-cascade would snap
  * fill-mode-held rows to full opacity in one frame. */
 const ENTRANCE_DONE_MS = 800;
@@ -342,16 +342,21 @@ export type LyricsScale = "base" | "focus";
 const SCALE = {
   base: {
     row: "px-3 py-1.5 text-base leading-normal tracking-[0.025em]",
-    marker: "h-4 w-[2px]",
     anchor: 0.4,
+    anchorMaxPx: Infinity,
     // The compact view stays full: a three-line cut left most of the panel
     // empty (Thien, 2026-11-06), so every line shows and only the
-    // brightness falls off with distance (±3 means "3 or further"). Sung and
+    // brightness falls off with distance (±4 means "4 or further"). Sung and
     // upcoming lines fade symmetrically (Thien preferred it to a dimmer past).
-    recede: { "-3": 0.25, "-2": 0.45, "-1": 0.7, "1": 0.7, "2": 0.45, "3": 0.25 },
-    // Non-current ink is drawn slightly smaller than its layout box
-    // (paint-only, so wrapping never changes).
-    restScale: 0.97,
+    recede: { "-4": 0.25, "-3": 0.25, "-2": 0.45, "-1": 0.7, "1": 0.7, "2": 0.45, "3": 0.25, "4": 0.25 },
+    // Depth of field (2026-11-07, replacing the accent bar): non-current
+    // ink is drawn smaller than its layout box and goes out of focus with
+    // distance, so the current line is the only sharp, full-size one. The
+    // next/previous line stays sharp so you can read ahead. Paint-only, so
+    // wrapping never changes.
+    restScale: 0.95,
+    // Lowered ~40% after Thien found the first pass too strong (2026-11-07).
+    blur: { "-4": 0.7, "-3": 0.7, "-2": 0.4, "2": 0.4, "3": 0.7, "4": 0.7 },
     mask: "[mask-image:linear-gradient(transparent,black_28px,black_calc(100%-28px),transparent)]",
     chipTop: "top-8",
     chipBottom: "bottom-8",
@@ -360,22 +365,32 @@ const SCALE = {
     breakRow: "h-8 px-3 py-1",
     breakDot: "h-[6px] w-[6px]",
     breakGap: "gap-1",
+    // The accent line left of the current lyric (the pre-redesign marker's
+    // size, a hair thicker). barH is its one-text-line height in px; a
+    // wrapped line's bar grows by each extra text line (placeAccentBar).
+    bar: "w-[3px]",
+    barH: 16,
   },
   focus: {
     // The compact view's proportions scaled up (Thien, 2026-11-07: the
     // compact lyrics "look like a spotlight"): rows ~2.25× the type size,
     // normal line height, letters slightly open instead of pulled together.
     row: "px-6 py-4 text-[44px] leading-normal tracking-[0.01em]",
-    marker: "h-9 w-[5px]",
-    // 0.5 of the full-height lyric box (2026-11-06): the current line sits
-    // mid-room, level with the upper half of the album art.
+    // Mid-room (0.5 of the full-height lyric box, 2026-11-06), but never
+    // more than 420px down: on a tall room that left four lines above the
+    // current one, and Thien wants three (2026-11-07). 420px is three
+    // 102px rows plus the 72px top fade and a little air.
     anchor: 0.5,
-    // Every line shows (a 5-line cut was tried 2026-11-06 and Thien
-    // preferred the full ladder), but darker than the compact view: on a
-    // whole screen the lit line should read like a theatre spotlight with
-    // the rest in the dark (Thien, 2026-11-07).
-    recede: { "-3": 0.1, "-2": 0.2, "-1": 0.38, "1": 0.38, "2": 0.2, "3": 0.1 },
-    restScale: 0.97,
+    anchorMaxPx: 420,
+    // Every upcoming line shows (a 5-line cut was tried 2026-11-06 and
+    // Thien preferred the full ladder), but darker than the compact view: on
+    // a whole screen the lit line should read like a theatre spotlight with
+    // the rest in the dark (Thien, 2026-11-07). At most three sung lines
+    // show above it (no "-4"), Thien 2026-11-07.
+    recede: { "-3": 0.1, "-2": 0.2, "-1": 0.38, "1": 0.38, "2": 0.2, "3": 0.1, "4": 0.1 },
+    // Blur scales with the 44px type: ±1 is soft but readable.
+    restScale: 0.94,
+    blur: { "-3": 2.5, "-2": 1.5, "-1": 0.6, "1": 0.6, "2": 1.5, "3": 2.5, "4": 2.5 },
     // Same lighting as the compact view: the per-line fade (recede) does
     // the dimming, and the mask only softens the very edges of the box
     // (2026-11-07; the old 260px ramps left most lines half-masked).
@@ -388,15 +403,23 @@ const SCALE = {
     breakRow: "px-6 py-3",
     breakDot: "h-[12px] w-[12px]",
     breakGap: "gap-2",
+    bar: "w-[5px]",
+    barH: 36,
   },
 } as const satisfies Record<LyricsScale, unknown>;
+
+/** Where the current line's center sits, in px from the top of a lyric
+ * box `h` tall (SCALE.anchor, capped at SCALE.anchorMaxPx). */
+function anchorPx(scale: LyricsScale, h: number): number {
+  return Math.min(h * SCALE[scale].anchor, SCALE[scale].anchorMaxPx);
+}
 
 /** Recession (2026-11-06 redesign): the current line is bright and the
  * lines around it fade evenly with distance, sung and upcoming alike; any
  * distance SCALE.recede doesn't list is hidden. Distances
  * count SUNG rows only, so a dormant (collapsed) break row never steals the
  * "next line" slot; a current break sits between its neighbors (the line
- * before it is -1, the line after it +1). Clamped to ±3 so a line advance
+ * before it is -1, the line after it +1). Clamped to ±4 so a line advance
  * re-renders only the rows whose distance actually changed (row memo). */
 export function lineDistances(lines: LyricLine[], idx: number): number[] {
   const sungBefore: number[] = [];
@@ -410,7 +433,7 @@ export function lineDistances(lines: LyricLine[], idx: number): number[] {
   return lines.map((_, i) => {
     let d = sungBefore[i] - cur;
     if (between && i > idx) d += 1;
-    return Math.max(-3, Math.min(3, d));
+    return Math.max(-4, Math.min(4, d));
   });
 }
 
@@ -422,6 +445,111 @@ function recedeOpacity(scale: LyricsScale, distance: number, browsing: boolean):
   if (distance === 0 || browsing) return 1;
   const table = SCALE[scale].recede as Record<string, number | undefined>;
   return table[String(distance)] ?? 0;
+}
+
+/** Resting blur (px) for a row at `distance`; 0 = sharp. Browsing clears it
+ * along with the fade. */
+function recedeBlur(scale: LyricsScale, distance: number, browsing: boolean): number {
+  if (distance === 0 || browsing) return 0;
+  const table = SCALE[scale].blur as Record<string, number | undefined>;
+  return table[String(distance)] ?? 0;
+}
+
+/** The accent line's motion. One bar sits in the lyric VIEWPORT (not the
+ * scrolling list) at the current row's on-screen spot: its row center in the
+ * list minus the offset the list is heading to. Once the line is anchored
+ * that spot is the anchor, so the bar holds perfectly still while lines
+ * slide into it, whatever the layout does (a break opening or closing just
+ * re-anchors the list). When the spot itself moves (the walk down at the
+ * start of a song, the last lines), it moves with the list's own
+ * transition, 220ms in-out, so it stays level with its line. Height eases
+ * to the line's text height (one row or wrapped). Appearing grows it from
+ * its center; going into a break shrinks it away. Earlier versions lived in
+ * the list or hopped on their own curve and overshot their line (Thien,
+ * 2026-11-08). */
+/** How long a newly shown bar tracks its row frame by frame: the list's
+ * 220ms scroll plus a break's 330ms hold and 260ms fold, with slack. */
+const APPEAR_GLUE_MS = 900;
+type AccentBarState = { y: number | null; first: boolean; raf?: number };
+
+function placeAccentBar(
+  el: HTMLSpanElement, row: HTMLElement | null, offset: number, scale: LyricsScale,
+  shown: AccentBarState, opts: { instant: boolean; delayFirstMs: number },
+): void {
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  // Position (translate) and grow/shrink (scale) are separate properties so
+  // an instant re-seat never cuts a grow-in short. background-color: an art
+  // change retints it like every accent surface.
+  const tint = "background-color 220ms var(--ease-out-tk)";
+  const grow = (delay: number) =>
+    `scale 220ms var(--ease-out-tk) ${delay}ms, opacity 140ms var(--ease-out-tk) ${delay}ms`;
+  if (!row) {
+    cancelAnimationFrame(shown.raf ?? 0);
+    shown.raf = undefined;
+    if (shown.y !== null) {
+      el.style.transition = reduced ? "none"
+        : `scale 200ms var(--ease-in-out-tk), opacity 200ms var(--ease-in-out-tk), ${tint}`;
+      el.style.scale = "1 0";
+      el.style.opacity = "0";
+    }
+    shown.y = null;
+    return;
+  }
+  const cs = getComputedStyle(row);
+  const lineH = parseFloat(cs.lineHeight) || 0;
+  const content = row.offsetHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const h = Math.round(Math.max(content - lineH, 0) + SCALE[scale].barH);
+  const y = Math.round(row.offsetTop + row.offsetHeight / 2 - h / 2 - offset);
+  if (shown.y === null) {
+    // Appear: grow from its center beside the line where the line is on
+    // screen, and stay glued to it (one write per frame) while the list
+    // scrolls it up and the break folds away, since that motion isn't one
+    // curve the bar could share. Seating it at the target instead lit an
+    // empty spot, or the next line, before the lyric got there.
+    const box = el.parentElement;
+    const glue = () => {
+      const b = box?.getBoundingClientRect();
+      const r = row.getBoundingClientRect();
+      return b ? Math.round(r.top - b.top + r.height / 2 - h / 2) : y;
+    };
+    el.style.transition = "none";
+    el.style.height = `${h}px`;
+    el.style.translate = `0 ${glue()}px`;
+    el.style.scale = "1 0";
+    el.style.opacity = "0";
+    void el.offsetHeight;
+    el.style.transition = reduced ? "none" : `translate 0s, ${grow(shown.first ? opts.delayFirstMs : 0)}, ${tint}`;
+    cancelAnimationFrame(shown.raf ?? 0);
+    if (!reduced) {
+      const until = performance.now() + APPEAR_GLUE_MS + (shown.first ? opts.delayFirstMs : 0);
+      const follow = () => {
+        if (!row.isConnected || shown.y === null) return;
+        el.style.translate = `0 ${glue()}px`;
+        shown.raf = performance.now() < until ? requestAnimationFrame(follow) : undefined;
+      };
+      shown.raf = requestAnimationFrame(follow);
+    }
+  } else if (opts.instant && shown.raf !== undefined) {
+    // Still glued after appearing: the frame loop already tracks the row.
+    el.style.height = `${h}px`;
+    shown.y = y;
+    return;
+  } else {
+    cancelAnimationFrame(shown.raf ?? 0);
+    shown.raf = undefined;
+    // A line change moves with the list's own scroll; a layout change (a
+    // break folding away, a resize) or a browse re-seats it at once, since
+    // the row itself has already moved there.
+    el.style.transition = reduced ? "none" : opts.instant
+      ? `translate 0s, height 0s, ${grow(0)}, ${tint}`
+      : `translate 220ms var(--ease-in-out-tk), height 220ms var(--ease-in-out-tk), ${grow(0)}, ${tint}`;
+    el.style.height = `${h}px`;
+    el.style.translate = `0 ${y}px`;
+  }
+  el.style.scale = "1 1";
+  el.style.opacity = "1";
+  shown.y = y;
+  shown.first = false;
 }
 
 /** One lyric line. Memoized so a line advance reconciles the two rows whose
@@ -446,13 +574,13 @@ const LyricLineRow = memo(function LyricLineRow({
   /** Stable per mount â€” distance from the line that was current when the
    * panel mounted. Inert until the container carries .lyrics-entering. */
   cascadeDelayMs: number;
-  /** The mount anchor: the ONLY row whose marker is held back for the
-   * closing ignite beat. Scoping the hold here (not to whatever row is
-   * current) means a mid-entrance line advance ignites the new row's marker
-   * instantly â€” no JS disarm, no engine-dependent delay retargeting. */
+  /** The mount anchor: the ONLY row whose ignite sweep is held back for the
+   * closing beat. Scoping the hold here (not to whatever row is current)
+   * means a mid-entrance line advance ignites the new row instantly, with no
+   * JS disarm and no engine-dependent delay retargeting. */
   anchor: boolean;
   scale: LyricsScale;
-  /** Signed distance in sung lines from the current one, clamped to ±3
+  /** Signed distance in sung lines from the current one, clamped to ±4
    * (lineDistances). */
   distance: number;
   browsing: boolean;
@@ -467,6 +595,7 @@ const LyricLineRow = memo(function LyricLineRow({
   // rows are font-medium in every state already.
   const tone = current ? (timed ? "text-muted/80" : "text-fg") : "text-muted/80";
   const opacity = recedeOpacity(scale, distance, browsing);
+  const blur = recedeBlur(scale, distance, browsing);
   return (
     <Tag
       {...(seekable
@@ -491,6 +620,8 @@ const LyricLineRow = memo(function LyricLineRow({
           "--cascade-delay": `${cascadeDelayMs}ms`,
           "--lyric-recede": opacity,
           "--lyric-rest-scale": SCALE[scale].restScale,
+          "--lyric-rest-filter": blur > 0 ? `blur(${blur}px)` : "none",
+          "--lyric-ignite-from": SCALE[scale].recede["1"],
         } as React.CSSProperties
       }
       className={`lyric-row relative whitespace-pre-wrap ${keepHangulWords(text) ? "break-keep" : ""} rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${timed ? "font-medium" : ""} ${tone} ${
@@ -499,14 +630,6 @@ const LyricLineRow = memo(function LyricLineRow({
         opacity === 0 ? "pointer-events-none" : seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
-      <span
-        aria-hidden
-        data-marker
-        // The marker shares the album accent with waveform/progress; text stays neutral.
-        className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-full bg-accent [transition:opacity_200ms_var(--ease-out-tk),background-color_220ms_var(--ease-out-tk)] ${SCALE[scale].marker} ${
-          current ? "opacity-100" : "opacity-0"
-        }`}
-      />
       <span className="lyric-ink">
       {timed
         ? words.map((w, wi) => (
@@ -546,8 +669,8 @@ const BREAK_DOT_EXIT_STEP_MS = 55; // DUR-adjacent; 4Â·55 + 220 fade â‰ˆ w
  * per fifth of the break â€” Apple Music's idle-progress idiom in the living
  * separator's capsule vocabulary (a content event, and the ONE ambient
  * living instance per view stays the Waveform). Accent on the lit dots is
- * the current-line marker's license â€” content feedback, not chrome; no
- * marker bar (the dots ARE the current indicator). Filled dots keep
+ * content feedback, like the waveform and progress fill, not chrome (the
+ * dots ARE the current indicator). Filled dots keep
  * background-color in the transition so an art-change retint sweeps them
  * like every accent surface.
  *
@@ -665,7 +788,7 @@ export function LyricsPanel({
   leadMs: number;
   /** True when this mount is a real within-expanded arrival (the user was
    * watching the big-art fallback) â€” plays the anchor-outward cascade and
-   * holds the accent marker back as the closing beat. */
+   * holds the anchor line's ignite sweep back as the closing beat. */
   entrance?: boolean;
   scale?: LyricsScale;
   /** Disables word wipes only; line highlighting and following stay active. */
@@ -690,6 +813,8 @@ export function LyricsPanel({
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs, karaoke);
+  const barRef = useRef<HTMLSpanElement>(null);
+  const barShown = useRef<AccentBarState>({ y: null, first: true });
   const [autoOffset, setAutoOffset] = useState(0);
   // Wheel-scrolling pauses auto-follow; it resumes via the "Now" chip,
   // scrolling back into the re-latch band, or a short idle (see RELATCH_BAND
@@ -700,7 +825,7 @@ export function LyricsPanel({
   // The anchor line at mount â€” cascade delays radiate from it, stable across
   // re-renders so a mid-entrance line advance can't reshuffle delays. The
   // entrance ends by timeout only (after every row animation has finished);
-  // the marker-hold is scoped to the anchor row via data-anchor, so nothing
+  // the ignite hold is scoped to the anchor row via data-anchor, so nothing
   // needs disarming when the song advances mid-cascade.
   const entranceIdx = useRef(idx);
   const [entering, setEntering] = useState(entrance);
@@ -748,7 +873,7 @@ export function LyricsPanel({
     if (!viewport) return;
     const measure = () => {
       const h = viewport.clientHeight;
-      const anchor = h * SCALE[scale].anchor;
+      const anchor = anchorPx(scale, h);
       setPad({ top: scale === "focus" ? Math.round(anchor) : 16, bottom: Math.round(h - anchor) });
     };
     measure();
@@ -767,15 +892,35 @@ export function LyricsPanel({
   // Anchor the current line SCALE.anchor down the viewport via a
   // compositor-friendly translate. Rounded â€” fractional offsets put text off
   // the pixel grid.
-  const applyAnchor = () => {
+  const autoTarget = (): number | null => {
     const viewport = viewportRef.current;
     const list = listRef.current;
-    if (!viewport || !list) return;
+    if (!viewport || !list) return null;
     const line = list.children[Math.max(idx, 0)] as HTMLElement | undefined;
-    if (!line) return;
-    const anchor = viewport.clientHeight * SCALE[scale].anchor;
+    if (!line) return null;
+    const anchor = anchorPx(scale, viewport.clientHeight);
     const raw = idx < 0 ? 0 : line.offsetTop + line.offsetHeight / 2 - anchor;
-    setAutoOffset(Math.round(Math.min(Math.max(raw, 0), maxOffset())));
+    return Math.round(Math.min(Math.max(raw, 0), maxOffset()));
+  };
+  const applyAnchor = (layoutOnly = false) => {
+    const target = autoTarget();
+    if (target !== null) setAutoOffset(target);
+    placeBar(target, layoutOnly);
+  };
+  // The accent line (placeAccentBar) follows the offset the list is heading
+  // to: the browse offset while wheel-browsing (instant, like the list), else
+  // the auto target. Hidden on a break, before the first line and during
+  // the credits roll. On a real arrival it grows in as the closing beat,
+  // with the anchor row's ignite (index.css: 540ms hold).
+  const placeBar = (target: number | null, instant: boolean) => {
+    const bar = barRef.current;
+    const list = listRef.current;
+    if (!bar || !list) return;
+    const sung = idx >= 0 && lines[idx] !== undefined && lines[idx].end === undefined && !rolling;
+    const row = sung ? (list.children[idx] as HTMLElement | undefined) ?? null : null;
+    const offset = manualOffset ?? target ?? autoOffset;
+    placeAccentBar(bar, row, offset, scale, barShown.current,
+      { instant: instant || manualOffset !== null, delayFirstMs: entrance ? 540 : 0 });
   };
   const applyAnchorRef = useRef(applyAnchor);
   applyAnchorRef.current = applyAnchor;
@@ -793,7 +938,7 @@ export function LyricsPanel({
   useEffect(() => {
     const list = listRef.current;
     if (!list) return;
-    const ro = new ResizeObserver(() => applyAnchorRef.current());
+    const ro = new ResizeObserver(() => applyAnchorRef.current(true));
     ro.observe(list);
     return () => ro.disconnect();
   }, []);
@@ -822,6 +967,10 @@ export function LyricsPanel({
   const singingEnd = useMemo(() => singingEndMs(lines), [lines]);
   const hasCredits = credits.groups.length > 0;
   const rolling = usePastPosition(hasCredits ? singingEnd : null) && !browsing;
+  // Re-seat the accent line when a browse moves the list (instantly, like
+  // the list) or the credits roll takes over (hidden).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => applyAnchorRef.current(), [manualOffset, rolling]);
   const rollPlan = useRef<RollPlan | null>(null);
   useLayoutEffect(() => {
     const list = listRef.current;
@@ -988,6 +1137,15 @@ export function LyricsPanel({
           <CreditsBlock credits={credits} scale={scale} />
         </div>
       </div>
+      {/* The accent line (placeAccentBar), in viewport coordinates. The
+       * album accent, like the waveform and progress fill, never on the
+       * words. */}
+      <span
+        ref={barRef}
+        aria-hidden
+        data-bar
+        className={`pointer-events-none absolute left-0 top-0 rounded-full bg-accent opacity-0 ${SCALE[scale].bar}`}
+      />
       {/* Word-lead caption: the one piece of feedback the nudge hotkeys
        * give. Same chip grammar AND the same per-scale top seat as the
        * return-to-now button (the focus room's ladder starts far lower).
@@ -1002,8 +1160,8 @@ export function LyricsPanel({
           </span>
         )}
       </div>
-      {/* Return-to-now chip â€” neutral chrome (accent stays on the line
-       * marker), on the edge the live line sits past, outside the re-latch
+      {/* Return-to-now chip â€” neutral chrome, on the edge the live line
+       * sits past, outside the re-latch
        * band only (inside it the line is on screen and a wheel-back
        * re-latches anyway). 32px offsets clear the 28px mask fade. Exits
        * plain with the browse, per the house transition rule. */}

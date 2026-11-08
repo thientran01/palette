@@ -141,7 +141,7 @@ function barClass(phase: Phase, i: number, size: Size): string {
   const g = GEOM[size];
   // background-color in both lists: an art-change retint sweeps the capsules
   // at 220ms EASE.out like every accent-painted surface (progress fills, the
-  // lyric marker) instead of snapping them. The survivor dot's rest-state
+  // lyric break dots) instead of snapping them. The survivor dot's rest-state
   // drain keeps its own slower, delayed timing — that one is choreography,
   // not a retint.
   if (phase === "alive")

@@ -20,7 +20,7 @@ export interface FrameScheduler {
 }
 
 /** One driver for the panel. Word onsets choose which rows paint; the
- * separate lyric-line clock continues to own scrolling and the marker.
+ * separate lyric-line clock continues to own scrolling and the highlight.
  * Only active rows visit spans. Inactive rows inherit their normal tone. */
 export function driveWordRows(
   rows: WordRow[], currentLine: number, leadMs: number,
@@ -53,12 +53,14 @@ export function driveWordRows(
           row.style.setProperty("--word-halo", "rgb(var(--lyric-peak) / 0.28)");
           row.style.setProperty("--lyric-scale", "1");
           row.style.setProperty("--lyric-opacity", "1");
+          row.style.setProperty("--lyric-filter", "none");
         } else {
           row.style.removeProperty("--word-bright");
           row.style.removeProperty("--word-peak");
           row.style.removeProperty("--word-halo");
           row.style.removeProperty("--lyric-scale");
           row.style.removeProperty("--lyric-opacity");
+          row.style.removeProperty("--lyric-filter");
         }
         track.active = active;
       }
@@ -120,6 +122,7 @@ export function driveWordRows(
       track.row.style.removeProperty("--word-halo");
       track.row.style.removeProperty("--lyric-scale");
       track.row.style.removeProperty("--lyric-opacity");
+      track.row.style.removeProperty("--lyric-filter");
     }
   };
 }
