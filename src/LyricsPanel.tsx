@@ -341,7 +341,12 @@ export type LyricsScale = "base" | "focus";
  * it replaced the 2026-07-12 Soundboard tiers and asymmetric mask). */
 const SCALE = {
   base: {
-    row: "px-3 py-1.5 text-base leading-normal tracking-[0.025em]",
+    // 17px type (was 16px until 2026-11-08: most lines filled only a third
+    // to two-thirds of the row, Thien). One step up keeps nearly every line
+    // on one row; 18px and 20px were tried and Thien preferred 17. Leading
+    // 1.4 keeps the row the same height as the old 16px/1.5 one, and is
+    // tighter than the gap between lyrics, so a wrapped line reads as one.
+    row: "px-3 py-1.5 text-[17px] leading-[1.4] tracking-[0.025em]",
     anchor: 0.4,
     anchorMaxPx: Infinity,
     // The compact view stays full: a three-line cut left most of the panel
@@ -371,7 +376,7 @@ const SCALE = {
     // size, a hair thicker). barH is its one-text-line height in px; a
     // wrapped line's bar grows by each extra text line (placeAccentBar).
     bar: "w-[3px]",
-    barH: 16,
+    barH: 17,
   },
   focus: {
     // The compact view's proportions scaled up (Thien, 2026-11-07: the
