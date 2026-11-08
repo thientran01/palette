@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.12] - 2026-11-08
+
+1.0.11 was never published, so 1.0.12 also brings its changes: the last three items under Changed.
+
 ### Added
 
 - Search has a section strip: Songs, Library and History. Tab moves between them, and `Ctrl+Alt+L` opens Search on Library.
@@ -35,6 +39,12 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - The current lyric line is the only sharp, full-size line: the others are drawn a little smaller and go softly out of focus the further they are from it, and a new line lights up left to right as it starts. Hovering a line brings it into focus. The accent line beside it now moves with the lyrics as they scroll, so it stays put while each new line slides into it, and it stretches to cover a line that wraps onto two rows. It grows in when singing starts and shrinks away during instrumental breaks.
 - Focus mode shows at most three lyric lines above the current one, and on tall screens the current line sits higher to match.
 - Karaoke word sync now double-checks itself. Palette measures how sure it is of each word, gives the lines it doubts a second listen on just the vocals, separated from the music, and keeps whichever version it's surest of. On a 79-song test set, words more than 0.3 s off dropped from 5.1% to 3.6%. The second listen needs the Kim Vocal 2 model beside the karaoke model and adds up to about a minute and a half of background work per song. Saved syncs keep showing and relearn the next time each song is played in full.
+- Lyrics outside focus mode are a size up, 17px instead of 16px, so most lines fill more of the row. Rows keep the same height, so the panel shows as many lines as before.
+- Album covers have a faint light edge, so near-black covers no longer melt into the dark widget.
+- In the expanded player the progress bar sits right on top of the play controls instead of floating closer to the lyrics.
+- Karaoke word sync is more accurate at the end of songs, before instrumental breaks, on lines that repeat a phrase, and on "ooh"/"ah" adlib lines. Saved syncs keep showing and quietly relearn the next time each song is played in full.
+- "Something different" suggestions load much faster. Lookups run side by side, connections are reused, and results are remembered on disk, so a song you play often costs no network at all the next time. When suggestions can't load, the search window now says so instead of quietly leaving the section out.
+- Text uses Geist, with Pretendard for Korean and Japanese (so Japanese lyrics no longer mix two fonts), and reads a little firmer on the see-through window.
 
 ### Fixed
 
@@ -43,14 +53,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - With karaoke words on, the lyrics move to the next line as soon as its first word starts lighting up. Long lines used to stay highlighted after they finished while the next line was already filling.
 - Karaoke words on Spotify no longer start up to 0.4 s early on some plays and on time on others. Spotify reports each new song as starting a little before its audio really does, and Palette used to keep that head start for the whole song, by a different amount every play. Now it eases back onto Spotify's timeline in the first couple of seconds, so one word-timing setting fits every song.
 - Karaoke words no longer race through each line with no rhythm on songs Palette learned while it couldn't hear the music (for example when Windows wouldn't let it capture Spotify's audio). Those songs now show line karaoke and relearn word timing the next time they play in full, and a listen that doesn't pick up the vocals is no longer saved.
-
-## [1.0.11] - 2026-11-07
-
-### Changed
-
-- Karaoke word sync is more accurate at the end of songs, before instrumental breaks, on lines that repeat a phrase, and on "ooh"/"ah" adlib lines. Saved syncs keep showing and quietly relearn the next time each song is played in full.
-- "Something different" suggestions load much faster. Lookups run side by side, connections are reused, and results are remembered on disk, so a song you play often costs no network at all the next time. When suggestions can't load, the search window now says so instead of quietly leaving the section out.
-- Text uses Geist, with Pretendard for Korean and Japanese (so Japanese lyrics no longer mix two fonts), and reads a little firmer on the see-through window.
+- Skipping a song no longer plays its entrance slide twice. The song's length arrives about half a second after its title, and Palette used to treat that as a second song change.
 
 ## [1.0.10] - 2026-10-28
 
