@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Fixed
+
+- Word karaoke now learns most Japanese songs. Lyrics with a long-vowel bar (トートロジー), a repeat mark (悠々) or a kanji number (一人) used to make the whole song give up on word sync every time it played, so it stayed on line timing forever (Yorushika's あぶく, for one). Numbers written in digits (By 11, 7個目, 11년째) no longer stop a song either. If a line still has a word Palette can't sound out, only that line stays on line timing.
+
 ## [1.0.12] - 2026-11-08
 
 1.0.11 was never published, so 1.0.12 also brings its changes: the last three items under Changed.

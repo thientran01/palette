@@ -1198,14 +1198,10 @@ fn commit_recording(
                 sync_state(
                     &rec.key,
                     "failed",
-                    if e.contains("unrepresentable") {
-                        "Some lyric text couldn’t be aligned. Replaying alone won’t resolve this text issue."
+                    if crate::vocal_preview::enabled() {
+                        "Experimental vocal sync failed. Existing timing is preserved; replay to retry."
                     } else {
-                        if crate::vocal_preview::enabled() {
-                            "Experimental vocal sync failed. Existing timing is preserved; replay to retry."
-                        } else {
-                            "Couldn’t align this track’s vocals. Word sync was not saved."
-                        }
+                        "Couldn’t align this track’s vocals. Word sync was not saved."
                     },
                 );
                 log::warn!("karaoke: acoustic alignment failed for {} ({e})", rec.title);

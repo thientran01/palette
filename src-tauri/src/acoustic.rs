@@ -20,6 +20,9 @@ const STAR: usize = 28;
 mod entry_timing;
 #[path = "sync_review.rs"]
 mod review;
+#[path = "spoken.rs"]
+mod spoken;
+use spoken::Numerals;
 
 /// Recipe pins the exported weights, normalization, window and decoder.
 /// 2: Knobs::MIX's tuned decoder (2026-10-31). 3: the review and its
@@ -230,7 +233,15 @@ fn expand_digit(token: &str) -> String {
         .collect()
 }
 
-fn plan_tokens(tokens: Vec<String>, romanizer: &uroman::Uroman) -> Result<TokenPlan> {
+/// The error a token gets when neither uroman nor `spoken::fallback` can say
+/// it. It costs that one line its words, never the song.
+const UNREPRESENTABLE: &str = "unrepresentable spoken token";
+
+fn plan_tokens(
+    tokens: Vec<String>,
+    romanizer: &uroman::Uroman,
+    numerals: Numerals,
+) -> Result<TokenPlan> {
     let mut targets = vec![STAR];
     let mut ranges = Vec::new();
     // No reliable language tag accompanies LRC. Require ASCII plus multiple
@@ -262,7 +273,17 @@ fn plan_tokens(tokens: Vec<String>, romanizer: &uroman::Uroman) -> Result<TokenP
             })
             .count()
             >= 2;
-    for token in &tokens {
+    let spell = |text: &str| -> String {
+        romanizer
+            .romanize_string::<uroman::rom_format::Str>(text, None)
+            .to_string()
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_lowercase() || *c == '\'')
+            .collect()
+    };
+    let mut prev_latin: Option<String> = None;
+    for (i, token) in tokens.iter().enumerate() {
         // Preserve display text while giving isolated digits (and 4sho-style
         // spellings) an English spoken target. Never drop a spoken digit.
         let spoken = if english_context || token.trim().eq_ignore_ascii_case("4sho") {
@@ -270,22 +291,29 @@ fn plan_tokens(tokens: Vec<String>, romanizer: &uroman::Uroman) -> Result<TokenP
         } else {
             token.clone()
         };
-        let normalized: String = romanizer
-            .romanize_string::<uroman::rom_format::Str>(&spoken, None)
-            .to_string()
-            .to_lowercase()
-            .chars()
-            .filter(|c| c.is_ascii_lowercase() || *c == '\'')
-            .collect();
+        let mut normalized = spell(&spoken);
+        if normalized.is_empty() && token.chars().any(char::is_alphanumeric) {
+            // ー, 々, 一 and 11 spell as nothing (or digits) in uroman.
+            let prev = i.checked_sub(1).map(|p| tokens[p].as_str());
+            let said = spoken::fallback(
+                token,
+                prev,
+                prev_latin.as_deref(),
+                tokens.get(i + 1).map(String::as_str),
+                numerals,
+            );
+            normalized = said.map(|s| spell(&s)).unwrap_or_default();
+        }
         if normalized.is_empty() || !token.chars().any(char::is_alphanumeric) {
             // Nonverbal punctuation keeps its display slot but has no CTC
             // target. Unsupported letters must not silently become punctuation.
             if token.chars().any(char::is_alphanumeric) {
-                return Err("unrepresentable spoken token".into());
+                return Err(format!("{UNREPRESENTABLE} {:?}", token.trim()));
             }
             ranges.push(None);
             continue;
         }
+        prev_latin = Some(normalized.clone());
         let start = targets.len();
         for c in normalized.bytes() {
             targets.push(
@@ -850,6 +878,7 @@ impl AcousticAligner {
         // Every line on the recording as captured, then the second look at
         // the doubted ones, then the words in line order.
         let mut work: Vec<LineWork> = Vec::new();
+        let numerals = Numerals::for_song(lines.iter().map(|l| l.text.as_str()));
         for (li, line) in lines.iter().enumerate() {
             let tokens = tokenize(&line.text);
             if tokens.is_empty() {
@@ -885,7 +914,16 @@ impl AcousticAligner {
             if end - begin > 16_000 * 21 {
                 return Err("acoustic input exceeds 21 second memory bound".into());
             }
-            let mut plan = plan_tokens(tokens, &self.romanizer)?;
+            let mut plan = match plan_tokens(tokens, &self.romanizer, numerals) {
+                Ok(plan) => plan,
+                // One unsayable word leaves its line on line timing; the
+                // rest of the song still learns.
+                Err(e) if e.starts_with(UNREPRESENTABLE) => {
+                    log::warn!("karaoke: no words for the line at {}ms ({e})", line.t);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             if la_entry {
                 plan.targets.remove(0);
                 for range in plan.ranges.iter_mut().flatten() {
@@ -1630,7 +1668,7 @@ mod tests {
     #[test]
     fn spelling_detail_preserves_internal_gap_and_source_punctuation() {
         let romanizer = uroman::Uroman::new();
-        let plan = plan_tokens(vec!["(hallway!) ".into()], &romanizer).unwrap();
+        let plan = plan_tokens(vec!["(hallway!) ".into()], &romanizer, Numerals::English).unwrap();
         let range = plan.ranges[0].clone().unwrap();
         let spans: Vec<_> = (0..7)
             .map(|i| TokenSpan {
@@ -1691,7 +1729,7 @@ mod tests {
     #[test]
     fn punctuation_keeps_display_slots_without_acoustic_targets() {
         let roman = uroman::Uroman::new();
-        let plan = plan_tokens(tokenize("안녕!"), &roman).unwrap();
+        let plan = plan_tokens(tokenize("안녕!"), &roman, Numerals::English).unwrap();
         assert_eq!(plan.tokens.concat(), "안녕!");
         assert_eq!(plan.ranges.len(), 3);
         assert!(plan.ranges[2].is_none());
@@ -1707,15 +1745,16 @@ mod tests {
             .collect();
         let frames = word_frames(&plan.ranges, &spans);
         assert_eq!(frames[2], (frames[1].1 - 1, frames[1].1));
-        let quotes = plan_tokens(tokenize("'안녕'"), &roman).unwrap();
+        let quotes = plan_tokens(tokenize("'안녕'"), &roman, Numerals::English).unwrap();
         assert!(quotes.ranges.first().unwrap().is_none());
         assert!(quotes.ranges.last().unwrap().is_none());
-        let contraction = plan_tokens(vec!["don't".into()], &roman).unwrap();
+        let contraction = plan_tokens(vec!["don't".into()], &roman, Numerals::English).unwrap();
         assert!(contraction.targets.contains(&25));
-        let lead = plan_tokens(vec!["!".into(), "hello".into()], &roman).unwrap();
+        let lead =
+            plan_tokens(vec!["!".into(), "hello".into()], &roman, Numerals::English).unwrap();
         let frames = word_frames(&lead.ranges, &spans);
         assert_eq!(frames[0].0, frames[1].0);
-        assert!(plan_tokens(vec!["!".into()], &roman)
+        assert!(plan_tokens(vec!["!".into()], &roman, Numerals::English)
             .unwrap()
             .ranges
             .iter()
@@ -2078,7 +2117,7 @@ mod digit_tests {
         let roman = uroman::Uroman::new();
         let tokens = tokenize("All we know 4 fingers up");
         let original = tokens.clone();
-        let plan = plan_tokens(tokens, &roman).unwrap();
+        let plan = plan_tokens(tokens, &roman, Numerals::English).unwrap();
         assert_eq!(plan.tokens, original);
         let range = plan.ranges[3].clone().unwrap();
         let spoken: String = plan.targets[range]
@@ -2086,7 +2125,7 @@ mod digit_tests {
             .map(|&i| LABELS[i] as char)
             .collect();
         assert_eq!(spoken, "four");
-        let slang = plan_tokens(vec!["4sho".into()], &roman).unwrap();
+        let slang = plan_tokens(vec!["4sho".into()], &roman, Numerals::English).unwrap();
         let spoken: String = slang.targets[slang.ranges[0].clone().unwrap()]
             .iter()
             .map(|&i| LABELS[i] as char)
@@ -2095,7 +2134,47 @@ mod digit_tests {
         assert_eq!(slang.tokens[0], "4sho");
         assert_eq!(expand_digit("12"), "12");
         assert_eq!(expand_digit("hello"), "hello");
-        assert!(plan_tokens(tokenize("4월"), &roman).is_err());
-        assert!(plan_tokens(vec!["4".into()], &roman).is_err());
+        // A digit is never dropped: glued to hangul it reads Sino-Korean,
+        // alone it reads English.
+        let spell = |plan: &TokenPlan, i: usize| -> String {
+            plan.targets[plan.ranges[i].clone().unwrap()]
+                .iter()
+                .map(|&i| LABELS[i] as char)
+                .collect()
+        };
+        let april = plan_tokens(tokenize("4월"), &roman, Numerals::Korean).unwrap();
+        assert_eq!(spell(&april, 0), "sa");
+        let four = plan_tokens(vec!["4".into()], &roman, Numerals::Korean).unwrap();
+        assert_eq!(spell(&four, 0), "four");
+    }
+
+    #[test]
+    fn japanese_marks_and_numerals_spell_instead_of_failing() {
+        // あぶく (Yorushika) never synced: ー, 々 and 一 each failed the song.
+        let roman = uroman::Uroman::new();
+        let ja = Numerals::Japanese;
+        let plan = plan_tokens(tokenize("トートロジー握った"), &roman, ja).unwrap();
+        let spelled: Vec<String> = plan
+            .ranges
+            .iter()
+            .map(|r| {
+                plan.targets[r.clone().unwrap()]
+                    .iter()
+                    .map(|&i| LABELS[i] as char)
+                    .collect()
+            })
+            .collect();
+        assert_eq!(spelled[..6], ["to", "o", "to", "ro", "ji", "i"]);
+        let plan = plan_tokens(tokenize("悠々悠々夢を焼け"), &roman, ja).unwrap();
+        assert!(plan.ranges.iter().all(Option::is_some));
+        assert_eq!(
+            plan.ranges[1].clone().unwrap().len(),
+            plan.ranges[0].clone().unwrap().len()
+        );
+        assert!(plan_tokens(tokenize("一人を竹刀で"), &roman, ja).is_ok());
+        assert!(plan_tokens(tokenize("夕夕夕夕夕、目を焼け"), &roman, ja).is_ok());
+        // Still nothing to say: the line is skipped by the caller, not the song.
+        let err = plan_tokens(vec!["㐂".into()], &roman, ja).err().unwrap();
+        assert!(err.starts_with(UNREPRESENTABLE));
     }
 }
