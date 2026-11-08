@@ -37,6 +37,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Fixed
 
+- Palette's hotkeys now work inside League of Legends and other games that turn off Windows hotkeys while they're focused. Palette now also listens for its chords the way Discord's keybinds do, so they keep working in those games.
 - A lyric line no longer jumps from one row to two when it becomes the current line.
 - With karaoke words on, the lyrics move to the next line as soon as its first word starts lighting up. Long lines used to stay highlighted after they finished while the next line was already filling.
 - Karaoke words on Spotify no longer start up to 0.4 s early on some plays and on time on others. Spotify reports each new song as starting a little before its audio really does, and Palette used to keep that head start for the whole song, by a different amount every play. Now it eases back onto Spotify's timeline in the first couple of seconds, so one word-timing setting fits every song.
