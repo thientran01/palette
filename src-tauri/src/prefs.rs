@@ -96,6 +96,7 @@ pub fn open(app: &AppHandle, section: Option<String>) {
                 };
             }
             center_on_cursor(app, &win);
+            crate::tell_shown(app, LABEL, true);
             if win.show().is_err() {
                 log::error!("prefs: show failed — aborting open");
                 let _ = win.destroy();

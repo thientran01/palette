@@ -28,6 +28,7 @@ import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
 import { isProvisionalDuration, trackIdOf } from "./lib/trackId";
 import { driveWordRows, settleRows, type WordDriver, type WordRow } from "./lib/wordWipeDriver";
+import { whileShown } from "./lib/windowShown";
 import { letterSegments } from "./lib/letterRise";
 import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
 
@@ -139,7 +140,9 @@ function useWordWipe(
         word => Array.from(word.querySelectorAll<HTMLElement>("[data-letter]"), letter => letter.style));
       rows.push({ index, words, style: el.style, el, letters });
     }
-    const running = driveWordRows(rows, line.current, leadMs, posClock, {
+    // Hidden windows still get full-rate rAF (lib/windowShown.ts), so the
+    // driver reads a hidden window as paused.
+    const running = driveWordRows(rows, line.current, leadMs, whileShown(posClock), {
       request: cb => requestAnimationFrame(cb), cancel: id => cancelAnimationFrame(id),
     });
     driver.current = running;

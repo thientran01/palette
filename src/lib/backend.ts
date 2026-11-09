@@ -24,6 +24,7 @@ import {
 } from "../types";
 import type { LyricWord } from "./lrc";
 import * as posClock from "./posClock";
+import { isWindowShown } from "./windowShown";
 
 const MOCK_DURATION = 204_000;
 
@@ -599,13 +600,13 @@ export function onNowPlaying(cb: (np: NowPlaying) => void): () => void {
     // interval's 5s), at most one invoke is in flight (a hung backend gets
     // ONE stuck promise, never a stack), and a hidden window never re-seeds
     // (the backend deliberately emits nothing while hidden — silence there is
-    // policy, not staleness; WebView2 mirrors window visibility into
-    // document.hidden). posClock's seq gate drops a response that is
-    // genuinely a stale straggler.
+    // policy, not staleness). Hidden comes from Rust (lib/windowShown.ts):
+    // a hidden Tauri window keeps document.hidden false. posClock's seq gate
+    // drops a response that is genuinely a stale straggler.
     let reseedInflight = false;
     let lastAttemptAt = 0;
     const reseed = window.setInterval(() => {
-      if (reseedInflight || lastStatus !== "playing" || document.hidden) return;
+      if (reseedInflight || lastStatus !== "playing" || !isWindowShown()) return;
       const now = Date.now();
       if (now - lastPayloadAt < STALE_RESEED_MS || now - lastAttemptAt < STALE_RESEED_MS) return;
       lastAttemptAt = now;

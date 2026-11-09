@@ -165,6 +165,7 @@ pub fn show(app: &AppHandle, section: &str) {
     if centered.is_none() {
         let _ = win.center();
     }
+    crate::tell_shown(app, LABEL, true);
     let _ = win.show();
     let _ = win.set_focus();
     // The webview re-focuses its input, select-alls the stale query,
@@ -176,6 +177,7 @@ pub fn show(app: &AppHandle, section: &str) {
 pub fn hide(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(LABEL) {
         let _ = win.hide();
+        crate::tell_shown(app, LABEL, false);
     }
 }
 

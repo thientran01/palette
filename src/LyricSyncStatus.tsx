@@ -4,6 +4,7 @@ import { MorphIcon } from "./icons/MorphIcon";
 import { DUR } from "./lib/tokens";
 import type { NowPlaying } from "./types";
 import { resolveSyncStatus, savedSyncStatus } from "./lib/lyricSyncState";
+import { isWindowShown, onWindowShown } from "./lib/windowShown";
 import { SavedSyncs } from "./SavedSyncs";
 
 const titles = {waiting:"Waiting to learn",learning:"Learning timing",processing:"Finishing sync",saved:"Word sync saved",failed:"Couldn’t sync this track"};
@@ -36,7 +37,7 @@ export function LyricSyncStatus({np, saved}: {np:NowPlaying; saved:boolean}) {
     let inFlight = false;
     const refresh = async () => {
       window.clearTimeout(poll);
-      if (disposed || document.hidden || (saved && !preview) || inFlight) return;
+      if (disposed || !isWindowShown() || (saved && !preview) || inFlight) return;
       inFlight = true;
       try {
         const status = await karaokeStatus(np);
@@ -49,8 +50,10 @@ export function LyricSyncStatus({np, saved}: {np:NowPlaying; saved:boolean}) {
       }
     };
     void refresh();
-    document.addEventListener("visibilitychange",refresh);
-    return () => { disposed = true; window.clearTimeout(poll); document.removeEventListener("visibilitychange",refresh); };
+    // A hidden Tauri window never fires visibilitychange (lib/windowShown.ts),
+    // so the poll rests on Rust's shown signal and resumes on show.
+    const offShown = onWindowShown(() => void refresh());
+    return () => { disposed = true; window.clearTimeout(poll); offShown(); };
   // Identity, not the frequently updated playback position, owns a request.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key,saved,preview,library]);
