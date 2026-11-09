@@ -2,7 +2,8 @@ import type { SavedSync, SyncCheck } from "./backend";
 import type { LyricLine } from "./lrc";
 
 /** Estimated words on time as a whole percent. Never shows 100: the
- * estimate tops out at 99.3% (sure words, JamendoLyrics). */
+ * estimate tops out at 99.5% (sure words on a song the check never
+ * doubted, JamendoLyrics). */
 export function onTimePercent(check: SyncCheck): number {
   return Math.min(99, Math.round(check.on_time * 100));
 }

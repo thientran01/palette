@@ -125,61 +125,110 @@ const SURE: f32 = 0.9;
 /// Log-odds that a word lands within 300ms, by support (support below,
 /// log-odds), on a song whose first pass doubted no line.
 const ON_TIME: [(f32, f32); 5] = [
-    (0.1, 0.31),
-    (0.3, 0.80),
-    (0.5, 1.47),
-    (0.7, 2.18),
-    (SURE, 2.84),
+    (0.1, 0.34),
+    (0.3, 0.99),
+    (0.5, 1.70),
+    (0.7, 2.26),
+    (SURE, 2.86),
 ];
-const ON_TIME_SURE: f32 = 5.40;
+const ON_TIME_SURE: f32 = 5.27;
 /// What a hard song takes off those log-odds, per share of its words on
 /// lines the first pass doubted. Support alone read high on hard songs:
-/// where the model doubts many lines its sure words are wrong more often
+/// where the model doubts many lines, its sure words are wrong more often
 /// too (Embers: 82% estimated, 71% measured, 59% of its words on doubted
-/// lines). Past HARDEST the benchmark has no songs, so the share stops
+/// lines). The benchmark has no song past HARDEST, so the share stops
 /// counting there.
-const HARD_SONG: f32 = 2.81;
+const HARD_SONG: f32 = 2.59;
 const HARDEST: f32 = 0.6;
+/// What a late line takes off, per second its first word starts after
+/// the stamp, beyond LATE_FROM_MS past the song's usual start (the median
+/// line: lyric files lead or trail the vocal by a song-wide offset). A
+/// path that finds a line seconds late has usually found something else,
+/// however sure it is: with stamps 200ms early, sure words on lines 1.5s
+/// or more late were on time 20% of the time.
+const LATE_LINE: f32 = 3.29;
+const LATE_FROM_MS: f32 = 300.0;
+const LATEST_S: f32 = 2.0;
 
 /// The chance a word with this support is within 300ms of the singing, on
-/// a song with this share of its words on doubted lines. Fitted on
-/// JamendoLyrics (79 songs, 21,580 words) as the app aligns, with and
-/// without the second ear (docs/specs/2026-09-06-saved-syncs.md).
-fn on_time(support: f32, doubted: f32) -> f32 {
+/// a song with this share of its words on doubted lines, in a line that
+/// starts `late_s` (`Song::late_s`) late. Fitted on JamendoLyrics (79
+/// songs, 21,580 words) aligned three ways: as the app does, without the
+/// second ear, and with every stamp 200ms early
+/// (docs/specs/2026-09-06-saved-syncs.md).
+fn on_time(support: f32, doubted: f32, late_s: f32) -> f32 {
     let odds = ON_TIME
         .iter()
         .find(|(below, _)| support < *below)
         .map_or(ON_TIME_SURE, |&(_, odds)| odds);
-    1.0 / (1.0 + (HARD_SONG * doubted.min(HARDEST) - odds).exp())
+    let off = HARD_SONG * doubted.min(HARDEST) + LATE_LINE * late_s.min(LATEST_S);
+    1.0 / (1.0 + (off - odds).exp())
 }
 
-/// Share of the checked words on lines the first pass doubted: a line the
-/// second ear heard again, or one that still holds a word under DOUBT
-/// (no second ear, or its budget ran out).
-fn doubted_share(words: &[crate::align::Word]) -> f32 {
-    let mut lines: std::collections::HashMap<Option<i64>, (u32, bool)> = Default::default();
-    for w in words {
-        let (checked, doubted) = lines.entry(w.line_t).or_default();
-        *checked += u32::from(w.support.is_some());
-        *doubted |= w.reheard || w.support.is_some_and(|p| p < DOUBT);
+/// What the rest of a song says about each of its checked words.
+struct Song {
+    /// Share of the checked words on lines the first pass doubted: a line
+    /// the second ear heard again, or one that still holds a word under
+    /// DOUBT (no second ear, or its budget ran out).
+    doubted: f32,
+    /// Each line's first checked word, in ms after its stamp.
+    entries: std::collections::HashMap<i64, i64>,
+    /// The median of `entries`.
+    usual_entry: f32,
+}
+
+impl Song {
+    fn new(words: &[crate::align::Word]) -> Self {
+        // Per line: checked words, and whether the first pass doubted it.
+        let mut lines: std::collections::HashMap<Option<i64>, (u32, bool)> = Default::default();
+        let mut entries = std::collections::HashMap::new();
+        for w in words {
+            let (checked, doubted) = lines.entry(w.line_t).or_default();
+            *checked += u32::from(w.support.is_some());
+            *doubted |= w.reheard || w.support.is_some_and(|p| p < DOUBT);
+            if let (Some(line_t), Some(_)) = (w.line_t, w.support) {
+                entries.entry(line_t).or_insert(w.t - line_t);
+            }
+        }
+        let (mut all, mut hard) = (0, 0);
+        for (checked, doubted) in lines.into_values() {
+            all += checked;
+            hard += if doubted { checked } else { 0 };
+        }
+        let mut sorted: Vec<i64> = entries.values().copied().collect();
+        sorted.sort_unstable();
+        let usual_entry = match sorted.len() {
+            0 => 0.0,
+            n => (sorted[(n - 1) / 2] + sorted[n / 2]) as f32 / 2.0,
+        };
+        Self {
+            doubted: hard as f32 / all.max(1) as f32,
+            entries,
+            usual_entry,
+        }
     }
-    let (mut all, mut hard) = (0, 0);
-    for (checked, doubted) in lines.into_values() {
-        all += checked;
-        hard += if doubted { checked } else { 0 };
+
+    /// Seconds the word's line starts later than the song's lines usually
+    /// do, past the slack every line gets.
+    fn late_s(&self, word: &crate::align::Word) -> f32 {
+        let entry = word.line_t.and_then(|t| self.entries.get(&t));
+        entry.map_or(0.0, |&ms| {
+            ((ms as f32 - self.usual_entry - LATE_FROM_MS) / 1000.0).max(0.0)
+        })
     }
-    hard as f32 / all.max(1) as f32
 }
 
 /// None when no word carries support: saved before the review kept it.
 fn check(lines: &[crate::align::TimedLine], words: &[crate::align::Word]) -> Option<Check> {
-    let supported: Vec<f32> = words.iter().filter_map(|w| w.support).collect();
-    if supported.is_empty() {
+    let song = Song::new(words);
+    let shares: Vec<f32> = words
+        .iter()
+        .filter_map(|w| Some(on_time(w.support?, song.doubted, song.late_s(w))))
+        .collect();
+    if shares.is_empty() {
         return None;
     }
-    let doubted = doubted_share(words);
-    let on_time =
-        supported.iter().map(|&p| on_time(p, doubted)).sum::<f32>() / supported.len() as f32;
+    let on_time = shares.iter().sum::<f32>() / shares.len() as f32;
     let (mut unsure, mut reheard, mut fixed) = (0, 0, 0);
     let mut seen = std::collections::HashSet::new();
     let map = lines
@@ -358,11 +407,11 @@ mod tests {
         assert_eq!(c.lines, "slsun");
         assert_eq!((c.unsure, c.reheard, c.fixed), (1, 2, 1));
         // Two of the six checked words sit on lines the first pass doubted
-        // (the reheard line and the still unsure one). With that share:
-        // 4 sure words, one at 0.6, one at 0.2.
-        let third = 1.0 / 3.0;
-        let expected =
-            (4.0 * on_time(0.95, third) + on_time(0.6, third) + on_time(0.2, third)) / 6.0;
+        // (the reheard line and the still unsure one), and every line
+        // starts on its stamp. With that share: 4 sure words, one at 0.6,
+        // one at 0.2.
+        let at = |support| on_time(support, 1.0 / 3.0, 0.0);
+        let expected = (4.0 * at(0.95) + at(0.6) + at(0.2)) / 6.0;
         assert!((c.on_time - expected).abs() < 0.001, "{}", c.on_time);
         // Saved before the review kept support: nothing to judge.
         assert_eq!(check(&lines, &[word(1000, None, false)]), None);
@@ -370,18 +419,19 @@ mod tests {
     #[test]
     fn a_hard_song_lowers_every_word() {
         // Sure words on a song the first pass never doubted: nearly all on time.
-        assert!(on_time(1.0, 0.0) > 0.99);
+        assert!(on_time(1.0, 0.0, 0.0) > 0.99);
+        let supports = [0.05, 0.2, 0.4, 0.6, 0.8, 0.95];
         // The same support counts for less where many lines were doubted...
-        for support in [0.05, 0.2, 0.4, 0.6, 0.8, 0.95] {
-            assert!(on_time(support, 0.5) < on_time(support, 0.1), "{support}");
+        for support in supports {
+            assert!(on_time(support, 0.5, 0.0) < on_time(support, 0.1, 0.0));
         }
         // ...surer words still score higher on the same song...
         for doubted in [0.0, 0.3, 0.6] {
-            let shares = [0.05, 0.2, 0.4, 0.6, 0.8, 0.95].map(|p| on_time(p, doubted));
+            let shares = supports.map(|p| on_time(p, doubted, 0.0));
             assert!(shares.windows(2).all(|w| w[0] < w[1]), "{shares:?}");
         }
         // ...and past the hardest benchmark songs the share stops counting.
-        assert_eq!(on_time(0.95, HARDEST), on_time(0.95, 1.0));
+        assert_eq!(on_time(0.95, HARDEST, 0.0), on_time(0.95, 1.0, 0.0));
         // A song of sure words still reads lower when its lines were doubted.
         let line = |t: i64| TimedLine {
             t,
@@ -394,7 +444,7 @@ mod tests {
         assert!(hard.on_time < easy.on_time - 0.01);
     }
     #[test]
-    fn doubted_share_counts_checked_words_on_doubted_lines() {
+    fn the_song_counts_checked_words_on_doubted_lines() {
         let words = [
             word(1000, Some(0.97), false),
             word(1000, Some(0.95), false),
@@ -407,8 +457,51 @@ mod tests {
             word(3000, None, true),
             word(4000, None, false),
         ];
-        assert!((doubted_share(&words) - 3.0 / 5.0).abs() < 1e-6);
-        assert_eq!(doubted_share(&[word(1000, None, false)]), 0.0);
+        assert!((Song::new(&words).doubted - 3.0 / 5.0).abs() < 1e-6);
+        assert_eq!(Song::new(&[word(1000, None, false)]).doubted, 0.0);
+    }
+    #[test]
+    fn a_line_that_starts_late_for_its_song_counts_for_less() {
+        // Sure words throughout; `entry` is how long after its stamp each
+        // line's first word starts.
+        let song = |entries: [i64; 5]| -> Vec<Word> {
+            let lines = entries.iter().enumerate();
+            lines
+                .flat_map(|(i, &entry)| {
+                    let line_t = 10_000 * (i as i64 + 1);
+                    [entry, entry + 400].map(|after| Word {
+                        t: line_t + after,
+                        ..word(line_t, Some(0.97), false)
+                    })
+                })
+                .collect()
+        };
+        let score = |words: &[Word]| {
+            let song = Song::new(words);
+            let shares = words.iter().map(|w| on_time(0.97, 0.0, song.late_s(w)));
+            shares.sum::<f32>() / words.len() as f32
+        };
+        let on_stamp = score(&song([0, 40, -20, 60, 20]));
+        assert!(on_stamp > 0.99);
+        // A lyric file that leads the vocal moves every line alike: no line
+        // is late for its song.
+        assert_eq!(score(&song([500, 540, 480, 560, 520])), on_stamp);
+        // The slack every line gets.
+        assert_eq!(score(&song([0, 40, -20, 60, 300])), on_stamp);
+        // One line of five found 1.8 seconds late: its words are probably
+        // off, so the song loses part of that line's share.
+        let late = score(&song([0, 40, -20, 60, 1800]));
+        assert!(late < on_stamp - 0.05 && late > 0.85, "{late}");
+        // Later than LATEST_S past the slack counts no further.
+        let words = song([0, 40, -20, 60, 9000]);
+        let last = Song::new(&words).late_s(&words[9]);
+        assert_eq!(on_time(0.97, 0.0, last), on_time(0.97, 0.0, LATEST_S));
+        // A line's first checked word sets its start, not one the review
+        // never judged.
+        let mut words = song([0, 40, -20, 60, 20]);
+        words.insert(0, word(10_000, None, false));
+        words[0].t = 15_000;
+        assert_eq!(Song::new(&words).late_s(&words[1]), 0.0);
     }
     #[test]
     fn support_round_trips_and_stays_out_of_files_without_it() {
