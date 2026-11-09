@@ -126,7 +126,6 @@ fn cached_loop<J, M>(
 struct Models {
     dir: PathBuf,
     aligner: AcousticAligner,
-    separator: Option<VocalSeparator>,
     /// The second ear's model failed to load: not retried every song.
     no_second_ear: bool,
 }
@@ -147,7 +146,6 @@ fn run(rx: mpsc::Receiver<Request>) {
                 *cached = Some(Models {
                     dir: request.dir.clone(),
                     aligner: model,
-                    separator: None,
                     no_second_ear: false,
                 });
             }
@@ -157,10 +155,13 @@ fn run(rx: mpsc::Receiver<Request>) {
             // The aligner initialized the ONNX Runtime the separator uses.
             // Outside the trial the separator is the review's optional
             // second ear: used when its model sits beside the aligner's.
+            // It loads per job (about 0.2s) and goes with it, so its ~1.2 GB
+            // of working memory is not held between songs.
             let second_ear = !models.no_second_ear && separator_file.is_file();
-            if models.separator.is_none() && (preview || second_ear) {
+            let mut separator = None;
+            if preview || second_ear {
                 match VocalSeparator::load(&separator_file) {
-                    Ok(separator) => models.separator = Some(separator),
+                    Ok(loaded) => separator = Some(loaded),
                     Err(e) if preview => return Err(e),
                     Err(e) => {
                         models.no_second_ear = true;
@@ -169,7 +170,7 @@ fn run(rx: mpsc::Receiver<Request>) {
                 }
             }
             let loaded = started.elapsed();
-            let vocals = match models.separator.as_mut().filter(|_| preview) {
+            let vocals = match separator.as_mut().filter(|_| preview) {
                 Some(separator) => {
                     let vocals = separator.vocals_16k(
                         request.stereo.as_ref(),
@@ -193,55 +194,44 @@ fn run(rx: mpsc::Receiver<Request>) {
             let model = &mut models.aligner;
             let aligning = Instant::now();
             let hz = crate::karaoke::TARGET_HZ;
-            let (mut heard, mut passes) = (0, 0);
-            let result = if let Some(vocals) = vocals.as_deref() {
-                model.align_guided_entries(vocals, &request.lines, &request.map, None)
-            } else if let Some(separator) = models.separator.as_mut() {
-                let mut ear = VocalEar {
+            // One ear for the review and the voice pass, so held notes in
+            // stretches the review already separated cost nothing.
+            let mut ear = separator.as_mut().filter(|_| !preview).map(|separator| {
+                VocalEar::new(
                     separator,
-                    stereo: request.stereo.as_ref(),
-                    mono16k: &request.pcm,
-                    target_hz: hz,
-                    deadline: Some(aligning + EAR_DEADLINE),
-                    heard: 0,
-                    passes: 0,
-                };
-                let words = model.align_reviewed(
+                    request.stereo.as_ref(),
+                    &request.pcm,
+                    hz,
+                    Some(aligning + EAR_DEADLINE),
+                )
+            });
+            let mut result = if let Some(vocals) = vocals.as_deref() {
+                model.align_guided_entries(vocals, &request.lines, &request.map, None)
+            } else if let Some(ear) = ear.as_mut() {
+                model.align_reviewed(
                     &request.pcm,
                     &request.lines,
                     &request.map,
                     Knobs::MIX,
-                    &mut ear,
+                    ear,
                     None,
-                );
-                (heard, passes) = (ear.heard, ear.passes);
-                words
+                )
             } else {
                 model.align(&request.pcm, &request.lines, &request.map)
             };
             let aligned = aligning.elapsed();
+            let (heard, passes) = ear.as_ref().map_or((0, 0), |e| (e.heard, e.passes));
             // The singer's voice on held notes, with the same separator.
             // The vocal trial (whole-song vocals) skips it: dev-only.
-            let mut result = result;
-            if let (Ok(words), Some(separator), false) =
-                (result.as_mut(), models.separator.as_mut(), preview)
-            {
+            if let (Ok(words), Some(ear)) = (result.as_mut(), ear.as_mut()) {
                 let voicing = Instant::now();
-                let mut ear = VocalEar {
-                    separator,
-                    stereo: request.stereo.as_ref(),
-                    mono16k: &request.pcm,
-                    target_hz: hz,
-                    deadline: Some(aligning + VOICE_DEADLINE),
-                    heard: 0,
-                    passes: 0,
-                };
+                ear.deadline = Some(aligning + VOICE_DEADLINE);
                 let voiced = crate::voice::listen(
                     words,
                     &request.map,
                     request.pcm.len(),
                     hz,
-                    &mut ear,
+                    ear,
                     crate::voice::PASS_BUDGET,
                 );
                 log::info!(
@@ -249,7 +239,7 @@ fn run(rx: mpsc::Receiver<Request>) {
                     voiced,
                     words.iter().filter(|w| crate::voice::is_held(w)).count(),
                     voicing.elapsed().as_secs_f64(),
-                    ear.passes,
+                    ear.passes - passes,
                 );
             }
             log::info!(
