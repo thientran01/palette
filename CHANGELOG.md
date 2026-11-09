@@ -10,6 +10,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Changed
 
+- Palette uses less memory. Every window used to load the whole 5 MB Japanese and Korean font the moment it showed one character Geist lacks, even the ✓ in "Connected ✓". The font is now cut into Hangul, Japanese and symbol files, and a window loads only the ones it shows: about 18 MB less per window when nothing on screen is Korean or Japanese, about 10 MB less with Korean, about 8 MB less with Japanese. Text looks exactly the same.
+- The widget's UI thread stays quiet while you're not touching it. The check that lets clicks pass through the widget's empty edges used to wake it about 85 times a second, and about 250 times a second with the pointer near the widget. It now reads the window's position straight from Windows.
 - Word karaoke follows Japanese singing much more closely. It used to listen for every kanji in its Chinese reading (水面 as "shuimian", 一人 as "1 ren"), for っ as "tsu" and for きょ as "ki-yo". っ, small kana and ー are now heard as sung. With the optional Japanese dictionary installed beside the karaoke model, kanji and numbers get their Japanese readings and the particles は and へ are heard as "wa" and "e". On five Japanese songs, lines the aligner doubts went from 45% to 23%. Saved syncs relearn on each song's next full listen.
 
 ### Fixed
