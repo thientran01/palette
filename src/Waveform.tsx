@@ -327,7 +327,9 @@ export function Waveform({
     const takeOver = (now: number): boolean => {
       const canvas = canvasRef.current;
       const row = rowRef.current;
-      if (!canvas || !row) return false;
+      // No 2D context (GPU process lost, say): keep the DOM bars rather than
+      // hide them behind a canvas that can't draw.
+      if (!canvas || !row || !canvas.getContext("2d")) return false;
       const box = canvas.getBoundingClientRect();
       if (box.width === 0 || box.height === 0) return false; // not laid out yet
       rowW = box.width;
@@ -617,6 +619,12 @@ export function Waveform({
       clearSeq();
       running = false;
       cancelAnimationFrame(raf);
+      // Leave the DOM row visible for whatever renders next (StrictMode's
+      // remount keeps these elements).
+      if (owned) {
+        owned = false;
+        if (rowRef.current) rowRef.current.style.visibility = "";
+      }
     };
   }, []);
 
