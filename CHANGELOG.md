@@ -14,6 +14,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Fixed
 
+- Refreshing Search's "From your history" brings new songs instead of cycling the same few. It used to read only your newest 600 plays (about two days), so it had a couple dozen songs to choose from, and the last row of one refresh became the first row of the next. It now reads your whole history, remembers what it showed you in this part of the day, and won't show a song again until it runs out. Picks weigh how much you've played a song against how long it's been, so refreshes reach deeper favorites. "Forgotten favorite" and "On this day" now actually appear. Opening Search still shows the same set within a morning, afternoon or evening. "Something different" no longer suggests songs you played more than a couple of days ago.
 - Word karaoke now learns most Japanese songs. Lyrics with a long-vowel bar (トートロジー), a repeat mark (悠々) or a kanji number (一人) used to make the whole song give up on word sync every time it played, so it stayed on line timing forever (Yorushika's あぶく, for one). Numbers written in digits (By 11, 7個目, 11년째) no longer stop a song either. If a line still has a word Palette can't sound out, only that line stays on line timing.
 
 ## [1.0.12] - 2026-11-08

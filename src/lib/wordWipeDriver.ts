@@ -1,16 +1,20 @@
-import { wordFillEnd, wordWipeFraction, WORD_ATTACK_MS, type LyricWord } from "./lrc";
+import type { LyricWord } from "./lrc";
+import { letterLit, rowLetterOnsets, RISE_EARLY_MS, RISE_MS } from "./letterRise";
+import { heldBend } from "./voiceMotion";
 
-const BLOOM_MS = 260; // DUR5
+/** How long a row stays sung after its last letter lands: long enough for a
+ * held note's sway to settle (voiceMotion.ts release + settle). */
+const TAIL_MS = 400;
 
 type Style = Pick<CSSStyleDeclaration, "setProperty" | "removeProperty">;
 export interface WordRow {
   index: number;
   words: LyricWord[];
   style: Style;
-  spans: Style[];
-  /** The row element: carries `data-wiping` while the row is active, which
-   * is the only time its words are drawn as a clipped gradient (index.css).
-   * A resting row is plain text, so it keeps ClearType on Windows. */
+  /** Each word's letter spans, in order (letterRise.ts letterSegments). */
+  letters: Style[][];
+  /** The row element: carries `data-singing` while the row is active,
+   * which lowers its unsung letters so they can rise (index.css). */
   el?: Pick<Element, "toggleAttribute">;
 }
 export interface WipeClock {
@@ -23,27 +27,53 @@ export interface FrameScheduler {
   cancel(id: number): void;
 }
 
-/** One driver for the panel. Word onsets choose which rows paint; the
+const ROW_PROPS = ["--word-bright", "--lyric-scale", "--lyric-opacity", "--lyric-filter"] as const;
+
+interface Letter {
+  style: Style;
+  word: number;
+  /** Index within its word, for the held note's slight wave. */
+  k: number;
+  onset: number;
+  lit: string;
+  bend: string;
+}
+
+/** One driver for the panel. Letter onsets choose which rows sing; the
  * separate lyric-line clock continues to own scrolling and the highlight.
- * Only active rows visit spans. Inactive rows inherit their normal tone. */
+ * Only active rows visit letters. Inactive rows inherit their normal tone.
+ * Every letter keeps its own timing, so a backing voice printed after the
+ * lead but sung over it rises on its own. */
 export function driveWordRows(
   rows: WordRow[], currentLine: number, leadMs: number,
   clock: WipeClock, frames: FrameScheduler,
 ): () => void {
-  const tracks = rows.filter(r => r.words.length > 0 && r.spans.length === r.words.length)
+  const tracks = rows.filter(r => r.words.length > 0 && r.letters.length === r.words.length)
     .map(row => {
-      const completed = row.words.map((word, i) => wordFillEnd(word, row.words[i + 1]?.t));
-      return { row, completed, active: false, last: new Array<string>(row.words.length).fill(""),
-      fractions: new Array<number>(row.words.length).fill(-1),
-      sheen: new Array<string>(row.words.length).fill(""),
-      halo: new Array<string>(row.words.length).fill(""),
-      start: row.words.reduce((t, w) => Math.min(t, w.t), Infinity),
-      end: row.words.reduce((t, w, i) => Math.max(t, w.end ?? w.t + WORD_ATTACK_MS, completed[i] + BLOOM_MS, w.t + 1), -Infinity),
+      const letters: Letter[] = [];
+      const rowOnsets = rowLetterOnsets(row.words);
+      row.words.forEach((_, wi) => {
+        const onsets = rowOnsets[wi];
+        const spans = row.letters[wi];
+        if (spans.length !== onsets.length) return;
+        spans.forEach((style, k) => letters.push({ style, word: wi, k, onset: onsets[k],
+          lit: "", bend: "" }));
+      });
+      return { row, letters, active: false,
+        start: Math.min(...row.words.map(w => w.t)) - RISE_EARLY_MS,
+        end: Math.max(...letters.map(l => l.onset - RISE_EARLY_MS + RISE_MS),
+          ...row.words.map(w => (w.end ?? w.t) + 1)) + TAIL_MS,
       };
     });
   if (!tracks.length) return () => {};
   let raf = 0;
   let disposed = false;
+  const clear = (letter: Letter) => {
+    if (letter.lit) letter.style.removeProperty("--lit");
+    if (letter.bend) letter.style.removeProperty("--bend");
+    letter.lit = "";
+    letter.bend = "";
+  };
   const write = () => {
     const pos = clock.now();
     const p = pos + leadMs;
@@ -53,48 +83,34 @@ export function driveWordRows(
       if (active !== track.active) {
         if (active) {
           row.style.setProperty("--word-bright", "rgb(var(--fg))");
-          row.style.setProperty("--word-peak", "rgb(var(--lyric-peak))");
-          row.style.setProperty("--word-halo", "rgb(var(--lyric-peak) / 0.28)");
           row.style.setProperty("--lyric-scale", "1");
           row.style.setProperty("--lyric-opacity", "1");
           row.style.setProperty("--lyric-filter", "none");
         } else {
-          row.style.removeProperty("--word-bright");
-          row.style.removeProperty("--word-peak");
-          row.style.removeProperty("--word-halo");
-          row.style.removeProperty("--lyric-scale");
-          row.style.removeProperty("--lyric-opacity");
-          row.style.removeProperty("--lyric-filter");
+          for (const prop of ROW_PROPS) row.style.removeProperty(prop);
+          track.letters.forEach(clear);
         }
-        row.el?.toggleAttribute("data-wiping", active);
+        row.el?.toggleAttribute("data-singing", active);
         track.active = active;
       }
       if (!active) continue;
-      for (let i = 0; i < row.spans.length; i++) {
-        const frac = wordWipeFraction(row.words[i], pos, leadMs, row.words[i + 1]?.t);
-        // Completion bloom shares the fill's timing, including subword holds.
-        // Keep the same clock/RAF so pause, seeks and skipped frames are exact.
-        const elapsed = p - track.completed[i];
-        const halo = elapsed >= 0 && elapsed < BLOOM_MS ? (1 - elapsed / BLOOM_MS) ** 2 : 0;
-        // Compare the values CSS receives, not unrounded floating-point
-        // progress. No timing/frame-rate change: only redundant writes vanish.
-        const bloom = halo > 0 ? `0 0 ${(12 * halo).toFixed(2)}px var(--word-halo, transparent)` : "none";
-        if (bloom !== track.halo[i]) {
-          track.halo[i] = bloom;
-          row.spans[i].setProperty("--word-bloom", bloom);
+      for (const letter of track.letters) {
+        // Compare the values CSS receives, not unrounded progress: only
+        // redundant writes vanish.
+        const e = letterLit(letter.onset, p);
+        const lit = e.toFixed(3);
+        if (lit !== letter.lit) {
+          letter.lit = lit;
+          letter.style.setProperty("--lit", lit);
         }
-        if (frac === track.fractions[i]) continue;
-        track.fractions[i] = frac;
-        const wipe = `${(frac * 100).toFixed(1)}%`;
-        if (wipe !== track.last[i]) {
-          track.last[i] = wipe;
-          row.spans[i].setProperty("--wipe", wipe);
-        }
-        const sheen = frac > 0 && frac < 1
-          ? "var(--word-peak, currentColor)" : "var(--word-bright, currentColor)";
-        if (sheen !== track.sheen[i]) {
-          track.sheen[i] = sheen;
-          row.spans[i].setProperty("--word-sheen", sheen);
+        // A held note's letters ride the pitch once they've risen.
+        const word = row.words[letter.word];
+        const px = e * heldBend(word, row.words[letter.word + 1]?.t, p, letter.k);
+        const bend = px === 0 ? "" : `${(-px).toFixed(2)}px`;
+        if (bend !== letter.bend) {
+          if (bend) letter.style.setProperty("--bend", bend);
+          else letter.style.removeProperty("--bend");
+          letter.bend = bend;
         }
       }
     }
@@ -122,13 +138,9 @@ export function driveWordRows(
     unsubscribe();
     if (raf) frames.cancel(raf);
     for (const track of tracks) if (track.active) {
-      track.row.style.removeProperty("--word-bright");
-      track.row.style.removeProperty("--word-peak");
-      track.row.style.removeProperty("--word-halo");
-      track.row.style.removeProperty("--lyric-scale");
-      track.row.style.removeProperty("--lyric-opacity");
-      track.row.style.removeProperty("--lyric-filter");
-      track.row.el?.toggleAttribute("data-wiping", false);
+      for (const prop of ROW_PROPS) track.row.style.removeProperty(prop);
+      track.letters.forEach(clear);
+      track.row.el?.toggleAttribute("data-singing", false);
     }
   };
 }

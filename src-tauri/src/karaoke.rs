@@ -167,9 +167,11 @@ const COLLAPSE_MIN_LINES: usize = 8;
 const STORE_V: u32 = 5;
 /// What a v5 file carries beyond its words: 1 per-letter spelling points,
 /// 2 digits spelled as said, 3 the review's support per word (the Lyric
-/// syncs panel's estimate). A file below it still displays, and the next
-/// full listen relearns it.
-const DETAIL_V: u32 = 3;
+/// syncs panel's estimate), 4 that plus the singer's voice on held notes
+/// (voice.rs). A file below what this install writes (`detail_v`) still
+/// displays, and the next full listen relearns it.
+const SUPPORT_DETAIL_V: u32 = 3;
+const VOICE_DETAIL_V: u32 = 4;
 fn recipe() -> &'static str {
     if acoustic::assets().is_some() {
         acoustic::RECIPE
@@ -442,7 +444,7 @@ pub(crate) fn read_saved(path: &Path, synced: Option<&str>) -> Option<SavedFile>
 /// Saved under the current recipe and detail: nothing left to relearn.
 fn settled(path: &Path, file: &StoreFile) -> bool {
     file.recipe == crate::vocal_preview::cache_recipe(path, recipe())
-        && (crate::acoustic::assets().is_none() || file.detail_v >= DETAIL_V)
+        && (crate::acoustic::assets().is_none() || file.detail_v >= detail_v())
 }
 
 fn read_store(path: &Path, synced: Option<&str>, prune: bool) -> Option<StoreFile> {
@@ -519,11 +521,21 @@ fn superseded(stored: &str, expected: &str) -> bool {
     expected == acoustic::RECIPE && acoustic::EARLIER_RECIPES.contains(&stored)
 }
 
+/// The detail this install writes: the voice pass needs the second ear, so
+/// a song saved without it says 3 and relearns once the separator arrives.
+fn detail_v() -> u32 {
+    if acoustic::second_ear_installed() {
+        VOICE_DETAIL_V
+    } else {
+        SUPPORT_DETAIL_V
+    }
+}
+
 fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        detail_v: DETAIL_V,
+        detail_v: detail_v(),
         recipe: crate::vocal_preview::cache_recipe(&dir.join(format!("{key}.json")), recipe())
             .to_string(),
         synced: Some(synced.to_string()),
@@ -1048,7 +1060,7 @@ fn write_dump(
     let to_io = |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let words_json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        detail_v: DETAIL_V,
+        detail_v: detail_v(),
         recipe: recipe().to_string(),
         synced: Some(lrc.to_string()),
         words: words.to_vec(),
@@ -1466,7 +1478,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(cache.join(format!("{key}.json"))).unwrap())
                 .unwrap();
         assert_eq!(stored.recipe, acoustic::RECIPE);
-        assert_eq!(stored.detail_v, DETAIL_V);
+        assert_eq!(stored.detail_v, detail_v());
         let detailed = words.iter().filter(|w| !w.points.is_empty()).count();
         assert!(detailed > 0, "English evidence must retain acoustic detail");
         for word in &words {

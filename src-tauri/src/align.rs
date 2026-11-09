@@ -46,6 +46,9 @@ pub struct Word {
     /// make surer kept the mix's decode and its doubt.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reheard: bool,
+    /// Held notes only: the singer's pitch and loudness (voice.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<crate::voice::VoiceTrack>,
 }
 
 /// Sample-index → track-position map for one recording: a least-squares

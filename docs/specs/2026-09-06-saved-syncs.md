@@ -24,7 +24,7 @@ All five states use an authored ribbon family with stable left/signal/right corr
 
 ## Sync check (2026-11-09)
 
-The panel says how good each saved sync is, from the review's own numbers (`docs/specs/2026-11-08-karaoke-sync-review.md`). Those were computed during the align and then thrown away. Now each word keeps its `support`, rounded to two places, plus `reheard` when the second ear listened to its line again. A file without them (`detail_v` below 3) still displays, and the next full listen relearns it, as the mms-int8/4 recipe already does.
+The panel says how good each saved sync is, from the review's own numbers (`docs/specs/2026-11-08-karaoke-sync-review.md`). Those were computed during the align and then thrown away. Now each word keeps its `support`, rounded to two places, plus `reheard` when the second ear listened to its line again. A file without them (`detail_v` below 3, or below 4 where the second ear also writes held-note voice data) still displays, and the next full listen relearns it, as the mms-int8/4 recipe already does.
 
 - **Words on time** is an estimate: each word's support maps to the share of JamendoLyrics words at that support that landed within 300 ms (0.36 under 0.1 up to 0.992 at 0.9 or more), averaged over the song. It is shown as a whole percent and never reaches 100.
 - **Line map**: one tick per lyric line (blank stamps and repeated stamps skipped). Sure lines (every word at 0.9 or more) are short and faint, loose lines are mid, and unsure lines (a word under 0.5, what the review doubts) stand full height in full ink. Lines with no word timing are hollow. The ink is neutral, nothing on it moves, and it has no playhead.
