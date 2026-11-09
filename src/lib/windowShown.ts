@@ -13,7 +13,7 @@
  * karaoke; one wrongly believed shown only spends frames.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listenHere } from "./listenHere";
 import { useSyncExternalStore } from "react";
 
 // types.ts's IN_TAURI, guarded: this module also loads under node tests,
@@ -36,9 +36,10 @@ if (IN_TAURI) {
   // Listen first, then seed: a change after the seed's read always arrives
   // as an event, so a show can't slip between the two and leave the page
   // believing it's hidden. An event that lands before the seed wins, since
-  // the seed may have read the old state.
+  // the seed may have read the old state. Targeted at this window: a global
+  // listen() also hears every other window's show/hide (lib/listenHere.ts).
   let heard = false;
-  void listen<boolean>("window-shown", (e) => {
+  void listenHere<boolean>("window-shown", (e) => {
     heard = true;
     set(e.payload !== false);
   })
