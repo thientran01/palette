@@ -8,6 +8,10 @@ export interface LyricWord {
   points?: { t: number; fraction: number }[];
   /** Source-timed vocal phrase, not an acoustically measured word. */
   timing?: "phrase";
+  /** Held notes only: the separated vocal every 10 ms from `t` (voice.rs).
+   * `c` is pitch in cents from A440 (-32768 unvoiced), `l` loudness 0-100
+   * across the song's held notes. Drives voiceMotion.ts. */
+  voice?: { c: number[]; l: number[] };
   /** Stamp of the LRC line this word belongs to (align.rs). Attachment
    * keys on this when present — a word placed before its own stamp must
    * not land on the previous row. */
@@ -228,8 +232,8 @@ function backingWords(line: LyricLine, words: LyricWord[]): LyricWord[] {
     if (offset <= phrase.textStart) return [word];
     const cut = Math.max(phrase.textStart - start, 0);
     const backing: LyricWord = { ...word, text: word.text.slice(cut),
-      t: time(start + cut), end: time(offset), timing: "phrase", points: undefined };
-    return cut ? [{ ...word, text: word.text.slice(0, cut), points: undefined }, backing] : [backing];
+      t: time(start + cut), end: time(offset), timing: "phrase", points: undefined, voice: undefined };
+    return cut ? [{ ...word, text: word.text.slice(0, cut), points: undefined, voice: undefined }, backing] : [backing];
   });
 }
 

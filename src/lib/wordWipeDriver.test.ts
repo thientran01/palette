@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { attachWords, parseLrc } from "./lrc";
-import { driveWordRows, WIPE_FEATHER_PX, type WordRow } from "./wordWipeDriver";
+import { attachWords, parseLrc, type LyricWord } from "./lrc";
+import { letterCount } from "./letterRise";
+import { driveWordRows, type WordRow } from "./wordWipeDriver";
 
 function style() {
   const values = new Map<string, string>();
@@ -9,16 +10,15 @@ function style() {
     removeProperty: vi.fn((key: string) => { const old = values.get(key) ?? ""; values.delete(key); return old; }),
   };
 }
-/** A span's lit share from its --wipe (px): 0 dark, 1 fully lit. Test rows
- * carry no measured widths, so the driver estimates 10px per letter. */
-function lit(span: { values: Map<string, string> }, letters = 4): number {
-  const edge = WIPE_FEATHER_PX + 1;
-  return (parseFloat(span.values.get("--wipe")!) + edge) / (10 * letters + 2 * edge);
+type Fake = ReturnType<typeof style>;
+function rowOf(index: number, words: LyricWord[]) {
+  const letters = words.map(w => Array.from({ length: letterCount(w.text) }, style));
+  return { index, words, style: style(), letters } satisfies WordRow & { letters: Fake[][] };
 }
 function row(index: number, t: number, end = t + 1000) {
-  const css = style(); const span = style();
-  return { index, words: [{ t, end, text: "word" }], style: css, spans: [span] } satisfies WordRow;
+  return rowOf(index, [{ t, end, text: "word" }]);
 }
+const lit = (s: Fake) => Number(s.values.get("--lit") ?? 0);
 function harness(pos = 0, playing = true) {
   let seq = 0;
   const pending = new Map<number, () => void>();
@@ -34,62 +34,108 @@ function harness(pos = 0, playing = true) {
   };
 }
 
-describe("data-wiping marks only the rows being painted", () => {
+describe("data-singing marks only the rows being sung", () => {
   it("sets it while a row is active and clears it after, and on stop", () => {
     const h = harness(2200);
     const attrs = new Map<string, boolean>();
     const el = { toggleAttribute: vi.fn((name: string, on?: boolean) => { attrs.set(name, !!on); return !!on; }) };
     const live = { ...row(0, 2000, 2400), el };
     const stop = driveWordRows([live], -1, 0, h.clock, h.frames);
-    expect(attrs.get("data-wiping")).toBe(true);
+    expect(attrs.get("data-singing")).toBe(true);
     h.anchor(9000, false);
-    expect(attrs.get("data-wiping")).toBe(false);
+    expect(attrs.get("data-singing")).toBe(false);
     h.anchor(2200, false);
-    expect(attrs.get("data-wiping")).toBe(true);
+    expect(attrs.get("data-singing")).toBe(true);
     stop();
-    expect(attrs.get("data-wiping")).toBe(false);
+    expect(attrs.get("data-singing")).toBe(false);
   });
 });
 
-describe("word rows follow onsets independently of the line marker", () => {
-  it("paints an upcoming word before its line becomes current", () => {
-    const h = harness(2800); const upcoming = row(1, 3000);
+describe("letters rise from their own onsets", () => {
+  it("lights the letters of a word in order across its sung span", () => {
+    // A syllable-script word with no checkpoints spreads its letters
+    // across its whole sung span.
+    const h = harness(1000); const r = rowOf(0, [{ t: 1000, end: 1400, text: "한국어요" }]);
+    const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
+    h.frame(1250);
+    const [a, b, c, d] = r.letters[0].map(lit);
+    expect(a).toBeGreaterThan(b); expect(b).toBeGreaterThan(c);
+    expect(c).toBeGreaterThan(0); expect(d).toBe(0);
+    h.frame(2300);
+    expect(r.letters[0].every(s => lit(s) === 1)).toBe(true);
+    stop();
+  });
+  it("overlaps quick syllables into one wave instead of a strobe", () => {
+    const words = [0, 1, 2, 3].map(i => ({ t: 1000 + i * 100, end: 1000 + i * 100 + 80, text: "가" }));
+    const h = harness(1000); const r = rowOf(0, words);
+    const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
+    h.frame(1290);
+    const levels = r.letters.map(l => lit(l[0]));
+    // Several syllables are mid-rise at once, each a little behind.
+    expect(levels.filter(v => v > 0 && v < 1).length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < levels.length; i++) expect(levels[i]).toBeLessThan(levels[i - 1]);
+    stop();
+  });
+  it("applies the word lead", () => {
+    const h = harness(800); const r = row(0, 1000, 2000);
+    const stop = driveWordRows([r], 0, 220, h.clock, h.frames);
+    expect(lit(r.letters[0][0])).toBeGreaterThan(0);
+    stop();
+  });
+  it("paces a held letter by the aligner's checkpoints", () => {
+    const words = [{ t: 1000, end: 2000, text: "hallway", points: [
+      { t: 1000, fraction: 0 }, { t: 1050, fraction: 2 / 7 }, { t: 1900, fraction: 2 / 7 },
+      { t: 1950, fraction: 6 / 7 }, { t: 2000, fraction: 1 },
+    ] }];
+    const h = harness(1000); const r = rowOf(0, words);
+    const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
+    h.frame(1500);
+    const l = r.letters[0].map(lit);
+    // "ha" quick, the second "l" (held) halfway through its long rise,
+    // later letters still waiting for their onset.
+    expect(l[0]).toBe(1);
+    expect(l[2]).toBeGreaterThan(0.3); expect(l[2]).toBeLessThan(1);
+    expect(l[4]).toBe(0);
+    stop();
+  });
+});
+
+describe("rows follow onsets independently of the line marker", () => {
+  it("sings an upcoming row before its line becomes current", () => {
+    const h = harness(2900); const upcoming = row(1, 3000);
     const stop = driveWordRows([upcoming], 0, 300, h.clock, h.frames);
     expect(upcoming.style.values.get("--word-bright")).toBe("rgb(var(--fg))");
-    expect(lit(upcoming.spans[0])).toBeGreaterThan(0);
+    expect(lit(upcoming.letters[0][0])).toBeGreaterThan(0);
     expect(h.pending.size).toBe(1);
     stop();
   });
-  it("keeps a sung tail and the next row active concurrently", () => {
+  it("keeps a sung tail and the next row active concurrently, then lets go", () => {
     const h = harness(2200); const old = row(0, 1000, 3000); const next = row(1, 2000, 4000);
     const stop = driveWordRows([old, next], 1, 0, h.clock, h.frames);
     expect(old.style.values.has("--word-bright")).toBe(true);
     expect(next.style.values.has("--word-bright")).toBe(true);
-    h.frame(3000);
+    h.frame(3300);
     expect(old.style.values.has("--word-bright")).toBe(true);
-    h.frame(3260);
+    h.frame(3500);
     expect(old.style.values.has("--word-bright")).toBe(false);
-    expect(next.style.values.has("--word-bright")).toBe(true);
+    expect(old.letters[0].some(s => s.values.has("--lit"))).toBe(false);
     stop();
   });
-  it("clears future highlights on a backward seek and recomputes their wipe", () => {
+  it("clears future letters on a backward seek and recomputes them", () => {
     const h = harness(3200); const upcoming = row(1, 3000);
     const stop = driveWordRows([upcoming], 0, 0, h.clock, h.frames);
-    const before = lit(upcoming.spans[0]);
-    expect(before).toBeGreaterThan(0); expect(before).toBeLessThan(1);
+    const before = lit(upcoming.letters[0][0]);
+    expect(before).toBeGreaterThan(0);
     h.anchor(1000, false);
     expect(upcoming.style.values.has("--word-bright")).toBe(false);
-    expect(upcoming.style.values.has("--word-peak")).toBe(false);
-    expect(upcoming.style.values.has("--lyric-scale")).toBe(false);
-    expect(upcoming.style.values.has("--lyric-opacity")).toBe(false);
-    expect(upcoming.style.values.has("--lyric-filter")).toBe(false);
+    expect(upcoming.letters[0].some(s => s.values.has("--lit"))).toBe(false);
     expect(h.pending.size).toBe(0);
     h.anchor(3020, true);
-    const wipe = lit(upcoming.spans[0]);
-    expect(wipe).toBeGreaterThan(0); expect(wipe).toBeLessThan(before);
+    expect(lit(upcoming.letters[0][0])).toBeGreaterThan(0);
+    expect(lit(upcoming.letters[0][0])).toBeLessThan(before);
     stop();
   });
-  it("runs one loop, cancels on pause, and releases subscriptions on cleanup", () => {
+  it("runs one loop, cancels on pause, and releases everything on cleanup", () => {
     const h = harness(1500); const current = row(0, 1000);
     const stop = driveWordRows([current], 0, 0, h.clock, h.frames);
     h.anchor(1550); h.anchor(1600);
@@ -100,27 +146,27 @@ describe("word rows follow onsets independently of the line marker", () => {
     expect(h.pending.size).toBe(1);
     stop();
     expect(h.pending.size).toBe(0); expect(h.subs.size).toBe(0);
-    expect(current.style.values.has("--word-bright")).toBe(false);
-    expect(current.style.values.has("--word-peak")).toBe(false);
-    expect(current.style.values.has("--lyric-scale")).toBe(false);
-    expect(current.style.values.has("--lyric-opacity")).toBe(false);
-    expect(current.style.values.has("--lyric-filter")).toBe(false);
+    for (const prop of ["--word-bright", "--lyric-scale", "--lyric-opacity", "--lyric-filter"]) {
+      expect(current.style.values.has(prop)).toBe(false);
+    }
+    expect(current.letters[0].some(s => s.values.has("--lit"))).toBe(false);
   });
-  it("does not write unchanged spans or animate empty panels", () => {
+  it("does not rewrite unchanged letters or animate empty panels", () => {
     const h = harness(2500); const current = row(0, 1000);
     const stop = driveWordRows([current], 0, 0, h.clock, h.frames);
-    current.spans[0].setProperty.mockClear();
+    current.letters[0].forEach(s => s.setProperty.mockClear());
     h.frame(2550); h.frame(2600);
-    expect(current.spans[0].setProperty).not.toHaveBeenCalled();
+    current.letters[0].forEach(s => expect(s.setProperty).not.toHaveBeenCalled());
     stop();
     driveWordRows([], -1, 0, h.clock, h.frames)();
     expect(h.pending.size).toBe(0); expect(h.subs.size).toBe(0);
   });
 });
 
-// Backing vocals are printed last but sung concurrently. A single cursor
-// used to fill future lead words or skip the entire parenthesized tail.
-it("advances lead and backing spans independently without filling future lead words", () => {
+// Backing vocals are printed last but sung concurrently: each letter keeps
+// its own onset, so a backing reply rises with the lead without lighting
+// future lead words.
+it("lights backing letters on their own time without lighting future lead words", () => {
   const lines = attachWords(parseLrc("[02:28.19]lead future (oh, oh-oh, oh-oh)\n[02:33.67]next", 197533), [
     {t:148200,end:149000,text:"lead ",line_t:148190},
     {t:152000,end:153000,text:"future ",line_t:148190},
@@ -128,74 +174,64 @@ it("advances lead and backing spans independently without filling future lead wo
     {t:153749,end:153829,text:"oh-oh, ",line_t:148190},
     {t:153849,end:154150,text:"oh-oh)",line_t:148190},
   ]);
-  const words=lines.find(l => l.t === 148190)!.words!;
-  const spans=words.map(() => style());
-  const h=harness(149000);
-  const stop=driveWordRows([{index:0,words,spans,style:style()}],0,0,h.clock,h.frames);
-  const letters=words.map(w=>[...w.text].length);
-  expect(lit(spans[0],letters[0])).toBeCloseTo(1,6);
-  expect(lit(spans[1],letters[1])).toBeCloseTo(0,6);
-  expect(lit(spans[2],letters[2])).toBeGreaterThan(0);
-  h.anchor(148190,false);
-  expect(spans.every((s,i)=>Math.abs(lit(s,letters[i]))<1e-9)).toBe(true);
+  const words = lines.find(l => l.t === 148190)!.words!;
+  const r = rowOf(0, words);
+  const h = harness(149300);
+  const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
+  expect(r.letters[0].every(s => lit(s) === 1)).toBe(true);
+  expect(r.letters[1].every(s => lit(s) === 0)).toBe(true);
+  expect(r.letters[2].some(s => lit(s) > 0)).toBe(true);
+  h.anchor(148100, false);
+  expect(r.letters.flat().every(s => lit(s) === 0)).toBe(true);
   expect(h.pending.size).toBe(0);
   stop();
 });
 
 it("keeps row bounds across both voices regardless of printed order", () => {
-  const h=harness(1000);const css=style();const spans=[style(),style()];
-  const words=[{t:2000,end:5000,text:"lead"},{t:1000,end:3000,text:"(oh)"}];
-  const stop=driveWordRows([{index:1,style:css,spans,words}],0,0,h.clock,h.frames);
-  expect(css.values.has("--word-bright")).toBe(true);
-  h.frame(4000);
-  expect(css.values.has("--word-bright")).toBe(true);
+  const h = harness(1000);
+  const r = rowOf(1, [{ t: 2000, end: 5000, text: "lead" }, { t: 1000, end: 3000, text: "(oh)" }]);
+  const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
+  expect(r.style.values.has("--word-bright")).toBe(true);
   h.frame(5000);
-  expect(css.values.has("--word-bright")).toBe(true);
-  h.frame(5260);
-  expect(css.values.has("--word-bright")).toBe(false);
+  expect(r.style.values.has("--word-bright")).toBe(true);
+  h.frame(5500);
+  expect(r.style.values.has("--word-bright")).toBe(false);
   stop();
 });
 
-// One soft light moves through the row: no white sheen on the filling word
-// and no halo when it completes (they flickered at syllable rate).
-it("writes only the wipe: no sheen or completion halo", () => {
-  const h=harness(1010);const current=row(1,1000,1500);
-  const stop=driveWordRows([current],0,0,h.clock,h.frames);
-  h.frame(1300);h.frame(1500);h.frame(1600);
-  const written=new Set([...current.spans[0].setProperty.mock.calls.map(c=>c[0]),...current.style.setProperty.mock.calls.map(c=>c[0])]);
-  expect([...written].filter(k=>/sheen|bloom|halo|peak/.test(k))).toEqual([]);
-  expect(lit(current.spans[0])).toBeCloseTo(1,6);
+it("writes no sheen, halo or wipe: only the letters' rise", () => {
+  const h = harness(1010); const r = row(1, 1000, 1500);
+  const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
+  h.frame(1300); h.frame(1500); h.frame(1600);
+  const written = new Set([...r.letters.flat().flatMap(s => s.setProperty.mock.calls.map(c => c[0])),
+    ...r.style.setProperty.mock.calls.map(c => c[0])]);
+  expect([...written].filter(k => /sheen|bloom|halo|peak|wipe/.test(k))).toEqual([]);
   stop();
 });
 
-it("slows on a held letter and applies the existing lead offset", () => {
-  const current=row(0,1000,2000);
-  const detailed={...current,words:[{t:1000,end:2000,text:"hallway",points:[
-    {t:1000,fraction:0},{t:1200,fraction:.5},{t:1900,fraction:.5},{t:2000,fraction:1},
-  ]}]};
-  const h=harness(1100);
-  const stop=driveWordRows([detailed],0,220,h.clock,h.frames);
-  // 220ms lead: the clock at 1680 is the song at 1900, where the held
-  // first half ends; it took the whole hold, not 200ms.
-  h.frame(1230);
-  expect(lit(current.spans[0],7)).toBeLessThan(.4);
-  h.frame(1680);
-  expect(lit(current.spans[0],7)).toBeCloseTo(.5,6);
-  // The second half gets the letter pace (55ms a letter), not 100ms.
-  h.frame(1780);
-  expect(lit(current.spans[0],7)).toBeLessThan(1);
-  h.frame(1880);
-  expect(lit(current.spans[0],7)).toBeCloseTo(1,6);
-  stop();
-});
-
-it("does not rewrite identical CSS values as fractional progress changes", () => {
-  const h=harness(1100);const r=row(0,1000,3000);
-  const stop=driveWordRows([r],0,0,h.clock,h.frames);
-  r.spans[0].setProperty.mockClear();
-  h.frame(1100.001);
-  expect(r.spans[0].setProperty).not.toHaveBeenCalled();
-  h.frame(1300);
-  expect(r.spans[0].setProperty).toHaveBeenCalledWith("--wipe",expect.stringMatching(/^-?\d+\.\dpx$/));
-  stop();
+describe("a held note's letters ride the singer's pitch", () => {
+  const n = 140;
+  const c = Array.from({ length: n }, (_, k) => k < 30 ? -600 : Math.round(-600 + 70 * Math.sin(2 * Math.PI * 5.5 * (k - 30) / 100)));
+  const held = { t: 1000, end: 1000 + n * 10, text: "oh", voice: { c, l: new Array(n).fill(80) } };
+  it("sways risen letters with vibrato and settles after", () => {
+    const h = harness(1000); const r = rowOf(0, [held]);
+    const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
+    const bends: number[] = [];
+    for (let t = 1500; t < 2100; t += 10) { h.frame(t); bends.push(parseFloat(r.letters[0][0].values.get("--bend") ?? "0")); }
+    expect(Math.max(...bends) - Math.min(...bends)).toBeGreaterThan(0.9);
+    // The whole word moves as one (scaled only by how far each letter has
+    // risen; the held last letter is still rising).
+    const [h0, h1] = r.letters[0].map(s => parseFloat(s.values.get("--bend") ?? "0"));
+    expect(h1).toBeCloseTo(h0 * lit(r.letters[0][1]), 1);
+    h.frame(2400 + 120 + 300);
+    expect(r.letters[0][0].values.has("--bend")).toBe(false);
+    stop();
+  });
+  it("never bends a short syllable, even with a voice track", () => {
+    const h = harness(1000);
+    const r = rowOf(0, [{ t: 1000, end: 1100, text: "가", voice: { c: [-600, 600, -600, 600, -600], l: [90, 90, 90, 90, 90] } }]);
+    const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
+    for (const t of [1020, 1040, 1060]) { h.frame(t); expect(r.letters[0][0].values.has("--bend")).toBe(false); }
+    stop();
+  });
 });

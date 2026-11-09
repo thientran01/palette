@@ -27,39 +27,80 @@ Rendered next to the shipped wipe with the song audio, from Thien's saved
 syncs and karaoke dumps (`/mnt/project-files/karaoke-motion/`, harness in
 `prototype/`):
 
-- **A · Glide**: one cursor per row (below). Jumps of 6 px or more fell to
-  0.1–0.4% of frames, about 10 px at most.
+- **A · Glide**: one smooth wipe cursor per row. Jumps of 6 px or more
+  fell to 0.1–0.4% of frames, about 10 px at most.
 - **B · Sung**: Glide, and held notes are paced by the voice's letters,
-  lift with loudness and sway with the sung pitch (vibrato, slides).
+  lift with loudness and sway with the sung pitch.
 - **C · Rise**: no wipe; letters brighten and float up as they're sung,
   and held letters ride the pitch.
 
-Thien first picked C, then after living with it on his PC (2026-11-09):
-"it moves the characters too much. its kind of bothering overtime and i
-want palette to feel pretty minimal." Letters therefore never move: the
-highlight is Glide only, and no voice is listened to.
+Thien picked C.
 
-## The row cursor (`src/lib/lineCursor.ts`)
+## Rise (`src/lib/letterRise.ts`, `src/lib/wordWipeDriver.ts`)
 
-The cursor runs through the row in px, as if its words sat on one line.
-Every word onset is a keyframe at that word's left edge, so onsets are as
-accurate as before. Between keyframes it is a monotone cubic
-(Fritsch-Carlson): continuous velocity, never backward, no overshoot.
+Every word is split into letters (graphemes, so a Hangul block or an
+accented letter is one) and each letter is its own inline-block span.
 
-- Inside a phrase (the next onset within 220 ms of a word's end) the
-  cursor runs straight on from onset to onset, so syllables don't
-  stop-start. Before a longer rest, it ends where the word's sound ends
-  and waits.
-- A word gets at least 55 ms per letter, capped at the next onset.
-- Held words (450 ms or more) with letter checkpoints are also keyed on
-  them, where each plateau ends (the same reading as `sampleFill`): the
-  wipe slows on the held letter, minus the final snap. The paced end can
-  finish a held word up to about 100 ms after its sound ends; onsets
-  never move.
-- Words sung out of order (a backing reply printed after the lead, or a
-  phrase-timed backing line) keep their own fill.
+- A letter's onset is exactly as measured: where the aligner's letter
+  checkpoints first reach its share of the word, or, without checkpoints,
+  spread evenly across the word's displayed fill (`wordFillEnd`: the 90 ms
+  attack for short Latin words, the sung span for syllable scripts and
+  long words).
+- Its rise starts 30 ms before the onset and lasts until the next letter's
+  onset, but never less than 260 ms, with an ease-out. Quick syllables
+  therefore overlap into one wave instead of strobing, and a held letter
+  rises as slowly as it is held. Only how long a letter takes to settle is
+  smoothed; when it starts is never moved.
+- The driver writes `--lit` (0–1) per letter. The color mixes from the
+  row's tone to `--word-bright` by `--lit`, and the letter sits
+  `--drop` (1 px) × (1 − `--lit`) below its place.
+- `--drop` applies only while the row is being sung (`data-singing`) and
+  transitions with the line's own 220 ms scale-up, so unsung letters ease
+  down as the line arrives instead of jumping.
+- Plain colored text, no clipped gradient: the lyrics keep ClearType. No
+  sheen, no halo (the design rules exclude glow).
+- Backing voices printed after the lead keep their own onsets, so a reply
+  rises over the lead without lighting future lead words.
+- Reduced motion keeps the brightening and drops all movement.
 
-The driver draws each word's share of the cursor as `--wipe`, the light's
-center in that span's own px, with an 11 px soft edge each side: −12 px
-is dark and width + 12 px is fully lit, so a word the cursor has passed
-has no half-lit tail while the row waits through a rest.
+Tuning (2026-11-09): the first build floated letters up 2.5 px and swayed
+held notes ±2.2 px with the letters running as a wave. On his PC Thien
+found it "moves the characters too much ... i want palette to feel pretty
+minimal", briefly picked Glide, then asked for Rise toned down. Now the
+float is 1 px and the sway under a pixel, with the word moving as one.
+
+Letters as inline-blocks lose kerning across letter pairs; the line's
+layout never changes while it is sung.
+
+## The voice (`src-tauri/src/voice.rs`, `src/lib/voiceMotion.ts`)
+
+Held words also carry a voice track, made by the karaoke worker right
+after the alignment and the second ear:
+
+- The stretches around held notes (a word's onset to 120 ms past its end;
+  neighbours within 2 s share one stretch) are separated by the same Kim
+  Vocal 2 ear, the most held singing per pass first, within 10 passes
+  (about 64 s on Thien's PC) and no stretch started 150 s after the align
+  began.
+- Every 10 ms: YIN pitch on the separated vocal (70–1000 Hz), and RMS
+  loudness over 40 ms. Octave slips are folded back onto the note's
+  median. Pitch is saved in cents from A440 with a 30 ms mean; loudness is
+  scaled 0–100 against the song's held notes (20th–95th percentile) with a
+  quick attack and slow release.
+- Pitch from the mix instead of the separated vocal agreed on 62% of
+  voiced frames for Laufey "Haunted" and 12% for tripleS "Baby Flower".
+
+On the whole of "Haunted" (69 held notes) the budget voiced 29 in 9
+passes; analysis took 0.4 s of CPU, so the separator is the whole cost.
+
+On screen, a held note's risen letters move together 1 px per 110 cents
+away from the pitch 80 ms into the note (clamped to ±0.9 px, and eased in
+for notes under about a second): vibrato is a faint sway and a slide or a
+dragged note a slight drift. Unvoiced frames hold
+the last pitch, and the letters settle back over 260 ms after the note's
+release. Short syllables never follow pitch, which would bring back the
+syllable-rate jitter. Loudness is saved with the track but not drawn.
+
+Saved syncs carry `detail_v` 3 once their held notes were listened to.
+With the separator installed, an older sync relearns on its next full
+listen (its words stay on screen meanwhile).

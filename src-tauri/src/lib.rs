@@ -24,6 +24,7 @@ mod spotify_jump;
 mod sync_library;
 mod upnext;
 mod vocal_preview;
+pub mod voice;
 
 use media::ArtCache;
 use serde::Serialize;

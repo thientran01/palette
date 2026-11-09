@@ -1,25 +1,20 @@
-import { wordFillEnd, wordWipeFraction, WORD_ATTACK_MS, type LyricWord } from "./lrc";
-import { lineCursor } from "./lineCursor";
+import { WORD_ATTACK_MS, type LyricWord } from "./lrc";
+import { letterLit, letterOnsets, RISE_MS } from "./letterRise";
+import { heldBend } from "./voiceMotion";
 
-/** How long a row stays painted after its last word (DUR5). */
-const TAIL_MS = 260;
-/** Half the soft edge of the wipe, in px. Wider than the old 5px so a
- * change of pace reads as one moving light, not a stepping edge. Must
- * match WIPE_FEATHER in LyricsPanel. */
-export const WIPE_FEATHER_PX = 11;
+/** How long a row stays sung after its last letter lands: long enough for a
+ * held note's sway to settle (voiceMotion.ts release + settle). */
+const TAIL_MS = 400;
 
 type Style = Pick<CSSStyleDeclaration, "setProperty" | "removeProperty">;
 export interface WordRow {
   index: number;
   words: LyricWord[];
   style: Style;
-  spans: Style[];
-  /** Each span's laid-out width in px (offsetWidth, so the ink's resting
-   * scale doesn't shrink it). Missing in tests: estimated from letters. */
-  widths?: number[];
-  /** The row element: carries `data-wiping` while the row is active, which
-   * is the only time its words are drawn as a clipped gradient (index.css).
-   * A resting row is plain text, so it keeps ClearType on Windows. */
+  /** Each word's letter spans, in order (letterRise.ts letterSegments). */
+  letters: Style[][];
+  /** The row element: carries `data-singing` while the row is active,
+   * which lowers its unsung letters so they can rise (index.css). */
   el?: Pick<Element, "toggleAttribute">;
 }
 export interface WipeClock {
@@ -34,29 +29,52 @@ export interface FrameScheduler {
 
 const ROW_PROPS = ["--word-bright", "--lyric-scale", "--lyric-opacity", "--lyric-filter"] as const;
 
-/** One driver for the panel. Word onsets choose which rows paint; the
+interface Letter {
+  style: Style;
+  word: number;
+  onset: number;
+  next: number;
+  lit: string;
+  bend: string;
+}
+
+/** One driver for the panel. Letter onsets choose which rows sing; the
  * separate lyric-line clock continues to own scrolling and the highlight.
- * Only active rows visit spans. Inactive rows inherit their normal tone.
- * In-order words share one row cursor (lineCursor.ts); another voice's
- * words keep their own fill. */
+ * Only active rows visit letters. Inactive rows inherit their normal tone.
+ * Every letter keeps its own timing, so a backing voice printed after the
+ * lead but sung over it rises on its own. */
 export function driveWordRows(
   rows: WordRow[], currentLine: number, leadMs: number,
   clock: WipeClock, frames: FrameScheduler,
 ): () => void {
-  const tracks = rows.filter(r => r.words.length > 0 && r.spans.length === r.words.length)
+  const tracks = rows.filter(r => r.words.length > 0 && r.letters.length === r.words.length)
     .map(row => {
-      const widths = row.words.map((w, i) => row.widths?.[i] ?? 10 * Math.max(1, [...w.text].length));
-      const cursor = lineCursor(row.words, widths);
-      const ends = row.words.map((word, i) => cursor.owns[i] ? cursor.end
-        : Math.max(word.end ?? word.t + WORD_ATTACK_MS, wordFillEnd(word, row.words[i + 1]?.t)));
-      return { row, widths, cursor, active: false, last: new Array<string>(row.words.length).fill(""),
-      start: row.words.reduce((t, w) => Math.min(t, w.t), Infinity),
-      end: row.words.reduce((t, w, i) => Math.max(t, ends[i] + TAIL_MS, w.t + 1), -Infinity),
+      const letters: Letter[] = [];
+      row.words.forEach((w, wi) => {
+        const nextT = row.words[wi + 1]?.t;
+        const onsets = letterOnsets(w, nextT);
+        const spans = row.letters[wi];
+        if (spans.length !== onsets.length) return;
+        // The last letter takes the rest of the word's sound.
+        const end = Math.max(w.end ?? w.t + WORD_ATTACK_MS, onsets[onsets.length - 1] ?? w.t);
+        spans.forEach((style, k) => letters.push({ style, word: wi, onset: onsets[k],
+          next: onsets[k + 1] ?? end, lit: "", bend: "" }));
+      });
+      return { row, letters, active: false,
+        start: Math.min(...row.words.map(w => w.t)),
+        end: Math.max(...letters.map(l => l.onset + Math.max(RISE_MS, l.next - l.onset)),
+          ...row.words.map(w => (w.end ?? w.t) + 1)) + TAIL_MS,
       };
     });
   if (!tracks.length) return () => {};
   let raf = 0;
   let disposed = false;
+  const clear = (letter: Letter) => {
+    if (letter.lit) letter.style.removeProperty("--lit");
+    if (letter.bend) letter.style.removeProperty("--bend");
+    letter.lit = "";
+    letter.bend = "";
+  };
   const write = () => {
     const pos = clock.now();
     const p = pos + leadMs;
@@ -71,28 +89,29 @@ export function driveWordRows(
           row.style.setProperty("--lyric-filter", "none");
         } else {
           for (const prop of ROW_PROPS) row.style.removeProperty(prop);
+          track.letters.forEach(clear);
         }
-        row.el?.toggleAttribute("data-wiping", active);
+        row.el?.toggleAttribute("data-singing", active);
         track.active = active;
       }
       if (!active) continue;
-      const x = track.cursor.at(p);
-      for (let i = 0; i < row.spans.length; i++) {
-        // Compare the values CSS receives, not unrounded floating-point
-        // progress: only redundant writes vanish.
-        // Each word's share of the light, then --wipe as the light's
-        // center in the span's own px: -edge is dark, width + edge fully
-        // lit, so a word the cursor has passed has no half-lit tail while
-        // the row waits through a rest.
-        const width = track.widths[i];
-        const frac = track.cursor.owns[i]
-          ? (width > 0 ? Math.min(1, Math.max(0, (x - track.cursor.offsets[i]) / width)) : x >= track.cursor.offsets[i] ? 1 : 0)
-          : wordWipeFraction(row.words[i], pos, leadMs, row.words[i + 1]?.t);
-        const edge = WIPE_FEATHER_PX + 1;
-        const wipe = `${(-edge + frac * (width + 2 * edge)).toFixed(1)}px`;
-        if (wipe !== track.last[i]) {
-          track.last[i] = wipe;
-          row.spans[i].setProperty("--wipe", wipe);
+      for (const letter of track.letters) {
+        // Compare the values CSS receives, not unrounded progress: only
+        // redundant writes vanish.
+        const e = letterLit(letter.onset, letter.next, p);
+        const lit = e.toFixed(3);
+        if (lit !== letter.lit) {
+          letter.lit = lit;
+          letter.style.setProperty("--lit", lit);
+        }
+        // A held note's letters ride the pitch once they've risen.
+        const word = row.words[letter.word];
+        const px = e * heldBend(word, row.words[letter.word + 1]?.t, p);
+        const bend = px === 0 ? "" : `${(-px).toFixed(2)}px`;
+        if (bend !== letter.bend) {
+          if (bend) letter.style.setProperty("--bend", bend);
+          else letter.style.removeProperty("--bend");
+          letter.bend = bend;
         }
       }
     }
@@ -121,7 +140,8 @@ export function driveWordRows(
     if (raf) frames.cancel(raf);
     for (const track of tracks) if (track.active) {
       for (const prop of ROW_PROPS) track.row.style.removeProperty(prop);
-      track.row.el?.toggleAttribute("data-wiping", false);
+      track.letters.forEach(clear);
+      track.row.el?.toggleAttribute("data-singing", false);
     }
   };
 }
