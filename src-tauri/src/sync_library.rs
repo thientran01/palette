@@ -122,25 +122,53 @@ pub struct Check {
 /// `acoustic::REVIEW_BELOW`: a word under it makes its line doubted.
 const DOUBT: f32 = 0.5;
 const SURE: f32 = 0.9;
-/// Share of words within 300ms by support: (support below, share on time).
-/// Measured on JamendoLyrics (79 songs, 21,580 words) with the second ear,
-/// as the app aligns. Against each song's measured share the estimate was
-/// within 1.8 points on average (Pearson 0.91), and it ran a few points
-/// high on the hardest songs (docs/specs/2026-09-06-saved-syncs.md).
+/// Log-odds that a word lands within 300ms, by support (support below,
+/// log-odds), on a song whose first pass doubted no line.
 const ON_TIME: [(f32, f32); 5] = [
-    (0.1, 0.30),
-    (0.3, 0.45),
-    (0.5, 0.57),
-    (0.7, 0.81),
-    (SURE, 0.895),
+    (0.1, 0.31),
+    (0.3, 0.80),
+    (0.5, 1.47),
+    (0.7, 2.18),
+    (SURE, 2.84),
 ];
-const ON_TIME_SURE: f32 = 0.993;
+const ON_TIME_SURE: f32 = 5.40;
+/// What a hard song takes off those log-odds, per share of its words on
+/// lines the first pass doubted. Support alone read high on hard songs:
+/// where the model doubts many lines its sure words are wrong more often
+/// too (Embers: 82% estimated, 71% measured, 59% of its words on doubted
+/// lines). Past HARDEST the benchmark has no songs, so the share stops
+/// counting there.
+const HARD_SONG: f32 = 2.81;
+const HARDEST: f32 = 0.6;
 
-fn on_time(support: f32) -> f32 {
-    ON_TIME
+/// The chance a word with this support is within 300ms of the singing, on
+/// a song with this share of its words on doubted lines. Fitted on
+/// JamendoLyrics (79 songs, 21,580 words) as the app aligns, with and
+/// without the second ear (docs/specs/2026-09-06-saved-syncs.md).
+fn on_time(support: f32, doubted: f32) -> f32 {
+    let odds = ON_TIME
         .iter()
         .find(|(below, _)| support < *below)
-        .map_or(ON_TIME_SURE, |&(_, share)| share)
+        .map_or(ON_TIME_SURE, |&(_, odds)| odds);
+    1.0 / (1.0 + (HARD_SONG * doubted.min(HARDEST) - odds).exp())
+}
+
+/// Share of the checked words on lines the first pass doubted: a line the
+/// second ear heard again, or one that still holds a word under DOUBT
+/// (no second ear, or its budget ran out).
+fn doubted_share(words: &[crate::align::Word]) -> f32 {
+    let mut lines: std::collections::HashMap<Option<i64>, (u32, bool)> = Default::default();
+    for w in words {
+        let (checked, doubted) = lines.entry(w.line_t).or_default();
+        *checked += u32::from(w.support.is_some());
+        *doubted |= w.reheard || w.support.is_some_and(|p| p < DOUBT);
+    }
+    let (mut all, mut hard) = (0, 0);
+    for (checked, doubted) in lines.into_values() {
+        all += checked;
+        hard += if doubted { checked } else { 0 };
+    }
+    hard as f32 / all.max(1) as f32
 }
 
 /// None when no word carries support: saved before the review kept it.
@@ -149,7 +177,9 @@ fn check(lines: &[crate::align::TimedLine], words: &[crate::align::Word]) -> Opt
     if supported.is_empty() {
         return None;
     }
-    let on_time = supported.iter().map(|&p| on_time(p)).sum::<f32>() / supported.len() as f32;
+    let doubted = doubted_share(words);
+    let on_time =
+        supported.iter().map(|&p| on_time(p, doubted)).sum::<f32>() / supported.len() as f32;
     let (mut unsure, mut reheard, mut fixed) = (0, 0, 0);
     let mut seen = std::collections::HashSet::new();
     let map = lines
@@ -327,11 +357,58 @@ mod tests {
         let c = check(&lines, &words).unwrap();
         assert_eq!(c.lines, "slsun");
         assert_eq!((c.unsure, c.reheard, c.fixed), (1, 2, 1));
-        // 4 sure words, one at 0.6 (81%), one at 0.2 (45%).
-        let expected = (4.0 * 0.993 + 0.81 + 0.45) / 6.0;
+        // Two of the six checked words sit on lines the first pass doubted
+        // (the reheard line and the still unsure one). With that share:
+        // 4 sure words, one at 0.6, one at 0.2.
+        let third = 1.0 / 3.0;
+        let expected =
+            (4.0 * on_time(0.95, third) + on_time(0.6, third) + on_time(0.2, third)) / 6.0;
         assert!((c.on_time - expected).abs() < 0.001, "{}", c.on_time);
         // Saved before the review kept support: nothing to judge.
         assert_eq!(check(&lines, &[word(1000, None, false)]), None);
+    }
+    #[test]
+    fn a_hard_song_lowers_every_word() {
+        // Sure words on a song the first pass never doubted: nearly all on time.
+        assert!(on_time(1.0, 0.0) > 0.99);
+        // The same support counts for less where many lines were doubted...
+        for support in [0.05, 0.2, 0.4, 0.6, 0.8, 0.95] {
+            assert!(on_time(support, 0.5) < on_time(support, 0.1), "{support}");
+        }
+        // ...surer words still score higher on the same song...
+        for doubted in [0.0, 0.3, 0.6] {
+            let shares = [0.05, 0.2, 0.4, 0.6, 0.8, 0.95].map(|p| on_time(p, doubted));
+            assert!(shares.windows(2).all(|w| w[0] < w[1]), "{shares:?}");
+        }
+        // ...and past the hardest benchmark songs the share stops counting.
+        assert_eq!(on_time(0.95, HARDEST), on_time(0.95, 1.0));
+        // A song of sure words still reads lower when its lines were doubted.
+        let line = |t: i64| TimedLine {
+            t,
+            text: "la la".into(),
+        };
+        let lines = [line(1000), line(2000)];
+        let easy = [word(1000, Some(0.95), false), word(2000, Some(0.95), false)];
+        let hard = [word(1000, Some(0.95), true), word(2000, Some(0.95), true)];
+        let (easy, hard) = (check(&lines, &easy).unwrap(), check(&lines, &hard).unwrap());
+        assert!(hard.on_time < easy.on_time - 0.01);
+    }
+    #[test]
+    fn doubted_share_counts_checked_words_on_doubted_lines() {
+        let words = [
+            word(1000, Some(0.97), false),
+            word(1000, Some(0.95), false),
+            // Still under DOUBT: its whole line counts.
+            word(2000, Some(0.95), false),
+            word(2000, Some(0.3), false),
+            // Reheard and fixed: the first pass doubted it.
+            word(3000, Some(0.92), true),
+            // Unchecked words don't count either way.
+            word(3000, None, true),
+            word(4000, None, false),
+        ];
+        assert!((doubted_share(&words) - 3.0 / 5.0).abs() < 1e-6);
+        assert_eq!(doubted_share(&[word(1000, None, false)]), 0.0);
     }
     #[test]
     fn support_round_trips_and_stays_out_of_files_without_it() {
