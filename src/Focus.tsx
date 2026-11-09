@@ -646,7 +646,11 @@ export default function Focus() {
                       >
                       <LyricArrival entrance={entrance} afterQueue={queueClosedRecently()}>
                         <LyricsPanel
-                          karaoke={karaoke}
+                          // A warmed room is hidden and remounts at show
+                          // (the room is keyed on phase), so its letters would rise
+                          // every frame for nobody while the widget sings
+                          // the same song: plain lines until it arrives.
+                          karaoke={karaoke && phase === "arrived"}
                           lines={lyrics.lines}
                           seekable={seekable}
                           leadMs={VOCAL_LEAD_MS[np.player]}

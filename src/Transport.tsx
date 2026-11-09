@@ -216,7 +216,11 @@ export function useProgressDom(
           const el = fill.current;
           el.style.transitionProperty = "background-color";
           el.style.transform = `scaleX(${frac})`;
-          void el.offsetWidth; // flush so the write lands untransitioned
+          // Flush style (not layout) so the write lands untransitioned: a
+          // non-geometry property commits the new transform without laying
+          // out the page. offsetWidth forced a full layout here on every
+          // track change, mid-way through the new song's mount.
+          void getComputedStyle(el).transitionProperty;
           el.style.transitionProperty = "";
         } else {
           fill.current.style.transform = `scaleX(${frac})`;
