@@ -18,8 +18,20 @@ export function nextSection(cur: SearchSection, dir: 1 | -1): SearchSection {
 /** Case- and width-insensitive form for matching (NFKC folds full-width
  * Latin and compatibility Hangul; lowercasing leaves Hangul untouched). */
 export function norm(s: string): string {
-  return s.normalize("NFKC").toLowerCase().trim();
+  let v = normCache.get(s);
+  if (v === undefined) {
+    v = s.normalize("NFKC").toLowerCase().trim();
+    if (normCache.size >= NORM_CACHE_MAX) normCache.clear();
+    normCache.set(s, v);
+  }
+  return v;
 }
+/** norm() by input string. A History filter matches every play's title and
+ * artist on each keystroke, and a long log repeats the same few thousand
+ * strings, so NFKC ran ~26,000 times a keystroke for ~2,500 distinct
+ * strings. Cleared wholesale at the cap (cheap, and refills in one pass). */
+const normCache = new Map<string, string>();
+const NORM_CACHE_MAX = 20_000;
 
 /** Match rank for `q` in `text`: 0 = starts with it, 1 = a word starts with
  * it, 2 = contains it, null = no match. `q` must already be normalized. */
@@ -124,9 +136,39 @@ export function dayLabel(ms: number, now: number): string {
   return (sameYear ? DAY_FMT : DAY_YEAR_FMT).format(ms);
 }
 
-/** "5:58 PM" in the user's locale. */
+/** "5:58 PM" in the user's locale. Memoized by minute (all the label
+ * shows): a History filter rebuilds every matching row's label on each
+ * keystroke. */
 export function playTime(ms: number): string {
-  return TIME_FMT.format(ms);
+  const minute = Math.floor(ms / 60_000);
+  let v = timeCache.get(minute);
+  if (v === undefined) {
+    v = TIME_FMT.format(ms);
+    if (timeCache.size >= TIME_CACHE_MAX) timeCache.clear();
+    timeCache.set(minute, v);
+  }
+  return v;
+}
+const timeCache = new Map<number, string>();
+const TIME_CACHE_MAX = 20_000;
+
+/** dayLabel for many timestamps: entries come grouped by day, so the label
+ * is worked out once per day instead of once per row (building Dates and an
+ * Intl format per row was most of a 12,900-row History rebuild). */
+function dayLabeler(now: number): (ms: number) => string {
+  let start = Infinity;
+  let end = -Infinity;
+  let label = "";
+  return (ms) => {
+    if (ms < start || ms >= end) {
+      start = dayStart(ms);
+      const next = new Date(start);
+      next.setDate(next.getDate() + 1);
+      end = next.getTime();
+      label = dayLabel(ms, now);
+    }
+    return label;
+  };
 }
 
 /** A history entry with the day header it opens (null = same day as the
@@ -136,12 +178,30 @@ export function groupByDay(
   now: number,
 ): { entry: HistoryEntry; header: string | null }[] {
   let last = "";
+  const labelOf = dayLabeler(now);
   return entries.map((entry) => {
-    const label = dayLabel(entry.started_at_ms, now);
+    const label = labelOf(entry.started_at_ms);
     const header = label === last ? null : label;
     last = label;
     return { entry, header };
   });
+}
+
+/** The rows of `all` (the whole log, newest first) older than `loaded`'s
+ * last row, or null when that row isn't in `all` (the log moved under us).
+ * Both lists come from history_page in the same order, so the tail after
+ * the last loaded row is exactly what further pages would return. */
+export function restOfLog(
+  all: readonly HistoryEntry[],
+  loaded: readonly HistoryEntry[],
+): HistoryEntry[] | null {
+  const last = loaded[loaded.length - 1];
+  if (!last) return null;
+  for (let i = all.length - 1; i >= 0; i--) {
+    const e = all[i];
+    if (e.key === last.key && e.started_at_ms === last.started_at_ms) return all.slice(i + 1);
+  }
+  return null;
 }
 
 /** Plays and listening time per History day header, keyed by its label.
@@ -154,8 +214,9 @@ export function dayTotals(
 ): Map<string, { count: number; ms: number }> {
   const totals = new Map<string, { count: number; ms: number }>();
   let last = "";
+  const labelOf = dayLabeler(now);
   for (const e of entries) {
-    last = dayLabel(e.started_at_ms, now);
+    last = labelOf(e.started_at_ms);
     const t = totals.get(last) ?? { count: 0, ms: 0 };
     t.count += 1;
     t.ms += Math.max(0, e.ms_listened);

@@ -39,9 +39,9 @@ import { RowThumb, useSpotifyStatus } from "./Queue";
 import { playNowNote } from "./lib/playNowStatus";
 import { browserStorage, createDiscoveryCache } from "./lib/discoveryCache";
 import { nextSection, SECTIONS } from "./lib/searchLibrary";
+import { createArtCache, withinBudget } from "./lib/historyArt";
 import {
   aggregate,
-  createHistoryLog,
   createShownMemory,
   DAY_MS,
   pickResurfaced,
@@ -64,6 +64,7 @@ import {
 import {
   drillItems,
   historyItems,
+  historyLog,
   ItemTile,
   libraryItems,
   ReconnectButton,
@@ -102,6 +103,33 @@ const SECTION_GLYPH: Record<SearchSection, () => React.ReactNode> = {
   history: () => <HistoryIcon />,
 };
 const DEBOUNCE_MS = 250;
+
+/** Answers to recent Songs queries, so backspacing, retyping a word or
+ * reopening on the same query shows its results at once instead of paying
+ * the debounce plus a Spotify round trip again. Only "ok" answers are kept,
+ * for a few minutes (search results don't move fast), and the whole cache
+ * drops on a Spotify connection change. */
+const SONG_CACHE_TTL_MS = 5 * 60_000;
+const SONG_CACHE_MAX = 80;
+const songCache = new Map<string, { at: number; tracks: QueueTrack[] }>();
+function cachedSongs(q: string, now: number): QueueTrack[] | null {
+  const hit = songCache.get(q);
+  if (!hit) return null;
+  if (now - hit.at > SONG_CACHE_TTL_MS) {
+    songCache.delete(q);
+    return null;
+  }
+  return hit.tracks;
+}
+function rememberSongs(q: string, tracks: QueueTrack[], now: number): void {
+  songCache.delete(q);
+  songCache.set(q, { at: now, tracks });
+  while (songCache.size > SONG_CACHE_MAX) {
+    const oldest = songCache.keys().next().value;
+    if (oldest === undefined) break;
+    songCache.delete(oldest);
+  }
+}
 
 /** Resolve-on-demand cache for resurfaced rows (the Queue.tsx uriCache
  * pattern) — successes only: the search window lives for the whole app
@@ -196,9 +224,6 @@ function discoveryFailureNote(status: string | null): string | null {
   }
 }
 
-/** The play log for "From your history": read whole on the first summon,
- * then topped up with only the new plays (lib/resurface). */
-const historyLog = createHistoryLog((before, limit) => commands.historyPage(before, limit));
 /** What the section has shown this day-block, so refreshes move on. */
 const resurfaceShown = createShownMemory(browserStorage());
 /** The discovery seed pool keeps its old scope: the newest plays, not the
@@ -209,12 +234,13 @@ const DISCOVERY_POOL_LISTENS = 600;
  * whole local play log, each with a short reason label (lib/resurface).
  * The summon set (refreshN 0) is the block's stable, dated set; a refresh
  * excludes everything shown this block, so it brings songs not seen yet.
- * Returns the picks AND the discovery seed pool + every played track, so
- * discovery reuses the scan instead of re-reading history. */
+ * Returns the picks (rows without covers yet), one cover lookup per row
+ * (`art`, already started), AND the discovery seed pool + every played
+ * track, so discovery reuses the scan instead of re-reading history. */
 async function computeResurfaced(
   now: number,
   refreshN = 0,
-): Promise<{ rows: SearchRow[]; pool: Agg[]; played: Agg[] }> {
+): Promise<{ rows: SearchRow[]; art: Promise<string | null>[]; pool: Agg[]; played: Agg[] }> {
   const listens = await historyLog.sync();
   // Every track the log has seen (any listen, even below the pick floor) —
   // the exclude source for discovery, so "different" means genuinely un-played.
@@ -241,30 +267,31 @@ async function computeResurfaced(
     picks.map((p) => p.agg.key),
   );
 
-  const rows: SearchRow[] = await Promise.all(
-    picks.map(async (p) => ({
-      key: p.agg.key,
-      title: p.agg.title,
-      artist: p.agg.artist,
-      artUrl: await artForHistory(p.agg),
-      track: null,
-      uri: p.agg.uri,
-      reason: p.reason,
-    })),
-  );
-  return { rows, pool, played };
+  const rows: SearchRow[] = picks.map((p) => ({
+    key: p.agg.key,
+    title: p.agg.title,
+    artist: p.agg.artist,
+    artUrl: null,
+    track: null,
+    uri: p.agg.uri,
+    reason: p.reason,
+  }));
+  return { rows, art: picks.map((p) => artForHistory(p.agg)), pool, played };
 }
 
-/** Spotify covers already looked up for history picks this session
- * (successes only). Picks now reach months back, past the 300-file thumb
- * cache, so the fallback runs more often than it used to. */
-const historyArtCache = new Map<string, string>();
+/** Spotify covers found for history picks, kept across restarts (successes
+ * only; lib/historyArt says why). */
+const historyArtCache = createArtCache(browserStorage());
+/** How long the history rows wait for their covers before landing without
+ * the slow ones. A remembered cover answers in a few ms; a Spotify search
+ * usually inside this, and a 429 can hold one for seconds. */
+const HISTORY_ART_BUDGET_MS = 350;
 
 /** Disk thumb first (captured while the widget was visible). Hidden listens
  * and eviction leave a null — fall back to a Spotify cover so Search does
  * not show the note glyph for a track the user has already heard. */
 async function artForHistory(agg: Agg): Promise<string | null> {
-  const thumb = await commands.historyThumbUrl(agg.key);
+  const thumb = await commands.historyThumbUrl(agg.key).catch(() => null);
   if (thumb) return thumb;
   const hit = historyArtCache.get(agg.key);
   if (hit) return hit;
@@ -602,10 +629,21 @@ export default function Search() {
       setSearchStatus("ok");
       return;
     }
+    const hit = cachedSongs(q, Date.now());
+    if (hit) {
+      // Supersede any slower answer still in flight for an older query.
+      searchGen.current += 1;
+      setSearching(false);
+      setSearchStatus("ok");
+      setResults(hit);
+      setSelected(0);
+      return;
+    }
     setSearching(true);
     const t = window.setTimeout(() => {
       const gen = ++searchGen.current;
       void commands.spotifySearch(q, RESULT_LIMIT).then((r) => {
+        if (r.status === "ok") rememberSongs(q, r.tracks, Date.now());
         if (gen !== searchGen.current) return;
         setSearching(false);
         setSearchStatus(r.status);
@@ -615,6 +653,87 @@ export default function Search() {
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(t);
   }, [query]);
+  // A connect, disconnect or account switch changes what search can see.
+  useEffect(() => {
+    songCache.clear();
+  }, [spotify.connected]);
+
+  /** One discovery fetch for the empty state: its rows, or the status it
+   * failed with (null = the transport failed). Writes no React state, so
+   * refreshEmptyState can start it before the history rows commit. */
+  const fetchDiscovery = async (
+    gen: number,
+    refreshN: number,
+    seed: number,
+    pool: Agg[],
+    playedKeys: ReadonlySet<string>,
+    historyRows: SearchRow[],
+  ): Promise<{ kind: "rows"; rows: SearchRow[] } | { kind: "failed"; status: string | null }> => {
+    const seeds = pickSeeds(pool, seed);
+    // Exclude EVERY played track (not just the rested seed pool — a track heard
+    // in the last day is in `played` but NOT in `pool`) AND everything a prior
+    // refresh already surfaced this session, so a pull can't repeat a pick.
+    const exclude = [...playedKeys, ...discoveryShown.current];
+    // Serialize behind any in-flight fetch (its result is gen-discarded, but
+    // racing it would get THIS request bounced "busy" by the backend's
+    // single-flight); re-check gen — a newer run may have started meanwhile.
+    if (discoveryFlight.current) {
+      await discoveryFlight.current.catch(() => {});
+      if (gen !== resurfaceGen.current) return { kind: "failed", status: "busy" };
+      // The run we waited on was often fetching this very block (a quick
+      // hide + re-summon). It caches its result even though its gen lost,
+      // so take that instead of paying for a second walk.
+      const hit =
+        refreshN === 0
+          ? discoveryCache.get(seed)?.filter((r) => !playedKeys.has(discoveryKey(r.artist, r.title)))
+          : undefined;
+      if (hit?.length) return { kind: "rows", rows: hit };
+    }
+    refreshBusy.current = gen;
+    let res: Awaited<ReturnType<typeof commands.discoveryPicks>> | null = null;
+    // A transport hiccup reads as null, the same as a non-ok status.
+    const attempt = () => commands.discoveryPicks(seeds, exclude).catch(() => null);
+    // One quiet retry for a transient failure (a network blip, or the
+    // backend's single-flight still finishing a superseded run) before the
+    // section gives up. The retry is part of the same flight, so a newer run
+    // still waits behind it.
+    const flight = (async () => {
+      const first = await attempt();
+      if (first && first.status !== "offline" && first.status !== "busy") return first;
+      if (gen !== resurfaceGen.current) return first;
+      await new Promise((r) => window.setTimeout(r, DISCOVERY_RETRY_MS));
+      return gen === resurfaceGen.current ? attempt() : first;
+    })();
+    discoveryFlight.current = flight;
+    try {
+      res = await flight;
+    } finally {
+      // Owner-only clears throughout: a superseded run's finally must not
+      // free a newer run's token or flight (the same clobber class twice).
+      if (discoveryFlight.current === flight) discoveryFlight.current = null;
+      if (refreshBusy.current === gen) refreshBusy.current = 0;
+    }
+    if (!res || res.status !== "ok") return { kind: "failed", status: res ? res.status : null };
+    const seen = new Set(historyRows.map((r) => r.uri).filter((u): u is string => !!u));
+    const rows2: SearchRow[] = res.picks
+      .filter((p) => !seen.has(p.track.uri))
+      .slice(0, 3)
+      .map((p) => ({
+        key: p.track.uri,
+        title: p.track.title,
+        artist: p.track.artist,
+        artUrl: p.track.art_url,
+        track: p.track,
+        uri: p.track.uri,
+        reason: `Because you played ${p.seed_title}`,
+      }));
+    // Cache only a NON-EMPTY pristine set: `if (cached)` treats [] as a hit,
+    // and one pathological empty post-filter would otherwise pin the section
+    // dead for the whole block (quick-review catch). Cached even when this
+    // run was superseded, so the newer run waiting on it can reuse it.
+    if (refreshN === 0 && rows2.length) discoveryCache.set(seed, rows2);
+    return { kind: "rows", rows: rows2 };
+  };
 
   // The empty state: history rows first (local, instant), then a gated,
   // fire-and-forget discovery fetch that fills in below — never blocking the
@@ -622,7 +741,10 @@ export default function Search() {
   const refreshEmptyState = useCallback(async (refreshN = 0) => {
     const now = Date.now();
     const gen = ++resurfaceGen.current;
-    const { rows, pool, played } = await computeResurfaced(now, refreshN);
+    // The key check (local IPC) runs alongside the history read.
+    const hasKey = refreshN === 0 ? commands.lastfmHasKey() : null;
+    hasKey?.catch(() => {});
+    const { rows: bare, art, pool, played } = await computeResurfaced(now, refreshN);
     if (gen !== resurfaceGen.current) return;
 
     // Resolve EVERYTHING that decides the discovery section BEFORE touching
@@ -630,8 +752,8 @@ export default function Search() {
     // them unmounted the "Something different" header for a frame and the
     // list height tore on every pull (design-eng pass, 2026-07-16). The key
     // check is one local IPC per summon, cached in a ref for pulls.
-    if (refreshN === 0) {
-      lastfmKeyRef.current = await commands.lastfmHasKey();
+    if (hasKey) {
+      lastfmKeyRef.current = await hasKey;
       if (gen !== resurfaceGen.current) return;
     }
     // Discovery is gated on a Last.fm key + a live Spotify session (URIs must
@@ -658,6 +780,28 @@ export default function Search() {
     const remember = (list: SearchRow[]) =>
       list.forEach((r) => discoveryShown.current.add(discoveryKey(r.artist, r.title)));
 
+    // The discovery fetch starts NOW, while the history covers are still
+    // being looked up: it used to wait for them, so every cover a Spotify
+    // search had to find also delayed "Something different". It only
+    // returns its answer; every state write happens after the history rows'
+    // commit below, so the one-commit rule holds whichever lands first.
+    const run = !cached && canDiscover ? fetchDiscovery(gen, refreshN, seed, pool, playedKeys, bare) : null;
+
+    // Covers that answer inside the budget land with their rows; a slow one
+    // fills its thumb in place when it arrives.
+    const arts = await withinBudget(art, HISTORY_ART_BUDGET_MS, null);
+    if (gen !== resurfaceGen.current) return;
+    const rows = bare.map((r, i) => ({ ...r, artUrl: arts[i] }));
+    art.forEach((p, i) => {
+      if (arts[i] !== null) return;
+      void p
+        .then((url) => {
+          if (!url || gen !== resurfaceGen.current) return;
+          setResurfaced((cur) => cur.map((r) => (r.key === rows[i].key && r.artUrl === null ? { ...r, artUrl: url } : r)));
+        })
+        .catch(() => {});
+    });
+
     // The one commit: history rows, the swap tick (= the refresh number, so
     // summon/mount resets it and renders plain), and the discovery section's
     // fate — cached rows, skeletons (pending), or silently absent.
@@ -671,86 +815,21 @@ export default function Search() {
     }
     setDiscovery([]);
     setDiscoveryPending(canDiscover);
-    if (!canDiscover) return;
+    if (!run) return;
 
-    const seeds = pickSeeds(pool, seed);
-    // Exclude EVERY played track (not just the rested seed pool — a track heard
-    // in the last day is in `played` but NOT in `pool`) AND everything a prior
-    // refresh already surfaced this session, so a pull can't repeat a pick.
-    const exclude = [...playedKeys, ...discoveryShown.current];
-    // Serialize behind any in-flight fetch (its result is gen-discarded, but
-    // racing it would get THIS request bounced "busy" by the backend's
-    // single-flight); re-check gen — a newer run may have started meanwhile.
-    if (discoveryFlight.current) {
-      await discoveryFlight.current.catch(() => {});
-      if (gen !== resurfaceGen.current) return;
-      // The run we waited on was often fetching this very block (a quick
-      // hide + re-summon). It caches its result even though its gen lost,
-      // so take that instead of paying for a second walk.
-      const hit =
-        refreshN === 0
-          ? discoveryCache.get(seed)?.filter((r) => !playedKeys.has(discoveryKey(r.artist, r.title)))
-          : undefined;
-      if (hit?.length) {
-        remember(hit);
-        setDiscovery(hit);
-        setDiscoveryPending(false);
-        return;
-      }
-    }
-    refreshBusy.current = gen;
-    let res: Awaited<ReturnType<typeof commands.discoveryPicks>> | null = null;
-    // A transport hiccup reads as null, the same as a non-ok status.
-    const attempt = () => commands.discoveryPicks(seeds, exclude).catch(() => null);
-    // One quiet retry for a transient failure (a network blip, or the
-    // backend's single-flight still finishing a superseded run) before the
-    // section gives up. The retry is part of the same flight, so a newer run
-    // still waits behind it.
-    const flight = (async () => {
-      const first = await attempt();
-      if (first && first.status !== "offline" && first.status !== "busy") return first;
-      if (gen !== resurfaceGen.current) return first;
-      await new Promise((r) => window.setTimeout(r, DISCOVERY_RETRY_MS));
-      return gen === resurfaceGen.current ? attempt() : first;
-    })();
-    discoveryFlight.current = flight;
-    try {
-      res = await flight;
-    } finally {
-      // Owner-only clears throughout: a superseded run's finally must not
-      // free a newer run's token or flight (the same clobber class twice).
-      if (discoveryFlight.current === flight) discoveryFlight.current = null;
-      if (refreshBusy.current === gen) refreshBusy.current = 0;
-      // A stale gen never touches pending — the newer run owns it now.
-      if (gen === resurfaceGen.current) setDiscoveryPending(false);
-    }
-    if (!res || res.status !== "ok") {
-      const msg = discoveryFailureNote(res ? res.status : null);
-      if (msg && gen === resurfaceGen.current) showNote(msg, 4000);
+    const out = await run;
+    // A stale gen never touches the section — the newer run owns it now.
+    if (gen !== resurfaceGen.current) return;
+    setDiscoveryPending(false);
+    if (out.kind === "rows") {
+      remember(out.rows);
+      setDiscovery(out.rows);
       return;
     }
-    const seen = new Set(rows.map((r) => r.uri).filter((u): u is string => !!u));
-    const rows2: SearchRow[] = res.picks
-      .filter((p) => !seen.has(p.track.uri))
-      .slice(0, 3)
-      .map((p) => ({
-        key: p.track.uri,
-        title: p.track.title,
-        artist: p.track.artist,
-        artUrl: p.track.art_url,
-        track: p.track,
-        uri: p.track.uri,
-        reason: `Because you played ${p.seed_title}`,
-      }));
-    // Cache only a NON-EMPTY pristine set: `if (cached)` treats [] as a hit,
-    // and one pathological empty post-filter would otherwise pin the section
-    // dead for the whole block (quick-review catch). Cached even when this
-    // run was superseded, so the newer run waiting on it can reuse it.
-    if (refreshN === 0 && rows2.length) discoveryCache.set(seed, rows2);
-    if (gen !== resurfaceGen.current) return;
-    remember(rows2);
-    setDiscovery(rows2);
+    const msg = discoveryFailureNote(out.status);
+    if (msg) showNote(msg, 4000);
   }, []);
+
 
   // Summon signal: refocus, select-all the stale query, fresh empty state.
   useEffect(
@@ -780,6 +859,7 @@ export default function Search() {
       onHistoryCleared(() => {
         historyLog.reset();
         resurfaceShown.clear();
+        historyArtCache.clear();
         if (shownRef.current) void refreshEmptyState(0);
       }),
     [refreshEmptyState],

@@ -1157,6 +1157,12 @@ export const commands = {
     if (!IN_TAURI) return mockHistory.some((e) => e.key === key) ? mockArt() : null;
     return invoke<string | null>("history_thumb_url", { key });
   },
+  /** historyThumbUrl for many keys in one round trip, answers in key order
+   * (the backend reads at most 200 per call). */
+  async historyThumbUrls(keys: string[]): Promise<(string | null)[]> {
+    if (!IN_TAURI) return keys.map((k) => (mockHistory.some((e) => e.key === k) ? mockArt() : null));
+    return invoke<(string | null)[]>("history_thumb_urls", { keys });
+  },
   async lyrics(
     artist: string,
     title: string,
