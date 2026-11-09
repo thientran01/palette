@@ -176,6 +176,12 @@ fn open(app: &AppHandle) {
     // re-keys its arrival choreography on it. Paired with the focus_shown
     // seed below, because a COLD open's emit fires while the webview is
     // still loading — before any listener exists.
+    //
+    // The warm window is not fed audio bands while hidden (audio.rs
+    // BandFanout), so prime it with the latest payload first: the room
+    // remounts on focus-shown and seeds its Waveform from it, arriving with
+    // the bars already riding instead of blooming from the dot.
+    crate::audio::prime(app, LABEL);
     let _ = app.emit_to(LABEL, "focus-shown", ());
     vis.focus_open.store(true, Ordering::Relaxed);
     apply_visibility(app);
