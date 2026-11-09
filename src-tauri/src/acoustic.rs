@@ -18,6 +18,8 @@ const STAR: usize = 28;
 
 #[path = "entry_timing.rs"]
 mod entry_timing;
+#[path = "japanese.rs"]
+mod japanese;
 #[path = "sync_review.rs"]
 mod review;
 #[path = "spoken.rs"]
@@ -26,12 +28,14 @@ use spoken::Numerals;
 
 /// Recipe pins the exported weights, normalization, window and decoder.
 /// 2: Knobs::MIX's tuned decoder (2026-10-31). 3: the review and its
-/// second ear (2026-11-08). Bumping it relearns every saved sync on the
+/// second ear (2026-11-08). 4: Japanese lines spelled as sung (`japanese`:
+/// kanji readings from naist-jdic when it is installed, っ, small kana and
+/// particles), 2026-11-08. Bumping it relearns every saved sync on the
 /// song's next full listen.
-pub const RECIPE: &str = "mms-int8/3";
+pub const RECIPE: &str = "mms-int8/4";
 /// Recipes RECIPE replaced. Words saved under them keep showing, and are
 /// never deleted on mismatch, until the next full listen relearns the song.
-pub const EARLIER_RECIPES: [&str; 2] = ["mms-int8/1", "mms-int8/2"];
+pub const EARLIER_RECIPES: [&str; 3] = ["mms-int8/1", "mms-int8/2", "mms-int8/3"];
 pub const MODEL_SHA256: &str = "50128ba8db1150101b9e7d3610cdfda5c8fd2637b918d151ff6aa6fde2b9c2de";
 pub const RUNTIME_SHA256: &str = "c7151fd9844ad7c7d18525f1177e9ef62d91e4a6ac3583d0be700554a2b2b1d6";
 static ASSETS: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -237,10 +241,13 @@ fn expand_digit(token: &str) -> String {
 /// it. It costs that one line its words, never the song.
 const UNREPRESENTABLE: &str = "unrepresentable spoken token";
 
+/// `spelled` holds letters a token should be said as (`japanese::spell`),
+/// or is empty; a token it leaves None is spelled here.
 fn plan_tokens(
     tokens: Vec<String>,
     romanizer: &uroman::Uroman,
     numerals: Numerals,
+    spelled: &[Option<String>],
 ) -> Result<TokenPlan> {
     let mut targets = vec![STAR];
     let mut ranges = Vec::new();
@@ -291,7 +298,13 @@ fn plan_tokens(
         } else {
             token.clone()
         };
-        let mut normalized = spell(&spoken);
+        let mut normalized = match spelled.get(i) {
+            Some(Some(said)) => said
+                .chars()
+                .filter(|c| c.is_ascii_lowercase() || *c == '\'')
+                .collect(),
+            _ => spell(&spoken),
+        };
         if normalized.is_empty() && token.chars().any(char::is_alphanumeric) {
             // ー, 々, 一 and 11 spell as nothing (or digits) in uroman.
             let prev = i.checked_sub(1).map(|p| tokens[p].as_str());
@@ -559,6 +572,26 @@ impl Knobs {
     }
 }
 
+fn japanese_letters(
+    romanizer: &uroman::Uroman,
+    reader: Option<&japanese::Reader>,
+    tokens: &[String],
+) -> Vec<Option<String>> {
+    let readings = match reader {
+        Some(reader) => reader.read(tokens),
+        None => vec![None; tokens.len()],
+    };
+    japanese::spell(tokens, &readings, |token| {
+        romanizer
+            .romanize_string::<uroman::rom_format::Str>(token, None)
+            .to_string()
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_lowercase())
+            .collect()
+    })
+}
+
 /// How near its Viterbi frame a word's onset posterior must sit to count
 /// as support for it.
 const REVIEW_RADIUS_MS: f64 = 150.0;
@@ -572,17 +605,26 @@ const REVIEW_BELOW: f32 = 0.5;
 /// also stops early on a busy PC.)
 const REVIEW_PASSES: usize = 14;
 
-/// Vowel groups in each token's romanization (the same uroman the decoder
-/// spells targets with), at least one per token: a rough sung-syllable
-/// count for the window cap that holds for Cyrillic, Hangul or kana alike.
-fn sung_syllables(tokens: &[String], romanizer: &uroman::Uroman) -> usize {
+/// Vowel groups in each token's romanization (the same spelling the decoder
+/// targets, `spelled` where it has one), at least one per token: a rough
+/// sung-syllable count for the window cap that holds for Cyrillic, Hangul
+/// or kana alike.
+fn sung_syllables(
+    tokens: &[String],
+    romanizer: &uroman::Uroman,
+    spelled: &[Option<String>],
+) -> usize {
     tokens
         .iter()
-        .map(|token| {
-            let latin = romanizer
-                .romanize_string::<uroman::rom_format::Str>(token, None)
-                .to_string()
-                .to_lowercase();
+        .enumerate()
+        .map(|(i, token)| {
+            let latin = match spelled.get(i) {
+                Some(Some(said)) => said.clone(),
+                _ => romanizer
+                    .romanize_string::<uroman::rom_format::Str>(token, None)
+                    .to_string()
+                    .to_lowercase(),
+            };
             let mut count = 0;
             let mut in_vowel = false;
             for c in latin.chars() {
@@ -661,6 +703,9 @@ pub struct AcousticAligner {
     session: Session,
     romanizer: uroman::Uroman,
     emissions: Option<EmissionCache>,
+    /// naist-jdic beside the model, until the first Japanese song loads it.
+    japanese_dir: Option<PathBuf>,
+    japanese: Option<japanese::Reader>,
 }
 
 impl AcousticAligner {
@@ -708,7 +753,28 @@ impl AcousticAligner {
             session,
             romanizer: uroman::Uroman::new(),
             emissions: None,
+            japanese_dir: model
+                .parent()
+                .map(|dir| dir.join(japanese::DICTIONARY_DIR))
+                .filter(|dir| dir.is_dir()),
+            japanese: None,
         })
+    }
+
+    /// Letters for a Japanese line's tokens (`japanese::spell`), reading
+    /// kanji with the dictionary when it is installed. The dictionary
+    /// loads on the first Japanese song and goes with the aligner.
+    fn spell_japanese(&mut self, tokens: &[String]) -> Vec<Option<String>> {
+        if let Some(dir) = self.japanese_dir.take() {
+            match japanese::Reader::load(&dir) {
+                Ok(reader) => {
+                    log::info!("karaoke: Japanese readings loaded");
+                    self.japanese = Some(reader);
+                }
+                Err(e) => log::warn!("karaoke: Japanese readings unavailable ({e})"),
+            }
+        }
+        japanese_letters(&self.romanizer, self.japanese.as_ref(), tokens)
     }
 
     /// Offline seam: reuse and record model emissions per window.
@@ -885,12 +951,21 @@ impl AcousticAligner {
                 continue;
             }
             let next = lines.get(li + 1).map_or(to_time(pcm.len() as f64), |l| l.t);
+            let spelled = if numerals == Numerals::Japanese {
+                self.spell_japanese(&tokens)
+            } else {
+                Vec::new()
+            };
             // A held "ooh" has no syllable budget (eight seconds apiece on
             // JamendoLyrics' Fantasma), so vocable lines keep the full gap.
             let capped = if tokens.iter().all(|t| is_vocable(t)) {
                 next
             } else {
-                knobs.window_next(line.t, next, sung_syllables(&tokens, &self.romanizer))
+                knobs.window_next(
+                    line.t,
+                    next,
+                    sung_syllables(&tokens, &self.romanizer, &spelled),
+                )
             };
             let Some(window) = recorded_window_margin(pcm.len(), map, line.t, capped, margin_ms)
             else {
@@ -914,7 +989,7 @@ impl AcousticAligner {
             if end - begin > 16_000 * 21 {
                 return Err("acoustic input exceeds 21 second memory bound".into());
             }
-            let mut plan = match plan_tokens(tokens, &self.romanizer, numerals) {
+            let mut plan = match plan_tokens(tokens, &self.romanizer, numerals, &spelled) {
                 Ok(plan) => plan,
                 // One unsayable word leaves its line on line timing; the
                 // rest of the song still learns.
@@ -1668,7 +1743,13 @@ mod tests {
     #[test]
     fn spelling_detail_preserves_internal_gap_and_source_punctuation() {
         let romanizer = uroman::Uroman::new();
-        let plan = plan_tokens(vec!["(hallway!) ".into()], &romanizer, Numerals::English).unwrap();
+        let plan = plan_tokens(
+            vec!["(hallway!) ".into()],
+            &romanizer,
+            Numerals::English,
+            &[],
+        )
+        .unwrap();
         let range = plan.ranges[0].clone().unwrap();
         let spans: Vec<_> = (0..7)
             .map(|i| TokenSpan {
@@ -1729,7 +1810,7 @@ mod tests {
     #[test]
     fn punctuation_keeps_display_slots_without_acoustic_targets() {
         let roman = uroman::Uroman::new();
-        let plan = plan_tokens(tokenize("안녕!"), &roman, Numerals::English).unwrap();
+        let plan = plan_tokens(tokenize("안녕!"), &roman, Numerals::English, &[]).unwrap();
         assert_eq!(plan.tokens.concat(), "안녕!");
         assert_eq!(plan.ranges.len(), 3);
         assert!(plan.ranges[2].is_none());
@@ -1745,20 +1826,28 @@ mod tests {
             .collect();
         let frames = word_frames(&plan.ranges, &spans);
         assert_eq!(frames[2], (frames[1].1 - 1, frames[1].1));
-        let quotes = plan_tokens(tokenize("'안녕'"), &roman, Numerals::English).unwrap();
+        let quotes = plan_tokens(tokenize("'안녕'"), &roman, Numerals::English, &[]).unwrap();
         assert!(quotes.ranges.first().unwrap().is_none());
         assert!(quotes.ranges.last().unwrap().is_none());
-        let contraction = plan_tokens(vec!["don't".into()], &roman, Numerals::English).unwrap();
+        let contraction =
+            plan_tokens(vec!["don't".into()], &roman, Numerals::English, &[]).unwrap();
         assert!(contraction.targets.contains(&25));
-        let lead =
-            plan_tokens(vec!["!".into(), "hello".into()], &roman, Numerals::English).unwrap();
+        let lead = plan_tokens(
+            vec!["!".into(), "hello".into()],
+            &roman,
+            Numerals::English,
+            &[],
+        )
+        .unwrap();
         let frames = word_frames(&lead.ranges, &spans);
         assert_eq!(frames[0].0, frames[1].0);
-        assert!(plan_tokens(vec!["!".into()], &roman, Numerals::English)
-            .unwrap()
-            .ranges
-            .iter()
-            .all(Option::is_none));
+        assert!(
+            plan_tokens(vec!["!".into()], &roman, Numerals::English, &[])
+                .unwrap()
+                .ranges
+                .iter()
+                .all(Option::is_none)
+        );
     }
     #[test]
     fn dll_loader_panics_take_the_retryable_error_path() {
@@ -1935,7 +2024,7 @@ mod tests {
     #[test]
     fn sung_syllables_count_vowel_groups_and_characters() {
         let romanizer = uroman::Uroman::new();
-        let count = |text: &str| sung_syllables(&tokenize(text), &romanizer);
+        let count = |text: &str| sung_syllables(&tokenize(text), &romanizer, &[]);
         assert_eq!(count("intentando destacar"), 7);
         assert_eq!(count("will burn"), 2);
         assert_eq!(count("rhythm"), 1);
@@ -1985,7 +2074,7 @@ mod tests {
 
     #[test]
     fn both_paths_run_the_tuned_decoder() {
-        // These values ARE recipe mms-int8/3; changing one changes RECIPE.
+        // These values ARE recipe mms-int8/4; changing one changes RECIPE.
         let tuned = Knobs {
             guide: true,
             guide_late_ms: 700,
@@ -2000,7 +2089,7 @@ mod tests {
         };
         assert_eq!(Knobs::MIX, tuned);
         assert_eq!(Knobs::TRIAL, tuned);
-        assert_eq!(RECIPE, "mms-int8/3");
+        assert_eq!(RECIPE, "mms-int8/4");
     }
 
     fn decode(starts: &[usize], support: &[f32]) -> LineDecode {
@@ -2117,7 +2206,7 @@ mod digit_tests {
         let roman = uroman::Uroman::new();
         let tokens = tokenize("All we know 4 fingers up");
         let original = tokens.clone();
-        let plan = plan_tokens(tokens, &roman, Numerals::English).unwrap();
+        let plan = plan_tokens(tokens, &roman, Numerals::English, &[]).unwrap();
         assert_eq!(plan.tokens, original);
         let range = plan.ranges[3].clone().unwrap();
         let spoken: String = plan.targets[range]
@@ -2125,7 +2214,7 @@ mod digit_tests {
             .map(|&i| LABELS[i] as char)
             .collect();
         assert_eq!(spoken, "four");
-        let slang = plan_tokens(vec!["4sho".into()], &roman, Numerals::English).unwrap();
+        let slang = plan_tokens(vec!["4sho".into()], &roman, Numerals::English, &[]).unwrap();
         let spoken: String = slang.targets[slang.ranges[0].clone().unwrap()]
             .iter()
             .map(|&i| LABELS[i] as char)
@@ -2142,9 +2231,9 @@ mod digit_tests {
                 .map(|&i| LABELS[i] as char)
                 .collect()
         };
-        let april = plan_tokens(tokenize("4월"), &roman, Numerals::Korean).unwrap();
+        let april = plan_tokens(tokenize("4월"), &roman, Numerals::Korean, &[]).unwrap();
         assert_eq!(spell(&april, 0), "sa");
-        let four = plan_tokens(vec!["4".into()], &roman, Numerals::Korean).unwrap();
+        let four = plan_tokens(vec!["4".into()], &roman, Numerals::Korean, &[]).unwrap();
         assert_eq!(spell(&four, 0), "four");
     }
 
@@ -2153,7 +2242,7 @@ mod digit_tests {
         // あぶく (Yorushika) never synced: ー, 々 and 一 each failed the song.
         let roman = uroman::Uroman::new();
         let ja = Numerals::Japanese;
-        let plan = plan_tokens(tokenize("トートロジー握った"), &roman, ja).unwrap();
+        let plan = plan_tokens(tokenize("トートロジー握った"), &roman, ja, &[]).unwrap();
         let spelled: Vec<String> = plan
             .ranges
             .iter()
@@ -2165,16 +2254,45 @@ mod digit_tests {
             })
             .collect();
         assert_eq!(spelled[..6], ["to", "o", "to", "ro", "ji", "i"]);
-        let plan = plan_tokens(tokenize("悠々悠々夢を焼け"), &roman, ja).unwrap();
+        let plan = plan_tokens(tokenize("悠々悠々夢を焼け"), &roman, ja, &[]).unwrap();
         assert!(plan.ranges.iter().all(Option::is_some));
         assert_eq!(
             plan.ranges[1].clone().unwrap().len(),
             plan.ranges[0].clone().unwrap().len()
         );
-        assert!(plan_tokens(tokenize("一人を竹刀で"), &roman, ja).is_ok());
-        assert!(plan_tokens(tokenize("夕夕夕夕夕、目を焼け"), &roman, ja).is_ok());
+        assert!(plan_tokens(tokenize("一人を竹刀で"), &roman, ja, &[]).is_ok());
+        assert!(plan_tokens(tokenize("夕夕夕夕夕、目を焼け"), &roman, ja, &[]).is_ok());
         // Still nothing to say: the line is skipped by the caller, not the song.
-        let err = plan_tokens(vec!["㐂".into()], &roman, ja).err().unwrap();
+        let err = plan_tokens(vec!["㐂".into()], &roman, ja, &[])
+            .err()
+            .unwrap();
         assert!(err.starts_with(UNREPRESENTABLE));
+    }
+
+    #[test]
+    fn japanese_lines_spell_as_sung_without_the_dictionary() {
+        // Spelled one character at a time, っ said "tsu" and きょ "kiyo".
+        let roman = uroman::Uroman::new();
+        let ja = Numerals::Japanese;
+        let said = |text: &str| -> Vec<String> {
+            let tokens = tokenize(text);
+            let letters = japanese_letters(&roman, None, &tokens);
+            let plan = plan_tokens(tokens, &roman, ja, &letters).unwrap();
+            plan.ranges
+                .iter()
+                .map(|r| {
+                    plan.targets[r.clone().unwrap()]
+                        .iter()
+                        .map(|&i| LABELS[i] as char)
+                        .collect()
+                })
+                .collect()
+        };
+        assert_eq!(said("待ってきょう"), ["dai", "t", "te", "k", "yo", "u"]);
+        assert_eq!(said("トートロジー"), ["to", "o", "to", "ro", "ji", "i"]);
+        // Latin words in a Japanese song keep their own spelling.
+        assert_eq!(said("baby ねぇ"), ["baby", "ne", "e"]);
+        // A line-final っ still says something, so the line keeps its words.
+        assert_eq!(said("あっ"), ["a", "tsu"]);
     }
 }
