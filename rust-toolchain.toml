@@ -1,0 +1,11 @@
+# One Rust version for CI, release builds, Thien's PC and cloud threads.
+# Pinned because each new stable brings new clippy lints, and with
+# `-D warnings` they turned PRs red with no code change (Sept and Nov 2026).
+# Bump it on purpose, in its own PR, and fix whatever new lints it raises there.
+# The Windows target is listed so Linux cloud threads get it for
+# `cargo clippy --target x86_64-pc-windows-msvc`; on Windows it's the host.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-msvc"]
