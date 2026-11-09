@@ -9,6 +9,12 @@
  * previous track, so the big cover is used only while its title and artist
  * match what GSMTC says is playing. It is also used only once it has loaded:
  * until then, and if it fails, the GSMTC cover stays.
+ *
+ * Title and artist can't tell two releases of one song apart (the single
+ * picked from Search while the album version played), so that case is the
+ * backend's: it drops the cover on a release switch and re-reads it for the
+ * new album (spotify.rs enrich_now). Before that, Focus kept the first
+ * release's cover for the whole listen (Thien, 2026-11-09).
  */
 import { useEffect, useState } from "react";
 import { onSpotifyNowCover } from "./backend";

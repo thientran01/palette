@@ -1793,6 +1793,10 @@ pub fn run() {
                     // marshal, no emit; media::history_probe).
                     const HISTORY_PROBE_BEATS: u32 = 10;
                     let mut hidden_beats = 0u32;
+                    // Identity key + album of the last full snapshot: a
+                    // release switch (same song, another album) re-opens art
+                    // probing, since the art cache keys on the song alone.
+                    let mut last_release: Option<(String, String)> = None;
                     loop {
                         media::beat();
                         if let Some(w) = watch.as_mut() {
@@ -1857,6 +1861,19 @@ pub fn run() {
                                         Some(np) => np,
                                         None => {
                                             let np = emit_now(&handle);
+                                            let key =
+                                                media::ident_key(&np.app_id, &np.title, &np.artist);
+                                            if media::is_release_switch(
+                                                last_release.as_ref(),
+                                                &key,
+                                                &np.album,
+                                            ) {
+                                                media::art_reopen(
+                                                    &handle.state::<ArtCache>(),
+                                                    &key,
+                                                );
+                                            }
+                                            last_release = Some((key, np.album.clone()));
                                             // Deferred art: the emit above never
                                             // blocks on a thumbnail read — the pump
                                             // runs the read here, and when the

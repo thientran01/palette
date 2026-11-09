@@ -650,6 +650,18 @@ pub(crate) fn ident_key(app_id: &str, title: &str, artist: &str) -> String {
     format!("{:x}", h.finish())
 }
 
+/// True when `key`/`album` is the same song as `prev` (the last observed
+/// identity key and album) from another release: the single picked from
+/// Search while the album version played, a remaster, a compilation copy.
+/// Everything keyed on ident_key (the art cache, the Spotify enrichment
+/// read) treats that as no change at all, so the first release's cover
+/// stuck for the whole listen (Thien, 2026-11-09). Both albums must be
+/// non-empty: a failed or partial properties read must not look like a
+/// switch.
+pub(crate) fn is_release_switch(prev: Option<&(String, String)>, key: &str, album: &str) -> bool {
+    matches!(prev, Some((k, a)) if k == key && !a.is_empty() && !album.is_empty() && a != album)
+}
+
 /// Cheap content fingerprint for probe comparisons: length + first/last ~1KB.
 /// Deliberately NOT a full-image hash — probing runs every poll for a few
 /// seconds and must not re-encode or re-hash whole covers.
@@ -1102,6 +1114,38 @@ pub fn art_rearm(cache: &ArtCache) {
         }
         if url.is_none() && *misses < ART_MAX_MISSES {
             *retry_at_ms = Some(now);
+        }
+    }
+}
+
+/// Re-open art distrust for `key` on a release switch (is_release_switch).
+/// The thumbnail changed but the key did not, so a settled entry would never
+/// read it again: restart the probe window as if the key were new. The
+/// cached image stays up until the probe read replaces it (rev bump → the
+/// frontend re-fetches), so nothing blanks in between. A missing cover gets
+/// a fresh retry budget. Media loop only, like art_pump.
+pub fn art_reopen(cache: &ArtCache, key: &str) {
+    reopen_art(&mut lock_art(cache), key, now_ms());
+}
+
+fn reopen_art(slot: &mut Option<ArtState>, key: &str, now: i64) {
+    if let Some(ArtState::Cached {
+        key: k,
+        settled,
+        first_seen_ms,
+        url,
+        retry_at_ms,
+        misses,
+        ..
+    }) = slot.as_mut()
+    {
+        if k == key {
+            *settled = false;
+            *first_seen_ms = now;
+            if url.is_none() {
+                *misses = 0;
+                *retry_at_ms = Some(now);
+            }
         }
     }
 }
@@ -1695,6 +1739,77 @@ mod tests {
         assert_eq!(state(&slot), (1, Some(7), false));
         assert_eq!(retry(&slot).0, None, "found art stops the retries");
         assert_eq!(slot.as_ref().unwrap().art_id().as_deref(), Some("a:1"));
+    }
+
+    #[test]
+    fn release_switch_needs_same_song_and_two_different_albums() {
+        let prev = ("k".to_string(), "Comfort In Chaos".to_string());
+        assert!(is_release_switch(Some(&prev), "k", "Go Back"));
+        assert!(!is_release_switch(Some(&prev), "k", "Comfort In Chaos"));
+        assert!(
+            !is_release_switch(Some(&prev), "other", "Go Back"),
+            "a new song is a track change"
+        );
+        assert!(
+            !is_release_switch(Some(&prev), "k", ""),
+            "a failed props read is not a switch"
+        );
+        let blank = ("k".to_string(), String::new());
+        assert!(!is_release_switch(Some(&blank), "k", "Go Back"));
+        assert!(!is_release_switch(None, "k", "Go Back"));
+    }
+
+    #[test]
+    fn release_switch_reopens_a_settled_cover_and_catches_the_new_one() {
+        // Settled long ago on the first release's cover.
+        let mut slot = cached("a", 0, Some(1), true);
+        if let Some(ArtState::Cached { first_seen_ms, .. }) = slot.as_mut() {
+            *first_seen_ms -= 600_000;
+        }
+        let now = now_ms();
+        assert!(
+            !slot.as_ref().unwrap().read_due(now),
+            "settled: no more reads"
+        );
+
+        reopen_art(&mut slot, "other", now);
+        assert!(
+            !slot.as_ref().unwrap().read_due(now),
+            "another key is left alone"
+        );
+
+        reopen_art(&mut slot, "a", now);
+        assert!(slot.as_ref().unwrap().read_due(now));
+        assert_eq!(
+            slot.as_ref().unwrap().art_id().as_deref(),
+            Some("a:0"),
+            "the old cover stays up until the new one reads"
+        );
+        let probe = ArtSample::Probe {
+            rev: 0,
+            fingerprint: Some(1),
+        };
+        assert!(apply_art_read(&mut slot, "a", probe, read(2), now));
+        assert_eq!(slot.as_ref().unwrap().art_id().as_deref(), Some("a:1"));
+    }
+
+    #[test]
+    fn release_switch_gives_a_missing_cover_a_fresh_retry_budget() {
+        let now = now_ms();
+        let mut slot = missed("a", 600_000, now);
+        if let Some(ArtState::Cached {
+            retry_at_ms,
+            misses,
+            ..
+        }) = slot.as_mut()
+        {
+            *retry_at_ms = None;
+            *misses = ART_MAX_MISSES;
+        }
+        assert!(!slot.as_ref().unwrap().read_due(now), "retries spent");
+        reopen_art(&mut slot, "a", now);
+        assert!(slot.as_ref().unwrap().read_due(now));
+        assert_eq!(retry(&slot), (Some(now), 0));
     }
 
     #[test]

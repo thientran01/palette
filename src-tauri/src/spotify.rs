@@ -100,6 +100,9 @@ pub struct SpotifyAuth {
     /// One currently-playing enrichment read at a time (fired per track
     /// change from the media loop — must never stack).
     enrich_in_flight: AtomicBool,
+    /// Set by every enrich_now call and consumed by the running read, so a
+    /// change that lands mid-read still gets its own read (enrich_now).
+    enrich_again: AtomicBool,
 }
 
 #[derive(Default)]
@@ -123,6 +126,9 @@ struct Inner {
     /// enrichment read. Focus shows it in place of the ~300px GSMTC thumbnail,
     /// which is upscaled almost 2x in a 560px box. Cleared with the tokens.
     now_cover: Option<NowCover>,
+    /// The title and album GSMTC reported for the newest enrich_now request.
+    /// The read re-tries while currently-playing still disagrees.
+    enrich_want: Option<(String, String)>,
 }
 
 /// The playing track's full-size cover, tagged with the title and artist it
@@ -1424,6 +1430,26 @@ pub(crate) fn update_now(app: &AppHandle, t: &QueueTrack) {
 
 // ---- history enrichment + uri resolution ----
 
+/// How many times the enrichment re-reads when currently-playing still
+/// describes something other than what GSMTC says is playing, and how long
+/// it waits between reads. The Web API can trail the desktop client by a
+/// beat after a change. Past the last retry the read is used as it is, so a
+/// title or album that is simply spelled differently by the two sources
+/// costs a few extra reads, never the enrichment.
+const ENRICH_STALE_RETRIES: u32 = 3;
+const ENRICH_RETRY_MS: u64 = 1_000;
+
+/// True when an enrichment read describes the track GSMTC reported (`want`
+/// is its title and album). Album is the field that tells two releases of
+/// one song apart (single vs album version); an empty album on either side
+/// can't disagree. Pure, for tests.
+fn read_matches(t: &QueueTrack, want: &(String, String)) -> bool {
+    let norm = |s: &str| s.trim().to_lowercase();
+    let (title, album) = want;
+    norm(&t.title) == norm(title)
+        && (album.trim().is_empty() || t.album.trim().is_empty() || norm(&t.album) == norm(album))
+}
+
 /// Stamp the CURRENT track's uri onto history's in-flight candidate. Fired
 /// once per track change from the media loop (via upnext::tick) while
 /// connected and Spotify is active — this is the path that makes history
@@ -1431,75 +1457,134 @@ pub(crate) fn update_now(app: &AppHandle, t: &QueueTrack) {
 /// enriched from queue reads the shipped UI never performs, so no entry
 /// ever earned a uri and the up-next list was unbootstrappable (Thien's
 /// live find, 2026-07-11).
-pub fn enrich_now(app: &AppHandle) {
+///
+/// Also fired on a release switch: the same song (title and artist) started
+/// from another album, e.g. the single picked from Search while the album
+/// version was playing. The full-size cover is dropped right away, because
+/// the frontend can only match it by title and artist, which both releases
+/// share. Without that, Focus kept the first release's cover for the whole
+/// listen (Thien, 2026-11-09). `title` and `album` are what GSMTC reports;
+/// the read waits for currently-playing to agree with them.
+///
+/// One read runs at a time. A request that arrives mid-read is not dropped:
+/// it marks `enrich_again` and the running worker reads once more, with the
+/// newest title and album.
+pub fn enrich_now(app: &AppHandle, title: &str, album: &str) {
+    if !connected(app) {
+        return;
+    }
     let auth = app.state::<SpotifyAuth>();
-    if !connected(app)
-        || auth
-            .enrich_in_flight
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
+    let cleared = {
+        let mut inner = lock(&auth);
+        inner.enrich_want = Some((title.to_string(), album.to_string()));
+        inner.now_cover.take().is_some()
+    };
+    if cleared {
+        emit_now_cover(app);
+    }
+    auth.enrich_again.store(true, Ordering::SeqCst);
+    if auth
+        .enrich_in_flight
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
     {
         return;
     }
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // RAII reset up front — a panic in the read/parse below would otherwise
-        // leak enrich_in_flight SET and stop all further enrichment this run.
         let auth = app.state::<SpotifyAuth>();
-        let _flag = FlagGuard::new(&auth.enrich_in_flight);
-        if let Ok(Some(v)) = api_call(
-            &app,
-            "GET",
-            "https://api.spotify.com/v1/me/player/currently-playing",
-        ) {
-            let track = parse_track(&v["item"]);
-            if let Some(t) = &track {
-                update_now(&app, t);
-            }
-            // Same read: the full-size cover for Focus. Tagged with the
-            // track it belongs to; emitted only on a real change.
-            let cover = track.and_then(|t| {
-                large_image(&v["item"]["album"]["images"]).map(|url| NowCover {
-                    title: t.title,
-                    artist: t.artist,
-                    url,
-                })
-            });
-            let cover_changed = {
-                let auth = app.state::<SpotifyAuth>();
-                let mut inner = lock(&auth);
-                if inner.tokens.is_some() && inner.now_cover != cover {
-                    inner.now_cover = cover;
-                    true
-                } else {
-                    false
+        loop {
+            {
+                // RAII reset — a panic in the read/parse below would otherwise
+                // leak enrich_in_flight SET and stop all further enrichment
+                // this run.
+                let _flag = FlagGuard::new(&auth.enrich_in_flight);
+                while auth.enrich_again.swap(false, Ordering::SeqCst) {
+                    enrich_once(&app);
                 }
-            };
-            if cover_changed {
-                emit_now_cover(&app);
             }
-            // Same read, no extra call: capture WHICH device is playing so the
-            // UI can explain a quiet waveform (audio is elsewhere, not paused).
-            // Computer/local → None. Only emit on a real change; the seed
-            // command covers a frontend that mounts between changes. Guarded
-            // against a racing disconnect exactly like update_now.
-            let device = parse_device(&v);
-            let changed = {
-                let auth = app.state::<SpotifyAuth>();
-                let mut inner = lock(&auth);
-                if inner.tokens.is_some() && inner.active_device != device {
-                    inner.active_device = device;
-                    true
-                } else {
-                    false
-                }
-            };
-            if changed {
-                emit_device(&app);
+            // A request that landed after the last swap but before the flag
+            // reset saw the flag still set and left its work to us.
+            if !auth.enrich_again.load(Ordering::SeqCst)
+                || auth
+                    .enrich_in_flight
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+            {
+                break;
             }
         }
-        // _flag resets enrich_in_flight on drop (normal exit AND panic unwind).
     });
+}
+
+/// One enrichment pass: read currently-playing (re-reading while it still
+/// trails GSMTC), then stamp the uri, the full-size cover and the device.
+fn enrich_once(app: &AppHandle) {
+    let auth = app.state::<SpotifyAuth>();
+    let want = lock(&auth).enrich_want.clone();
+    let mut tries = 0;
+    let v = loop {
+        let Ok(Some(v)) = api_call(
+            app,
+            "GET",
+            "https://api.spotify.com/v1/me/player/currently-playing",
+        ) else {
+            return;
+        };
+        let current = match (&want, parse_track(&v["item"])) {
+            (Some(w), Some(t)) => read_matches(&t, w),
+            _ => true,
+        };
+        // A newer request is waiting: let it read for its own track.
+        if current || tries >= ENRICH_STALE_RETRIES || auth.enrich_again.load(Ordering::SeqCst) {
+            break v;
+        }
+        tries += 1;
+        std::thread::sleep(Duration::from_millis(ENRICH_RETRY_MS));
+    };
+    let track = parse_track(&v["item"]);
+    if let Some(t) = &track {
+        update_now(app, t);
+    }
+    // Same read: the full-size cover for Focus. Tagged with the
+    // track it belongs to; emitted only on a real change.
+    let cover = track.and_then(|t| {
+        large_image(&v["item"]["album"]["images"]).map(|url| NowCover {
+            title: t.title,
+            artist: t.artist,
+            url,
+        })
+    });
+    let cover_changed = {
+        let mut inner = lock(&auth);
+        if inner.tokens.is_some() && inner.now_cover != cover {
+            inner.now_cover = cover;
+            true
+        } else {
+            false
+        }
+    };
+    if cover_changed {
+        emit_now_cover(app);
+    }
+    // Same read, no extra call: capture WHICH device is playing so the
+    // UI can explain a quiet waveform (audio is elsewhere, not paused).
+    // Computer/local → None. Only emit on a real change; the seed
+    // command covers a frontend that mounts between changes. Guarded
+    // against a racing disconnect exactly like update_now.
+    let device = parse_device(&v);
+    let changed = {
+        let mut inner = lock(&auth);
+        if inner.tokens.is_some() && inner.active_device != device {
+            inner.active_device = device;
+            true
+        } else {
+            false
+        }
+    };
+    if changed {
+        emit_device(app);
+    }
 }
 
 /// Raw ranked track search — the search window's list and the fielded resolvers'
@@ -1679,8 +1764,52 @@ pub async fn spotify_search(app: AppHandle, query: String, limit: Option<u32>) -
 
 #[cfg(test)]
 mod tests {
-    use super::{large_image, small_image};
+    use super::{large_image, read_matches, small_image, QueueTrack};
     use serde_json::json;
+
+    fn track(title: &str, album: &str) -> QueueTrack {
+        QueueTrack {
+            uri: "spotify:track:x".into(),
+            title: title.into(),
+            artist: "John Summit".into(),
+            album: album.into(),
+            duration_ms: 220_000,
+            art_url: None,
+        }
+    }
+
+    #[test]
+    fn enrichment_read_must_match_the_release_gsmtc_reports() {
+        let want = (
+            "Go Back (feat. Julia Church)".to_string(),
+            "Go Back".to_string(),
+        );
+        assert!(read_matches(
+            &track("Go Back (feat. Julia Church)", "Go Back"),
+            &want
+        ));
+        assert!(read_matches(
+            &track(" go back (feat. julia church) ", "GO BACK"),
+            &want
+        ));
+        // currently-playing still on the first release: re-read.
+        assert!(!read_matches(
+            &track("Go Back (feat. Julia Church)", "Comfort In Chaos"),
+            &want
+        ));
+        // ...or still on the previous song.
+        assert!(!read_matches(&track("Other", "Go Back"), &want));
+        // An empty album on either side can't disagree.
+        let no_album = ("Go Back (feat. Julia Church)".to_string(), String::new());
+        assert!(read_matches(
+            &track("Go Back (feat. Julia Church)", "Comfort In Chaos"),
+            &no_album
+        ));
+        assert!(read_matches(
+            &track("Go Back (feat. Julia Church)", ""),
+            &want
+        ));
+    }
 
     #[test]
     fn small_image_takes_the_300_rung_for_rows() {
