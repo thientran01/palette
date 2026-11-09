@@ -39,6 +39,15 @@ const widenHitToWindow = () =>
 // mock-iterable. Default (no param) = the main widget.
 const params = new URLSearchParams(window.location.search);
 
+// Opaque windows (focus, prefs) paint the page itself in --surface (index.css),
+// so nothing under a fading or not-yet-mounted root is ever white. Rust also
+// sets the same color as the window/WebView2 background for the moment before
+// this runs (crate::SURFACE).
+const windowName = params.get("window");
+if (windowName === "focus" || windowName === "prefs") {
+  document.documentElement.dataset.opaque = "";
+}
+
 // Dev-only icon lab, browser-runnable (no Tauri): `npm run dev` → /?lab
 // import.meta.env.DEV is statically false in release builds, so the lab
 // chunk is dead-code-eliminated from the bundle.

@@ -70,6 +70,8 @@ pub fn open(app: &AppHandle, section: Option<String>) {
         .decorations(false)
         .resizable(false)
         .maximizable(false)
+        // Dark before the first paint, like focus (crate::SURFACE).
+        .background_color(crate::SURFACE)
         // Born hidden so the recenter lands before the first paint shows.
         .visible(false)
         .build();
