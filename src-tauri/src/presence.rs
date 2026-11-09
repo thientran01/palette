@@ -325,11 +325,17 @@ pub fn spawn(app: AppHandle) {
             let own_pid = std::process::id();
             let mut fs_settled = false;
             let mut disagree_ms: u64 = 0;
+            // Resolved once, then kept: hwnd() is a blocking main-thread
+            // round trip, and "main" lives for the whole process. Stays
+            // None (and retries each tick) only until the window exists.
+            let mut widget_hwnd: Option<HWND> = None;
             loop {
-                let widget_hwnd = app
-                    .get_webview_window("main")
-                    .and_then(|w| w.hwnd().ok())
-                    .map(|h| HWND(h.0));
+                if widget_hwnd.is_none() {
+                    widget_hwnd = app
+                        .get_webview_window("main")
+                        .and_then(|w| w.hwnd().ok())
+                        .map(|h| HWND(h.0));
+                }
 
                 let debug = app.state::<Presence>().debug.load(Ordering::Relaxed);
                 let sampled = sample(widget_hwnd, own_pid, debug);
