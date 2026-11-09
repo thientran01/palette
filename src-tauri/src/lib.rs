@@ -860,6 +860,27 @@ impl VisIntent {
     }
 }
 
+/// A hidden Tauri window is not a hidden page. hide() hides the HWND, but wry
+/// only calls WebView2's SetIsVisible at creation, so a hidden webview keeps
+/// `document.hidden == false`, `visibilityState == "visible"`, and full-rate
+/// requestAnimationFrame (~167 fps measured in the hidden widget on Thien's
+/// PC, 2026-11-09). Every show/hide site tells its own window instead, and
+/// src/lib/windowShown.ts pauses frame loops on it. Shows are told BEFORE
+/// show() so the first visible frame is already current; hides after hide().
+pub(crate) const SHOWN_EVENT: &str = "window-shown";
+
+pub(crate) fn tell_shown(app: &AppHandle, label: &str, shown: bool) {
+    let _ = app.emit_to(label, SHOWN_EVENT, shown);
+}
+
+/// Seed for SHOWN_EVENT: is the calling window shown right now? An error
+/// reads as shown, because a page wrongly believed hidden freezes its
+/// karaoke and progress bar, while the opposite only costs frames.
+#[tauri::command]
+async fn window_shown(window: tauri::WebviewWindow) -> bool {
+    window.is_visible().unwrap_or(true)
+}
+
 /// Reconcile the OS window to the current intent. Safe from any thread that
 /// may touch GSMTC (emit_now runs inline on show — the toggle_widget
 /// precedent); from the single-instance WndProc, defer to the async pool.
@@ -874,6 +895,7 @@ pub(crate) fn apply_visibility(app: &AppHandle) {
     // the worst failure class here (quick-review catch, 2026-07-09).
     let is = win.is_visible().unwrap_or(!want);
     if want && !is {
+        tell_shown(app, "main", true);
         let _ = win.show();
         // The hit watcher parks while hidden — wake it so click-through is
         // reconciled to the cursor before the first click, not up to a poll
@@ -883,6 +905,7 @@ pub(crate) fn apply_visibility(app: &AppHandle) {
         emit_now(app);
     } else if !want && is {
         let _ = win.hide();
+        tell_shown(app, "main", false);
     }
 }
 
@@ -1317,6 +1340,7 @@ pub fn run() {
             history::history_page,
             history::history_thumb,
             history::history_thumb_url,
+            history::history_thumb_urls,
             spotify_connect,
             hide_widget,
             quit_app,
@@ -1339,6 +1363,7 @@ pub fn run() {
             focus::focus_warm,
             focus::focus_cool,
             focus::focus_shown,
+            window_shown,
             prefs::open_prefs,
             prefs::close_prefs,
             prefs::prefs_seed,

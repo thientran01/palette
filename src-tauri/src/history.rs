@@ -568,6 +568,11 @@ fn append(dir: &Path, entry: &HistoryEntry) -> std::io::Result<u64> {
     Ok(offset)
 }
 
+/// Largest page `history_page` serves. The feeds page 200 at a time; Search's
+/// whole-log read for "From your history" asks for 1000, so a 12,900-play log
+/// is 13 round trips instead of 63.
+const PAGE_MAX: usize = 1000;
+
 /// Newest-first history page. `before_started_at_ms` = the oldest loaded
 /// entry's started_at for infinite scroll; None seeds from the newest.
 /// Waits (bounded) for the background index build on the blocking pool —
@@ -582,7 +587,7 @@ pub async fn history_page(
 ) -> Result<Vec<HistoryEntry>, ()> {
     tauri::async_runtime::spawn_blocking(move || {
         let tracker = app.state::<Tracker>();
-        let limit = (limit as usize).min(200);
+        let limit = (limit as usize).min(PAGE_MAX);
         let snap = {
             let mut inner = lock(&tracker);
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -685,18 +690,43 @@ pub async fn history_thumb(app: AppHandle, key: String, data_url: String) -> boo
     true
 }
 
-#[tauri::command]
-pub async fn history_thumb_url(app: AppHandle, key: String) -> Option<String> {
-    if !valid_key(&key) {
+/// One thumb as a data URL, or None when never captured / evicted.
+fn thumb_url(dir: &Path, key: &str) -> Option<String> {
+    if !valid_key(key) {
         return None;
     }
-    let path = thumbs_dir(&app)?.join(format!("{key}.jpg"));
     let mut bytes = Vec::new();
-    std::fs::File::open(path)
+    std::fs::File::open(dir.join(format!("{key}.jpg")))
         .ok()?
         .read_to_end(&mut bytes)
         .ok()?;
     Some(format!("data:image/jpeg;base64,{}", B64.encode(&bytes)))
+}
+
+#[tauri::command]
+pub async fn history_thumb_url(app: AppHandle, key: String) -> Option<String> {
+    thumb_url(&thumbs_dir(&app)?, &key)
+}
+
+/// Most keys one batch reads (a History screen renders 60 rows at a time).
+const THUMB_BATCH_MAX: usize = 200;
+
+/// `history_thumb_url` for many keys in one call, answers in key order.
+/// Search's History section asked for each rendered row's thumb separately:
+/// 60 IPC round trips every time the section opened or scrolled a page.
+#[tauri::command]
+pub async fn history_thumb_urls(app: AppHandle, keys: Vec<String>) -> Vec<Option<String>> {
+    let Some(dir) = thumbs_dir(&app) else {
+        return vec![None; keys.len()];
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        keys.iter()
+            .enumerate()
+            .map(|(i, k)| (i < THUMB_BATCH_MAX).then(|| thumb_url(&dir, k)).flatten())
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Keep a dir bounded: evict oldest files past `max` (the lyrics-cache

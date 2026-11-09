@@ -80,13 +80,20 @@ pub fn listen(
         .filter(|&i| is_held(&words[i]) && !span(&words[i]).is_empty())
         .collect();
     // Neighbouring notes share one stretch when their separator windows
-    // (a second of context each side) would overlap anyway.
+    // (a second of context each side) would overlap anyway. A note the ear
+    // already heard (the review's stretches) costs nothing and stays alone.
     let mut stretches: Vec<(Range<usize>, Vec<usize>, i64)> = Vec::new();
     for &i in &held {
         let r = span(&words[i]);
         let sung = words[i].end.unwrap_or(words[i].t) - words[i].t;
+        if ear.passes(r.clone()) == 0 {
+            stretches.push((r, vec![i], sung));
+            continue;
+        }
         match stretches.last_mut() {
-            Some((last, members, total)) if r.start <= last.end + 2 * hz as usize => {
+            Some((last, members, total))
+                if r.start <= last.end + 2 * hz as usize && ear.passes(last.clone()) > 0 =>
+            {
                 last.end = last.end.max(r.end);
                 members.push(i);
                 *total += sung;
@@ -94,9 +101,12 @@ pub fn listen(
             _ => stretches.push((r, vec![i], sung)),
         }
     }
-    // Most held singing per pass first.
+    // Free notes, then most held singing per pass.
     stretches.sort_by(|a, b| {
-        let per = |s: &(Range<usize>, Vec<usize>, i64)| s.2 as f64 / ear.passes(s.0.clone()) as f64;
+        let per = |s: &(Range<usize>, Vec<usize>, i64)| match ear.passes(s.0.clone()) {
+            0 => f64::INFINITY,
+            n => s.2 as f64 / n as f64,
+        };
         per(b).total_cmp(&per(a))
     });
     let mut spent = 0;
@@ -307,13 +317,34 @@ mod tests {
     struct Ear {
         audio: Vec<i16>,
         heard: usize,
+        /// Already separated, as the review leaves `VocalEar`: free.
+        kept: Option<Range<usize>>,
+    }
+    impl Ear {
+        fn new(audio: Vec<i16>) -> Self {
+            Self {
+                audio,
+                heard: 0,
+                kept: None,
+            }
+        }
+        fn free(&self, range: &Range<usize>) -> bool {
+            self.kept
+                .as_ref()
+                .is_some_and(|k| k.start <= range.start && range.end <= k.end)
+        }
     }
     impl SecondEar for Ear {
         fn hear(&mut self, range: Range<usize>) -> Result<Vec<i16>, String> {
-            self.heard += 1;
+            if !self.free(&range) {
+                self.heard += 1;
+            }
             Ok(self.audio[range].to_vec())
         }
         fn passes(&self, range: Range<usize>) -> usize {
+            if self.free(&range) {
+                return 0;
+            }
             crate::separation::passes(range.len() + 2 * HZ as usize, HZ)
         }
     }
@@ -335,7 +366,7 @@ mod tests {
     fn hears_pitch_and_vibrato_on_a_held_note() {
         let audio = tone(220.0, 70.0, 4.0, 0.5);
         let mut words = vec![word(500, 450 + 1600), word(2300, 2400)];
-        let mut ear = Ear { audio, heard: 0 };
+        let mut ear = Ear::new(audio);
         let n = listen(&mut words, &map(), 64_000, HZ, &mut ear, PASS_BUDGET);
         assert_eq!(n, 1);
         assert!(words[1].voice.is_none(), "short syllables get no track");
@@ -375,7 +406,7 @@ mod tests {
             &map(),
             48_000,
             HZ,
-            &mut Ear { audio, heard: 0 },
+            &mut Ear::new(audio),
             PASS_BUDGET,
         );
         let l = &words[0].voice.as_ref().unwrap().l;
@@ -389,11 +420,26 @@ mod tests {
         let mut words: Vec<Word> = (0..12)
             .map(|k| word(k * 5000 + 500, k * 5000 + 1500))
             .collect();
-        let mut ear = Ear { audio, heard: 0 };
+        let mut ear = Ear::new(audio);
         let n = listen(&mut words, &map(), 960_000, HZ, &mut ear, 4);
         assert!(ear.heard <= 4);
         assert!(n <= 4);
         // Silence has no pitch, so no track.
         assert!(words[11].voice.is_none());
+    }
+
+    #[test]
+    fn notes_the_review_already_heard_cost_no_passes() {
+        let audio = tone(220.0, 0.0, 60.0, 0.5);
+        let mut words: Vec<Word> = (0..12)
+            .map(|k| word(k * 5000 + 500, k * 5000 + 1500))
+            .collect();
+        // The review separated the first half minute: six notes.
+        let mut ear = Ear::new(audio);
+        ear.kept = Some(0..16_000 * 30);
+        let n = listen(&mut words, &map(), 960_000, HZ, &mut ear, 4);
+        assert!(ear.heard <= 4);
+        assert_eq!(n, 10, "six free notes and four paid");
+        assert!(words[..6].iter().all(|w| w.voice.is_some()));
     }
 }

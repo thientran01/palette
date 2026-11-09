@@ -62,6 +62,11 @@ accented letter is one) and each letter is its own inline-block span.
 - `--drop` applies only while the row is being sung (`data-singing`) and
   transitions with the line's own 220 ms scale-up, so unsung letters ease
   down as the line arrives instead of jumping.
+- Letters carry a transform only in a row that is singing or still easing
+  its drop out (`data-settling`, lifted when the `--drop` transition ends).
+  Anywhere else it would be `translateY(0)`, and an identity transform on
+  every letter cost a paint chunk each: about half the lyrics' frame time
+  went to re-sorting thousands of them on every karaoke frame (2026-11-09).
 - Plain colored text, no clipped gradient: the lyrics keep ClearType. No
   sheen, no halo (the design rules exclude glow).
 - Backing voices printed after the lead keep their own onsets, so a reply

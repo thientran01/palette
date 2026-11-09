@@ -1,5 +1,5 @@
 @import "@fontsource-variable/geist";
-@import "pretendard-jp/dist/web/variable/pretendardvariable-jp.css";
+@import "./assets/fonts/palette-cjk.css";
 @import "tailwindcss";
 
 /*
@@ -40,8 +40,11 @@
 @theme {
   /* Geist (Vercel, OFL-1.1), bundled via @fontsource-variable/geist. Geist
      has no CJK, so Korean and Japanese titles and lyrics fall through to
-     Pretendard JP (OFL-1.1, bundled, ~5 MB). It is plain Pretendard plus
-     Japanese: the same Hangul and kana, and 7k JIS kanji drawn in the
+     Pretendard JP (OFL-1.1), bundled as "Palette CJK": the same font cut
+     into Hangul / Japanese / other files by scripts/split_cjk_font.py, so a
+     window loads only the scripts it shows instead of all ~5 MB for one ✓
+     (pixel-identical; ~18 MB less renderer memory per window that would
+     have loaded it whole). It is plain Pretendard plus Japanese: the same Hangul and kana, and 7k JIS kanji drawn in the
      Japanese style. Plain Pretendard has kana but NO kanji, so Japanese
      lines mixed Pretendard kana with Malgun Gothic's Korean-style kanji
      (Thien, 2026-11-06). Pretendard sits after Geist, so it only draws the
@@ -52,7 +55,7 @@
      "Segoe UI" fires only if the bundled fonts fail to load (present on
      Win10+11, always a normal weight) — NOT "Segoe UI Variable Display",
      whose large-optical-size cut renders thin/spindly at UI text sizes. */
-  --font-sans: "Geist Variable", "Pretendard JP Variable", "Segoe UI", "Malgun Gothic", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Variable", "Palette CJK", "Segoe UI", "Malgun Gothic", ui-sans-serif, system-ui, sans-serif;
   --font-weight-normal: 430; /* see body */
   --color-*: initial;
   --color-surface: rgb(var(--surface));
@@ -248,6 +251,14 @@ html[data-opaque] {
    * (Thien's feel-checks, 2026-07-16). */
   opacity: 0.5;
   animation: skeleton-breathe 1300ms var(--ease-in-out-tk) infinite;
+}
+
+/* A hidden Tauri window keeps animating (lib/windowShown.ts sets this
+ * attribute from Rust's shown signal). Only the infinite breathers pause:
+ * they pick up mid-breath on show, which nobody can tell, while a paused
+ * one-shot would finish late in front of the user. */
+:root[data-window-hidden] :is(.resting-pulse, .skeleton-pulse) {
+  animation-play-state: paused;
 }
 
 /* Pull-refresh row swap (Search.tsx): on a user-invoked refresh the fresh
@@ -565,10 +576,17 @@ button.lyric-row:hover { --lyric-filter: none; }
 .lyric-row [data-letter] {
   display: inline-block;
   color: color-mix(in srgb, var(--word-bright, currentColor) calc(var(--lit, 0) * 100%), currentColor);
+}
+/* Only rows that are singing, or easing their drop back out after
+ * (data-settling, wordWipeDriver.ts settleRows), move their letters.
+ * Everywhere else the transform would be translateY(0), and even an
+ * identity transform costs a paint chunk per letter that the compositor
+ * re-sorts on every karaoke frame. */
+.lyric-row:is([data-singing], [data-settling]) [data-letter] {
   transform: translateY(calc(var(--drop) * (1 - var(--lit, 0)) + var(--bend, 0px)));
 }
 @media (prefers-reduced-motion: reduce) {
-  .lyric-row [data-letter] { transform: none; }
+  .lyric-row:is([data-singing], [data-settling]) [data-letter] { transform: none; }
 }
 /* The depth-of-field blur: a filtered row turns the sharp rows next to it
  * grayscale, so each blurred row gets its own layer. The

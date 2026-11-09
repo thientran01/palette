@@ -27,7 +27,8 @@ import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
 import { isProvisionalDuration, trackIdOf } from "./lib/trackId";
-import { driveWordRows, type WordRow } from "./lib/wordWipeDriver";
+import { driveWordRows, settleRows, type WordDriver, type WordRow } from "./lib/wordWipeDriver";
+import { whileShown } from "./lib/windowShown";
 import { letterSegments } from "./lib/letterRise";
 import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
 
@@ -121,6 +122,11 @@ function useWordWipe(
   lines: LyricLine[], currentLine: number, leadMs: number,
   enabled: boolean,
 ): void {
+  // The line moves often and the rows rarely: hand the running driver each
+  // new line instead of rebuilding it (WordDriver.setCurrentLine).
+  const driver = useRef<WordDriver | null>(null);
+  const line = useRef(currentLine);
+  line.current = currentLine;
   useLayoutEffect(() => {
     if (!enabled) return;
     const root = list.current;
@@ -134,10 +140,22 @@ function useWordWipe(
         word => Array.from(word.querySelectorAll<HTMLElement>("[data-letter]"), letter => letter.style));
       rows.push({ index, words, style: el.style, el, letters });
     }
-    return driveWordRows(rows, currentLine, leadMs, posClock, {
+    // Hidden windows still get full-rate rAF (lib/windowShown.ts), so the
+    // driver reads a hidden window as paused.
+    const running = driveWordRows(rows, line.current, leadMs, whileShown(posClock), {
       request: cb => requestAnimationFrame(cb), cancel: id => cancelAnimationFrame(id),
     });
-  }, [list, lines, currentLine, leadMs, enabled]);
+    driver.current = running;
+    return () => {
+      running();
+      driver.current = null;
+    };
+  }, [list, lines, leadMs, enabled]);
+  useLayoutEffect(() => driver.current?.setCurrentLine(currentLine), [currentLine]);
+  useEffect(() => {
+    const root = list.current;
+    return root ? settleRows(root) : undefined;
+  }, [list]);
 }
 
 export type LyricsState =
@@ -871,11 +889,17 @@ export function LyricsPanel({
   // at the anchor instead of sinking to the bottom. Re-measured on resize
   // (the fullscreen room can change monitors). */
   const [pad, setPad] = useState<{ top: number; bottom: number }>({ top: 16, bottom: 16 });
+  // The viewport's height as last measured, for render-time math (the
+  // re-latch band). Reading clientHeight during render forced a layout of
+  // the freshly committed rows on every render, a full extra layout per
+  // track change.
+  const viewportH = useRef(0);
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
     const measure = () => {
       const h = viewport.clientHeight;
+      viewportH.current = h;
       const anchor = anchorPx(scale, h);
       setPad({ top: scale === "focus" ? Math.round(anchor) : 16, bottom: Math.round(h - anchor) });
     };
@@ -1049,7 +1073,7 @@ export function LyricsPanel({
   /** Where the roll is right now (for a wheel browse to start from). */
   const rollNow = (): number =>
     rollPlan.current ? Math.round(rollOffsetAt(rollPlan.current, posClock.now())) : autoOffset;
-  const band = (viewportRef.current?.clientHeight ?? 0) * RELATCH_BAND;
+  const band = viewportH.current * RELATCH_BAND;
   // Where "now" sits relative to the browse â€” drives the chip's edge/arrow.
   const nowBelow = browsing && autoOffset > (manualOffset as number);
   const showReturn = browsing && Math.abs((manualOffset as number) - autoOffset) > band;

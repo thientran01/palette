@@ -72,6 +72,12 @@ impl VocalSeparator {
             .map_err(|e| e.to_string())?
             .with_inter_threads(1)
             .map_err(|e| e.to_string())?
+            // ONNX Runtime's memory pattern planned one block for the whole
+            // pass on top of the per-tensor allocations: peak memory 3.4 GB
+            // instead of 2.2 GB, with the same output bit for bit and no
+            // speed gain (docs/specs/2026-11-09-karaoke-sync-speed.md).
+            .with_memory_pattern(false)
+            .map_err(|e| e.to_string())?
             .commit_from_file(model)
             .map_err(|e| e.to_string())?;
         let mut planner = FftPlanner::new();
@@ -247,7 +253,9 @@ pub fn passes(samples: usize, rate: u32) -> usize {
 }
 
 /// The separator as the review's second ear (`acoustic::SecondEar`) on
-/// one recording: the capture's stereo when the recorder kept it.
+/// one recording: the capture's stereo when the recorder kept it. One ear
+/// serves the whole job, so the voice pass (voice.rs) hears a held note
+/// inside a stretch the review already separated for free.
 pub struct VocalEar<'a> {
     pub separator: &'a mut VocalSeparator,
     pub stereo: Option<&'a Stereo>,
@@ -260,10 +268,46 @@ pub struct VocalEar<'a> {
     /// Separator input so far, in recording samples, and the passes it took.
     pub heard: usize,
     pub passes: usize,
+    /// Every stretch heard so far and its vocals (16 kHz, ~2.5 MB for the
+    /// review's 14 passes).
+    kept: Vec<(Range<usize>, Vec<i16>)>,
+}
+
+impl<'a> VocalEar<'a> {
+    pub fn new(
+        separator: &'a mut VocalSeparator,
+        stereo: Option<&'a Stereo>,
+        mono16k: &'a [i16],
+        target_hz: u32,
+        deadline: Option<std::time::Instant>,
+    ) -> Self {
+        Self {
+            separator,
+            stereo,
+            mono16k,
+            target_hz,
+            deadline,
+            heard: 0,
+            passes: 0,
+            kept: Vec::new(),
+        }
+    }
+
+    /// `range` from a stretch already heard. Every sample inside one had a
+    /// second of real context each side, as a fresh `hear` would give it.
+    fn kept(&self, range: &Range<usize>) -> Option<&[i16]> {
+        self.kept.iter().find_map(|(r, v)| {
+            (r.start <= range.start && range.end <= r.end)
+                .then(|| &v[range.start - r.start..range.end - r.start])
+        })
+    }
 }
 
 impl crate::acoustic::SecondEar for VocalEar<'_> {
     fn hear(&mut self, range: Range<usize>) -> Result<Vec<i16>> {
+        if let Some(v) = self.kept(&range) {
+            return Ok(v.to_vec());
+        }
         if self
             .deadline
             .is_some_and(|d| std::time::Instant::now() >= d)
@@ -272,11 +316,21 @@ impl crate::acoustic::SecondEar for VocalEar<'_> {
         }
         self.heard += padded(range.clone(), self.mono16k.len(), self.target_hz).len();
         self.passes += crate::acoustic::SecondEar::passes(self, range.clone());
-        self.separator
-            .vocals_window(self.stereo, self.mono16k, range, self.target_hz)
+        let vocals = self.separator.vocals_window(
+            self.stereo,
+            self.mono16k,
+            range.clone(),
+            self.target_hz,
+        )?;
+        self.kept.push((range, vocals.clone()));
+        Ok(vocals)
     }
 
+    /// Nothing for a range already heard.
     fn passes(&self, range: Range<usize>) -> usize {
+        if self.kept(&range).is_some() {
+            return 0;
+        }
         passes(
             padded(range, self.mono16k.len(), self.target_hz).len(),
             self.target_hz,

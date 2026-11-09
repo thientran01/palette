@@ -13,6 +13,7 @@ import { useSeekTick } from "./icons/useSeekTick";
 import { useSkipFlick } from "./icons/useSkipFlick";
 import { commands, onSeekNudge } from "./lib/backend";
 import * as posClock from "./lib/posClock";
+import { useWindowShown } from "./lib/windowShown";
 import { noteTrackDir } from "./lib/trackDir";
 import { DUR, EASE } from "./lib/tokens";
 import type { NowPlaying } from "./types";
@@ -182,7 +183,9 @@ export function SeekButton({
 /** rAF driver shared by the progress surfaces: writes the fill's scaleX every
  * ~90ms (every frame while scrubbing) and the elapsed label + slider aria only
  * on integer-second changes — position never enters React state (the Waveform
- * pattern). Paused frames cost one compare; a hidden window stops rAF cold.
+ * pattern). Paused frames cost one compare. A hidden window runs no loop:
+ * Tauri's hide() doesn't stop a webview's rAF (lib/windowShown.ts), so it
+ * counts as paused here and snaps to the clock when shown.
  * React never renders the rAF-owned transform/aria/label, so re-renders can't
  * reset them to stale values. */
 export function useProgressDom(
@@ -193,6 +196,8 @@ export function useProgressDom(
   time?: React.RefObject<HTMLSpanElement | null>,
   drag?: React.RefObject<number | null>,
 ): void {
+  const shown = useWindowShown();
+  const running = active && shown;
   useLayoutEffect(() => {
     let raf = 0;
     let last = 0;
@@ -216,7 +221,11 @@ export function useProgressDom(
           const el = fill.current;
           el.style.transitionProperty = "background-color";
           el.style.transform = `scaleX(${frac})`;
-          void el.offsetWidth; // flush so the write lands untransitioned
+          // Flush style (not layout) so the write lands untransitioned: a
+          // non-geometry property commits the new transform without laying
+          // out the page. offsetWidth forced a full layout here on every
+          // track change, mid-way through the new song's mount.
+          void getComputedStyle(el).transitionProperty;
           el.style.transitionProperty = "";
         } else {
           fill.current.style.transform = `scaleX(${frac})`;
@@ -231,7 +240,7 @@ export function useProgressDom(
       }
     };
     write(); // before first paint — the fill has NO baseline style (see JSX)
-    if (!active) {
+    if (!running) {
       // Frozen clock: no loop at all (the pre-PR paused cost was zero, keep
       // it zero). Kernel notifications repaint paused seeks/scrubs.
       return posClock.subscribe(write);
@@ -245,7 +254,7 @@ export function useProgressDom(
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [durationMs, active, bar, fill, time, drag]);
+  }, [durationMs, running, bar, fill, time, drag]);
 }
 
 export function ProgressBar({ np, size = "md" }: { np: NowPlaying; size?: "md" | "lg" }) {

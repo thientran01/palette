@@ -14,8 +14,9 @@
 //! on demand — dropping releases the device/stream entirely, so a hidden or
 //! paused app costs zero audio work.
 //!
-//! Emits target the main and focus windows only. Search and prefs never
-//! render the waveform. A silence latch throttles the FFT and stops emits once
+//! Emits target the main and focus windows only, and live payloads only the
+//! ones the user can SEE (BandFanout). Search and prefs never render the
+//! waveform. A silence latch throttles the FFT and stops emits once
 //! smoothed output has sat below ZERO_EPS for LATCH_AFTER_TICKS (~396ms):
 //! one terminating zero payload (the same `Bands::default()` the switch-off
 //! arm already sends), then cheap raw-RMS peeks with an FFT recheck every
@@ -30,7 +31,7 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 const FFT_SIZE: usize = 2048;
 const EMIT_INTERVAL: Duration = Duration::from_millis(33);
@@ -327,10 +328,114 @@ impl BandEnvelope {
     }
 }
 
-/// Search and prefs never consume this event. emit_to on a missing focus
-/// window (create-on-open) filters to zero listeners and returns Ok.
-fn emit_bands(app: &AppHandle, bands: Bands) {
-    for label in ["main", "focus"] {
+/// The windows that render a Waveform. Search and prefs never consume the
+/// event. emit_to on a missing focus window (destroy-on-close) filters to
+/// zero listeners and returns Ok.
+const WAVEFORM_WINDOWS: [&str; 2] = ["main", crate::focus::LABEL];
+
+/// Which of WAVEFORM_WINDOWS the user can see, from the visibility intent
+/// (pure atomics, so no main-thread hop at 30Hz). Main is shown exactly when
+/// apply_visibility wants it shown. Focus is shown only while the takeover
+/// is open, so a WARM focus window (pre-created hidden the moment the widget
+/// enters expanded) is not.
+fn shown_windows(app: &AppHandle) -> [bool; 2] {
+    let vis = app.state::<crate::VisIntent>();
+    [
+        vis.effective_visible(),
+        vis.focus_open.load(Ordering::Relaxed),
+    ]
+}
+
+/// The last payload sent, for a window that comes into view while the
+/// stream is quiet (prime, BandFanout::refresh). None = never sent.
+static LATEST: Mutex<Option<Bands>> = Mutex::new(None);
+
+fn set_latest(bands: Bands) {
+    *LATEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bands);
+}
+
+/// Every emit is a script eval on the UI thread plus a WebView2 IPC into
+/// that window's renderer. A HIDDEN window used to take all of them: the
+/// warm focus window for as long as the widget sat in expanded, and the
+/// hidden widget for as long as focus was open. Tauri's hide() leaves the
+/// WebView2 controller marked visible (wry sets IsVisible only at create),
+/// so the page is never told it is hidden and kept animating bars no one
+/// could see. Live payloads now go only to shown windows. A hidden window
+/// holds its last state (Waveform decays its bars once the stream goes
+/// stale and stops its loop) and catches up the moment it is shown.
+struct BandFanout {
+    shown: [bool; 2],
+}
+
+impl BandFanout {
+    const fn new() -> Self {
+        Self { shown: [false; 2] }
+    }
+
+    /// A live payload (or the latch's single zero): shown windows only.
+    fn emit(&mut self, app: &AppHandle, bands: Bands) {
+        self.shown = shown_windows(app);
+        set_latest(bands);
+        for (label, shown) in WAVEFORM_WINDOWS.iter().zip(self.shown) {
+            if shown {
+                let _ = app.emit_to(*label, "audio-bands", bands);
+            }
+        }
+    }
+
+    /// The capture's terminating zero: EVERY window, hidden ones included.
+    /// Capture is about to stop, so nothing would ever reach a hidden window
+    /// again, and a widget re-shown while paused must already be at rest.
+    fn emit_all(&mut self, app: &AppHandle, bands: Bands) {
+        self.shown = shown_windows(app);
+        set_latest(bands);
+        for label in WAVEFORM_WINDOWS {
+            let _ = app.emit_to(label, "audio-bands", bands);
+        }
+    }
+
+    /// Once per owner tick: a window that just came into view gets the
+    /// latest payload at once. That matters while the stream is latched
+    /// (no live emits): the zero it missed while hidden is what lets its
+    /// Waveform settle to the dot instead of holding flat bars.
+    fn refresh(&mut self, app: &AppHandle) {
+        let now = shown_windows(app);
+        let newly = newly_shown(self.shown, now);
+        self.shown = now;
+        if !newly.iter().any(|n| *n) {
+            return;
+        }
+        let Some(latest) = *LATEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        else {
+            return;
+        };
+        for (label, n) in WAVEFORM_WINDOWS.iter().zip(newly) {
+            if n {
+                let _ = app.emit_to(*label, "audio-bands", latest);
+            }
+        }
+    }
+}
+
+fn newly_shown(prev: [bool; 2], now: [bool; 2]) -> [bool; 2] {
+    [now[0] && !prev[0], now[1] && !prev[1]]
+}
+
+/// Focus open (focus.rs), right BEFORE "focus-shown": hand the warm window
+/// the latest payload so its Waveform knows the music is live. The room
+/// remounts on focus-shown and seeds its phase from that, so it arrives
+/// with the bars already riding, exactly as it did when the warm window was
+/// fed all along. Both emits come from the same thread, so they land in
+/// order.
+pub fn prime(app: &AppHandle, label: &str) {
+    let latest = *LATEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(bands) = latest {
         let _ = app.emit_to(label, "audio-bands", bands);
     }
 }
@@ -557,6 +662,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
         // base, and is_demoted already reads it as not-demoted.
         let mut demoted: Option<(String, Instant, Duration)> = None;
         let mut visual = BandEnvelope::new();
+        let mut fanout = BandFanout::new();
         let mut scratch = vec![Complex::default(); FFT_SIZE];
         let mut snap = vec![0.0f32; FFT_SIZE];
         // Stream-health watchdog: the callback bumps `frames`; if it stalls
@@ -577,13 +683,14 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
         let mut stall_target = String::new();
 
         loop {
+            fanout.refresh(&app);
             let want = switch.load(Ordering::Relaxed);
             if !want {
                 if active.is_some() {
                     crate::karaoke::on_capture_stop(&app);
                     active = None; // drops the capture, releases the device
                     visual.reset_capture();
-                    emit_bands(&app, Bands::default());
+                    fanout.emit_all(&app, Bands::default());
                 }
             } else if active.is_none() {
                 // Open: process-scoped first (the playing app's tree only),
@@ -828,7 +935,7 @@ pub fn spawn(app: AppHandle, switch: Arc<AtomicBool>) {
             fft.process(&mut scratch);
             let rms = (snap.iter().map(|s| s * s).sum::<f32>() / snap.len() as f32).sqrt();
             if let Some(bands) = visual.after_fft(&scratch, *rate, rms) {
-                emit_bands(&app, bands);
+                fanout.emit(&app, bands);
             }
             std::thread::sleep(EMIT_INTERVAL);
         }
@@ -866,6 +973,17 @@ mod tests {
             "expected no further emits after the zero, got {saw:?}"
         );
         assert!(latch.is_latched());
+    }
+
+    #[test]
+    fn only_a_window_coming_into_view_is_caught_up() {
+        // Focus opens: the widget hides, the room shows.
+        assert_eq!(newly_shown([true, false], [false, true]), [false, true]);
+        // Focus closes: the widget comes back.
+        assert_eq!(newly_shown([false, true], [true, false]), [true, false]);
+        // Steady state and hiding never re-send.
+        assert_eq!(newly_shown([true, false], [true, false]), [false, false]);
+        assert_eq!(newly_shown([true, true], [false, false]), [false, false]);
     }
 
     #[test]

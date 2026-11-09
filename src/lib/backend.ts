@@ -24,6 +24,7 @@ import {
 } from "../types";
 import type { LyricWord } from "./lrc";
 import * as posClock from "./posClock";
+import { isWindowShown } from "./windowShown";
 
 const MOCK_DURATION = 204_000;
 
@@ -506,6 +507,15 @@ if (!IN_TAURI) {
   };
 }
 
+// Preview affordance: NO band payloads for `ms` — what a hidden window gets
+// now that audio.rs (BandFanout) feeds only the windows the user can see.
+let mockUnfedUntil = 0;
+if (!IN_TAURI) {
+  (window as unknown as { __mockUnfed?: (ms: number) => void }).__mockUnfed = (ms) => {
+    mockUnfedUntil = Date.now() + ms;
+  };
+}
+
 /** Mutate the mock payload, advancing the seq stamp like the backend does. */
 function pushMock(patch: Partial<NowPlaying>): void {
   mock = { ...mock, ...patch, seq: mock.seq + 1 };
@@ -590,13 +600,13 @@ export function onNowPlaying(cb: (np: NowPlaying) => void): () => void {
     // interval's 5s), at most one invoke is in flight (a hung backend gets
     // ONE stuck promise, never a stack), and a hidden window never re-seeds
     // (the backend deliberately emits nothing while hidden — silence there is
-    // policy, not staleness; WebView2 mirrors window visibility into
-    // document.hidden). posClock's seq gate drops a response that is
-    // genuinely a stale straggler.
+    // policy, not staleness). Hidden comes from Rust (lib/windowShown.ts):
+    // a hidden Tauri window keeps document.hidden false. posClock's seq gate
+    // drops a response that is genuinely a stale straggler.
     let reseedInflight = false;
     let lastAttemptAt = 0;
     const reseed = window.setInterval(() => {
-      if (reseedInflight || lastStatus !== "playing" || document.hidden) return;
+      if (reseedInflight || lastStatus !== "playing" || !isWindowShown()) return;
       const now = Date.now();
       if (now - lastPayloadAt < STALE_RESEED_MS || now - lastAttemptAt < STALE_RESEED_MS) return;
       lastAttemptAt = now;
@@ -773,6 +783,7 @@ export function onAudioBands(cb: (b: AudioBands) => void): () => void {
   }
   // Mock: musical-ish motion so preview exercises the reactive layer.
   const id = window.setInterval(() => {
+    if (Date.now() < mockUnfedUntil) return;
     if (mock.status !== "playing" || Date.now() < mockSilenceUntil) {
       cb({ bass: 0, mid: 0, high: 0, level: 0, spectrum: new Array<number>(SPECTRUM_BINS).fill(0) });
       return;
@@ -1156,6 +1167,12 @@ export const commands = {
   async historyThumbUrl(key: string): Promise<string | null> {
     if (!IN_TAURI) return mockHistory.some((e) => e.key === key) ? mockArt() : null;
     return invoke<string | null>("history_thumb_url", { key });
+  },
+  /** historyThumbUrl for many keys in one round trip, answers in key order
+   * (the backend reads at most 200 per call). */
+  async historyThumbUrls(keys: string[]): Promise<(string | null)[]> {
+    if (!IN_TAURI) return keys.map((k) => (mockHistory.some((e) => e.key === k) ? mockArt() : null));
+    return invoke<(string | null)[]>("history_thumb_urls", { keys });
   },
   async lyrics(
     artist: string,

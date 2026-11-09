@@ -34,9 +34,11 @@ import {
   norm,
   playlistSubtitle,
   playTime,
+  restOfLog,
   songCount,
   sortRecent,
 } from "./lib/searchLibrary";
+import { createHistoryLog } from "./lib/resurface";
 import type { HistoryEntry, NowContext, PlaylistSummary, QueueTrack } from "./types";
 import { HeartIcon, LibraryIcon } from "./icons/searchIcons";
 
@@ -473,6 +475,12 @@ export function drillItems(
 
 const HISTORY_PAGE = 200;
 
+/** The whole play log, cached for this realm: read on the first summon (for
+ * "From your history", Search.tsx) and topped up with new plays on each one
+ * after. The History filter reuses it instead of walking the log again. */
+export const historyLog = createHistoryLog((before, limit) => commands.historyPage(before, limit));
+
+
 /** The play log, newest first: a fresh first page every time the section
  * opens (a local read), more pages on scroll. `loadAll` walks the rest of
  * the log so a typed filter searches every play, not just the pages loaded
@@ -554,6 +562,10 @@ export function useHistoryList(active: boolean): {
       });
   }, []);
 
+  // Mirror of `entries` for loadAll, which runs outside a render.
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+
   const loadAll = useCallback(() => {
     if (loading.current || done.current || cursor.current === null) return;
     const g = gen.current;
@@ -561,6 +573,19 @@ export function useHistoryList(active: boolean): {
     setFilling(true);
     void (async () => {
       try {
+        // The cached whole log first: one commit instead of a page per
+        // round trip. Walking 200 at a time re-filtered the growing list on
+        // every page (about 0.8s of work for a one-letter filter on Thien's
+        // 12,900 plays, against 23ms in one go).
+        const all = await historyLog.syncEntries();
+        if (g !== gen.current) return;
+        const rest = restOfLog(all, entriesRef.current);
+        if (rest) {
+          setEntries((prev) => prev.concat(rest));
+          done.current = true;
+          setExhausted(true);
+          return;
+        }
         while (g === gen.current && !done.current && cursor.current !== null) {
           const page = await commands.historyPage(cursor.current, HISTORY_PAGE);
           if (g !== gen.current) return;
@@ -582,6 +607,8 @@ export function useHistoryList(active: boolean): {
 /** Thumb data URLs by history key (successes and misses both — a key's
  * thumb doesn't appear later in a way this list needs). */
 const thumbCache = new Map<string, string | null>();
+/** history_thumb_urls reads at most this many keys per call. */
+const THUMB_BATCH = 200;
 
 /** Resolves thumbs for `keys` (the rendered rows only) and re-renders as
  * they land. */
@@ -592,12 +619,15 @@ export function useHistoryThumbs(keys: string[]): Map<string, string | null> {
     let alive = true;
     const missing = [...new Set(keys)].filter((k) => !thumbCache.has(k));
     if (!missing.length) return;
+    // One round trip per 200 keys, not one per row.
+    const batches: string[][] = [];
+    for (let i = 0; i < missing.length; i += THUMB_BATCH) batches.push(missing.slice(i, i + THUMB_BATCH));
     void Promise.all(
-      missing.map((k) =>
+      batches.map((batch) =>
         commands
-          .historyThumbUrl(k)
-          .then((u) => thumbCache.set(k, u))
-          .catch(() => thumbCache.set(k, null)),
+          .historyThumbUrls(batch)
+          .then((urls) => batch.forEach((k, i) => thumbCache.set(k, urls[i] ?? null)))
+          .catch(() => batch.forEach((k) => thumbCache.set(k, null))),
       ),
     ).then(() => {
       if (alive) setTick((t) => t + 1);

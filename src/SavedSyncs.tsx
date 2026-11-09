@@ -7,6 +7,7 @@ import { SYNC_GLYPHS } from "./icons/geometry";
 import { DUR } from "./lib/tokens";
 import type { SyncStatus } from "./lib/backend";
 import {ResearchRecording,actionStyle} from "./ResearchRecording";
+import {isWindowShown,onWindowShown} from "./lib/windowShown";
 import type {NowPlaying} from "./types";
 
 function Glyph({kind,size=18}:{kind:"close"|"refresh"|"delete"|"music"|"working";size?:number}) {
@@ -28,7 +29,7 @@ function useActiveSyncs() {
     let timer: number | undefined;
     const poll = async () => {
       window.clearTimeout(timer);
-      if (!live || document.hidden || pending) return;
+      if (!live || !isWindowShown() || pending) return;
       pending = true;
       try {
         const next = await activeSyncs();
@@ -36,12 +37,14 @@ function useActiveSyncs() {
       } catch { if (live) { setJobs([]); setUnavailable(true); } }
       finally {
         pending = false;
-        if (live && !document.hidden) timer = window.setTimeout(poll, 1000);
+        if (live && isWindowShown()) timer = window.setTimeout(poll, 1000);
       }
     };
     void poll();
-    document.addEventListener("visibilitychange", poll);
-    return () => { live = false; window.clearTimeout(timer); document.removeEventListener("visibilitychange", poll); };
+    // Rust's shown signal, not visibilitychange: a hidden Tauri window never
+    // fires it (lib/windowShown.ts).
+    const offShown = onWindowShown(() => void poll());
+    return () => { live = false; window.clearTimeout(timer); offShown(); };
   }, []);
   return {jobs, unavailable};
 }
