@@ -149,6 +149,9 @@ function useHistoryThumb(artId: string | null): void {
  * flyby. Native `title` waits about this long; this is the styled stand-in. */
 const TIP_DELAY_MS = 500;
 
+/** The album view's cover size, which is also its title column's width. */
+const ALBUM_ART_PX = 190;
+
 /** Header text line: pans to show all of itself when it's too long (Marquee).
  * Under reduced motion it truncates instead and reveals its full value in a
  * mini tooltip after a hover hold — only when the text is actually clipped,
@@ -1207,14 +1210,18 @@ function ExpandedView({
                 transition={slideIn}
                 className="flex w-full flex-col items-center"
               >
-                <Art url={artUrl} size={190} radiusPx={12} />
+                <Art url={artUrl} size={ALBUM_ART_PX} radiusPx={12} />
                 {/* Metadata: title + artist·album, and nothing else — the
                     device tag moved OUT to the shared status band below
                     (2026-07-24). Its height-reserved slot used to live here
                     so a late "spotify-device" event couldn't nudge the hero;
                     the band is absolute, so that guarantee now holds for BOTH
                     occupants without spending a row the wave's seat needs. */}
-                <div className="mt-3 min-w-0 self-stretch text-center">
+                {/* Capped at the cover's width (Thien, 2026-11-09): a long
+                    title spanning the whole panel looked accidental once it
+                    panned instead of truncating. Same rule as Focus, whose
+                    metadata column is the art's width. */}
+                <div className="mt-3 min-w-0 text-center" style={{ width: ALBUM_ART_PX }}>
                   <Marquee className="text-sm font-medium text-fg">{np.title}</Marquee>
                   <Marquee className="text-xs text-muted">
                     {np.artist}
