@@ -133,6 +133,10 @@ struct Inner {
     last_track: Option<String>,
     /// Last raw position of the observed track — same-key replay detection.
     last_raw_pos_ms: i64,
+    /// Identity key and album of the last track observed outside a jump —
+    /// release-switch detection (media::is_release_switch). Kept apart from
+    /// last_track, which JumpGuard rewinds to its pre-jump value.
+    last_release: Option<(String, String)>,
 }
 
 fn unix_ms() -> i64 {
@@ -257,6 +261,16 @@ pub fn tick(app: &AppHandle, np: &NowPlaying) {
     // via the reconcile read on the next genuine change.
     if np.player != "none" && np.status != "none" {
         let key = media::ident_key(&np.app_id, &np.title, &np.artist);
+        // Same song, another album (Search's single while the album version
+        // played): not a track change for the fed-item bookkeeping below,
+        // but the enrichment must re-read. Jump flicker is ignored; the
+        // comparison resumes after it from the last release seen before it.
+        let release_switch = !jump_active && {
+            let mut inner = lock(&upnext);
+            let switched = media::is_release_switch(inner.last_release.as_ref(), &key, &np.album);
+            inner.last_release = Some((key.clone(), np.album.clone()));
+            switched
+        };
         let (popped, want_reconcile, changed) = {
             let mut inner = lock(&upnext);
             let same = inner.last_track.as_deref() == Some(key.as_str());
@@ -322,8 +336,8 @@ pub fn tick(app: &AppHandle, np: &NowPlaying) {
         // the new track's uri onto history's fresh candidate (spotify.rs
         // enrich_now — one in-flight, off-thread). This is what makes
         // history rows actionable without a later search round-trip.
-        if changed && np.player == "spotify" {
-            spotify::enrich_now(app);
+        if (changed || release_switch) && np.player == "spotify" {
+            spotify::enrich_now(app, &np.title, &np.album);
         }
     }
 
