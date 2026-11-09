@@ -8,8 +8,15 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-11-09
+
 ### Changed
 
+- Word karaoke shows the singer's voice. Each letter brightens and floats up into place as it's sung, the highlight flows smoothly through each line instead of jumping from syllable to syllable, and with the vocal separator installed, held notes lift and sway with the singer's pitch and loudness.
+- The Lyric syncs panel shows how good each sync is: an estimated share of words on time for each song, a line map where the least sure lines stand tallest, what the second listen fixed, and a Least sure sort. Saved syncs relearn once on their next full listen to keep these details.
+- Search is faster. "From your history" shows up within about a third of a second instead of waiting on album covers, and covers it found are remembered across restarts. History loads in 13 steps instead of 63 and filters several times faster, Library loads its lists side by side, and a search you ran in the last five minutes shows results at once.
+- A window you can't see no longer receives the waveform. The pre-opened focus window and the widget behind focus mode used to get every update, about 30 times a second.
+- Word karaoke uses about 1.3 GB less memory while it learns a song (a peak of about 2.3 GB instead of 3.5 GB) and gives most of it back as soon as the song is done instead of holding it for five minutes. Held notes reuse vocals the second listen already separated, so about half again as many get the singer's pitch and loudness at no extra cost.
 - Lyrics take far less work to draw while karaoke plays: about 40% less main-thread time per second in the widget and in focus mode, with no change to how anything looks. Line changes no longer re-read every letter of the song, and a hidden, pre-opened focus window no longer animates karaoke nobody can see.
 - Hidden windows stop animating. A Palette window you can't see used to keep drawing at full speed, because Windows never told its page it was hidden: the widget behind focus mode and the pre-opened focus window kept running karaoke, the progress bar and their status checks. Palette now tells each window when it's shown or hidden, and a hidden one does about half the work or less (the widget behind focus mode went from about 140–160 to about 66 ms of main-thread time per second). Everything catches up the instant the window shows.
 - Palette uses less memory. Every window used to load the whole 5 MB Japanese and Korean font the moment it showed one character Geist lacks, even the ✓ in "Connected ✓". The font is now cut into Hangul, Japanese and symbol files, and a window loads only the ones it shows: about 18 MB less per window when nothing on screen is Korean or Japanese, about 10 MB less with Korean, about 8 MB less with Japanese. Text looks exactly the same.
@@ -18,6 +25,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Fixed
 
+- Opening focus mode no longer flashes white for a few frames before the room fades in.
 - Refreshing Search's "From your history" brings new songs instead of cycling the same few. It used to read only your newest 600 plays (about two days), so it had a couple dozen songs to choose from, and the last row of one refresh became the first row of the next. It now reads your whole history, remembers what it showed you in this part of the day, and won't show a song again until it runs out. Picks weigh how much you've played a song against how long it's been, so refreshes reach deeper favorites. "Forgotten favorite" and "On this day" now actually appear. Opening Search still shows the same set within a morning, afternoon or evening. "Something different" no longer suggests songs you played more than a couple of days ago.
 - Word karaoke now learns most Japanese songs. Lyrics with a long-vowel bar (トートロジー), a repeat mark (悠々) or a kanji number (一人) used to make the whole song give up on word sync every time it played, so it stayed on line timing forever (Yorushika's あぶく, for one). Numbers written in digits (By 11, 7個目, 11년째) no longer stop a song either. If a line still has a word Palette can't sound out, only that line stays on line timing.
 
