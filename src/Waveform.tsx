@@ -9,12 +9,24 @@
  * the very last event. The app's ONLY
  * audio-reactive surface. State morphs use the house EASE token; per-frame
  * motion is DOM spans + scaleY transforms only (compositor-friendly) at
- * ~30fps.
+ * ~30fps, except focus mode's room, which draws its playing bars on a canvas
+ * at up to ~60-70fps (src/lib/roomCanvas.ts: at 100px tall, 30fps steps read
+ * as choppy and scaleY squashed the capsule ends).
  */
 import { useEffect, useRef, useState } from "react";
 import { type AudioBands } from "./lib/backend";
 import { Envelope, reactiveOn, subscribeBands } from "./lib/reactive";
 import { bandsStale } from "./lib/waveformFrame";
+import {
+  bezierEase,
+  blendCapsule,
+  type Capsule,
+  drawCapsules,
+  fitCanvas,
+  ROOM_FRAME_MS,
+  roomCenters,
+} from "./lib/roomCanvas";
+import { DUR, EASE } from "./lib/tokens";
 
 /** Four renditions of the same instrument: "sm" is the pill's inline text
  * separator (5 bars); "md" is the card and lyrics-header separator (7 bars,
@@ -73,6 +85,39 @@ const ENV_RELEASE_MS = 180;
 /** Height shaping exponent: <1 lifts moderate energy, but 0.6 compressed
  * everything to "medium-tall" — 0.85 keeps the loud/quiet contrast. */
 const SHAPE_EXP = 0.85;
+/** Focus mode's room. While it plays, a canvas draws the bars
+ * (roomCanvas.ts). Through the settle and bloom beats each DOM bar is three
+ * pieces (top cap, body, bottom cap) instead of one scaled pill: scaleY on a
+ * rounded-full span squashes its round ends into flat ellipses, invisible on
+ * a 2px pill separator but a stubby cylinder on a 12px room bar. The body is
+ * a plain rectangle scaled between the cap centers and the caps are real
+ * circles translated to its ends, so the union is an exact capsule at every
+ * height, and the canvas can hand a bar to the DOM at the very pose it drew.
+ * ROOM_H/ROOM_W must match GEOM.room.bar. */
+const ROOM_H = 100;
+const ROOM_W = 12;
+/** A room capsule's pieces for a total visual height in px: the body's
+ * scaleY and how far each cap sits from the center. */
+function capsulePose(heightPx: number): { body: string; top: string; bottom: string } {
+  const off = Math.max(0, (heightPx - ROOM_W) / 2);
+  return {
+    body: `scaleY(${((off * 2) / ROOM_H).toFixed(4)})`,
+    top: `translateY(${(-off).toFixed(2)}px)`,
+    bottom: `translateY(${off.toFixed(2)}px)`,
+  };
+}
+/** Collapsed pose: both caps on the center and no body, so the bar is one
+ * circle as wide as its span (a dot in the settle phases). */
+const DOT_POSE = capsulePose(0);
+/** The pieces fold to DOT_POSE on the same 260ms EASE as the span's size, so
+ * the body always ends at the cap centers and every in-between frame of the
+ * settle is still a capsule. */
+const PIECE_TRANSITION = "transform 260ms var(--ease-out-tk), background-color 220ms var(--ease-out-tk)";
+/** The canvas entrance mirrors the DOM alive state it replaced: size grows
+ * over 220ms, a faded dot comes back over 140ms, both on EASE.out. */
+const ENTER_MS = DUR[4];
+const ENTER_FADE_MS = DUR[2];
+const easeOut = bezierEase(EASE.out);
 /** Room hero silhouette: a gentle symmetric envelope so the horizon reads as
  * one intentional instrument (tall center, tapered edges — Apple's soundwave
  * shape) instead of a random picket of equal-max bars. It caps each bar's
@@ -137,7 +182,8 @@ const BLOOM_MS = 140; // DUR[2]
 let lastAlive = false;
 
 /** Per-bar geometry/visibility for a phase. Transform is deliberately NOT
- * transitioned while alive — the rAF loop owns it per frame. */
+ * transitioned while alive — the rAF loop owns it per frame. (The room's
+ * span is never transformed; its pieces and the canvas draw it.) */
 function barClass(phase: Phase, i: number, size: Size): string {
   const g = GEOM[size];
   // background-color in both lists: an art-change retint sweeps the capsules
@@ -219,6 +265,12 @@ export function Waveform({
   playing?: boolean;
 }) {
   const barsRef = useRef<Array<HTMLSpanElement | null>>([]);
+  // The room's capsule pieces (size "room" only), indexed like barsRef.
+  const bodyRef = useRef<Array<HTMLSpanElement | null>>([]);
+  const capTopRef = useRef<Array<HTMLSpanElement | null>>([]);
+  const capBottomRef = useRef<Array<HTMLSpanElement | null>>([]);
+  const rowRef = useRef<HTMLSpanElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [phase, setPhase] = useState<Phase>(lastAlive ? "alive" : "rest");
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
@@ -239,6 +291,7 @@ export function Waveform({
   const bloomingRef = useRef(false);
 
   const bins = BAR_BINS[size];
+  const onCanvas = size === "room";
 
   useEffect(() => {
     const envs = bins.map(() => new Envelope(ENV_ATTACK_MS, ENV_RELEASE_MS));
@@ -257,6 +310,105 @@ export function Waveform({
       for (const t of seqTimers.splice(0)) window.clearTimeout(t);
     };
 
+    // Room canvas (capsule only). `owned` = the canvas is drawing the bars
+    // and the DOM row is hidden; heights are the last drawn, in CSS px.
+    const heights = bins.map(() => REST * ROOM_H);
+    let owned = false;
+    let enterAt = 0;
+    let enterFrom: Capsule[] = [];
+    let centers: number[] = [];
+    let rowW = 0;
+    let rowH = 0;
+    let probe: CSSStyleDeclaration | null = null;
+
+    // Take the bars from the DOM: start each capsule where its dot is now
+    // (mid-fold on a snap-back), then hide the row. One forced layout per
+    // bloom, not per frame.
+    const takeOver = (now: number): boolean => {
+      const canvas = canvasRef.current;
+      const row = rowRef.current;
+      // No 2D context (GPU process lost, say): keep the DOM bars rather than
+      // hide them behind a canvas that can't draw.
+      if (!canvas || !row || !canvas.getContext("2d")) return false;
+      const box = canvas.getBoundingClientRect();
+      if (box.width === 0 || box.height === 0) return false; // not laid out yet
+      rowW = box.width;
+      rowH = box.height;
+      centers = roomCenters(bins.length, rowW, ROOM_W);
+      enterFrom = bins.map((_, i) => {
+        const span = barsRef.current[i];
+        const top = capTopRef.current[i];
+        const bottom = capBottomRef.current[i];
+        if (!span || !top || !bottom) return { cx: centers[i], cy: rowH / 2, w: ROOM_W, h: ROOM_W, a: 1 };
+        const t = top.getBoundingClientRect();
+        const bt = bottom.getBoundingClientRect();
+        return {
+          cx: (t.left + t.right) / 2 - box.left,
+          cy: (t.top + bt.bottom) / 2 - box.top,
+          w: t.width,
+          h: bt.bottom - t.top,
+          a: Number(getComputedStyle(span).opacity),
+        };
+      });
+      // The accent, read live off a piece so an art-change retint (its
+      // 220ms background-color transition) sweeps the canvas too.
+      const mid = capTopRef.current[(bins.length - 1) / 2];
+      probe = mid ? getComputedStyle(mid) : null;
+      row.style.visibility = "hidden";
+      owned = true;
+      enterAt = now;
+      return true;
+    };
+
+    // Draw one frame; true while the entrance is still running.
+    const drawRoom = (now: number): boolean => {
+      const canvas = canvasRef.current;
+      if (!canvas || (!owned && !takeOver(now))) return false;
+      const g = canvas.getContext("2d");
+      if (!g) return false;
+      const dpr = window.devicePixelRatio || 1;
+      fitCanvas(canvas, rowW, rowH, dpr);
+      const t = now - enterAt;
+      const entering = t < ENTER_MS;
+      const tg = easeOut(Math.min(1, t / ENTER_MS));
+      const ta = easeOut(Math.min(1, t / ENTER_FADE_MS));
+      const caps = heights.map((h, i) => {
+        const live = { cx: centers[i], cy: rowH / 2, w: ROOM_W, h, a: 1 };
+        return entering ? blendCapsule(enterFrom[i], live, tg, ta) : live;
+      });
+      drawCapsules(g, caps, probe?.backgroundColor || "#888", dpr);
+      return entering;
+    };
+
+    // Give the bars back to the DOM at the pose last drawn, then fold them
+    // to dots on the settle's EASE. Call before leaving "alive".
+    const releaseCanvas = () => {
+      if (!owned) return;
+      owned = false;
+      const row = rowRef.current;
+      const canvas = canvasRef.current;
+      const pieces = bins.map((_, i) => [bodyRef.current[i], capTopRef.current[i], capBottomRef.current[i]] as const);
+      pieces.forEach(([body, top, bottom], i) => {
+        if (!body || !top || !bottom) return;
+        const pose = capsulePose(heights[i]);
+        for (const el of [body, top, bottom]) el.style.transition = "none";
+        body.style.transform = pose.body;
+        top.style.transform = pose.top;
+        bottom.style.transform = pose.bottom;
+      });
+      if (row) row.style.visibility = "";
+      if (canvas) canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+      // Flush, so the fold below transitions FROM the drawn pose.
+      void row?.offsetWidth;
+      for (const [body, top, bottom] of pieces) {
+        if (!body || !top || !bottom) continue;
+        for (const el of [body, top, bottom]) el.style.transition = PIECE_TRANSITION;
+        body.style.transform = DOT_POSE.body;
+        top.style.transform = DOT_POSE.top;
+        bottom.style.transform = DOT_POSE.bottom;
+      }
+    };
+
     const frame = (now: number) => {
       raf = requestAnimationFrame(frame);
       // The settle sequence owns the bars once it starts; CSS transitions
@@ -264,9 +416,11 @@ export function Waveform({
       if (phaseRef.current !== "alive") {
         running = false;
         cancelAnimationFrame(raf);
+        releaseCanvas(); // no-op unless a path left "alive" without it
         return;
       }
-      if (now - last < 33) return; // ~30fps
+      // ~30fps for the DOM sizes; the room canvas paces itself finer.
+      if (now - last < (onCanvas ? ROOM_FRAME_MS : 33)) return;
       const dt = Math.min(now - last, 100);
       last = now;
       const b = latest !== null && !bandsStale(now, latestAt) ? latest : null;
@@ -278,14 +432,21 @@ export function Waveform({
           b === null ? 0 : (b.spectrum?.[bin] ?? (bin <= 5 ? b.bass : bin <= 10 ? b.mid : b.high));
         const e = envs[i].step(target, dt);
         peak = Math.max(peak, e);
-        const el = barsRef.current[i];
         // Mildly concave shaping (SHAPE_EXP) between the uniform REST floor and
         // this bar's PEAK ceiling (the room envelope; 1 elsewhere) — quiet
         // settles to an even line, energy blooms into the tapered silhouette.
-        if (el) el.style.transform = `scaleY(${(REST + Math.pow(e, SHAPE_EXP) * (peaks[i] - REST)).toFixed(3)})`;
+        const scale = REST + Math.pow(e, SHAPE_EXP) * (peaks[i] - REST);
+        if (onCanvas) {
+          heights[i] = scale * ROOM_H;
+        } else {
+          const el = barsRef.current[i];
+          if (el) el.style.transform = `scaleY(${scale.toFixed(3)})`;
+        }
       }
-      // Idle-stop once decayed; the next band event restarts the loop.
-      if (peak < IDLE_EPS && (b === null || b.level <= 0.001)) {
+      const entering = onCanvas && drawRoom(now);
+      // Idle-stop once decayed (the canvas keeps its last frame); the next
+      // band event restarts the loop. Never mid-entrance.
+      if (!entering && peak < IDLE_EPS && (b === null || b.level <= 0.001)) {
         running = false;
         cancelAnimationFrame(raf);
       }
@@ -310,6 +471,7 @@ export function Waveform({
         lastAlive = false;
         // Reduced motion: one state change, not four discrete snaps —
         // the global CSS guard zeroes transitions but not these timers.
+        releaseCanvas();
         if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
           setPhase("rest");
           return;
@@ -457,6 +619,12 @@ export function Waveform({
       clearSeq();
       running = false;
       cancelAnimationFrame(raf);
+      // Leave the DOM row visible for whatever renders next (StrictMode's
+      // remount keeps these elements).
+      if (owned) {
+        owned = false;
+        if (rowRef.current) rowRef.current.style.visibility = "";
+      }
     };
   }, []);
 
@@ -503,6 +671,7 @@ export function Waveform({
           fades back in on bloom. */}
       <span
         aria-hidden
+        ref={rowRef}
         className={`flex h-full w-full items-center justify-between overflow-hidden ${
           atRest ? "opacity-0" : "opacity-100 [transition:opacity_220ms_var(--ease-out-tk)]"
         }`}
@@ -516,9 +685,52 @@ export function Waveform({
             : bloomingRef.current
               ? riseDelayMs(phase, i, size)
               : 0;
+          if (onCanvas) {
+            // The span sizes the bar (its width is the caps' diameter) and
+            // carries the phase opacity/blur; the pieces paint it. React only
+            // ever renders DOT_POSE: releaseCanvas poses and folds the pieces
+            // imperatively, and the bloom never moves them.
+            const piece = "absolute inset-x-0 bg-accent";
+            const cap = `${piece} top-1/2 -mt-[50%] aspect-square rounded-full`;
+            const pieceStyle = (transform: string) => ({ transform, transition: PIECE_TRANSITION });
+            return (
+              <span
+                key={i}
+                data-wave-bar
+                ref={(el) => {
+                  barsRef.current[i] = el;
+                }}
+                className={`relative ${barClass(phase, i, size)}`}
+                style={{ transitionDelay: delay ? `${delay}ms` : undefined }}
+              >
+                <span
+                  ref={(el) => {
+                    bodyRef.current[i] = el;
+                  }}
+                  className={`${piece} top-[calc(50%-50px)] h-[100px] origin-center`}
+                  style={pieceStyle(DOT_POSE.body)}
+                />
+                <span
+                  ref={(el) => {
+                    capTopRef.current[i] = el;
+                  }}
+                  className={cap}
+                  style={pieceStyle(DOT_POSE.top)}
+                />
+                <span
+                  ref={(el) => {
+                    capBottomRef.current[i] = el;
+                  }}
+                  className={cap}
+                  style={pieceStyle(DOT_POSE.bottom)}
+                />
+              </span>
+            );
+          }
           return (
             <span
               key={i}
+              data-wave-bar
               ref={(el) => {
                 barsRef.current[i] = el;
               }}
@@ -531,6 +743,10 @@ export function Waveform({
           );
         })}
       </span>
+      {/* The room's playing bars (roomCanvas.ts). Blank outside "alive". */}
+      {size === "room" && (
+        <canvas ref={canvasRef} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full" />
+      )}
     </span>
   );
 }
