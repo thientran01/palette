@@ -72,7 +72,7 @@ import {
 } from "./Queue";
 import { ProgressBar, Transport } from "./Transport";
 import { SeparatorDot, Waveform } from "./Waveform";
-import { Marquee } from "./Marquee";
+import { Marquee, MarqueeGroup } from "./Marquee";
 import { IN_TAURI, type NowPlaying, type SpotifyDevice } from "./types";
 
 /** How long the "No synced lyrics" caption stays before fading out — the
@@ -194,12 +194,14 @@ function IdentityStack({
         className={`${dx !== 0 ? "track-in" : "title-in"} mt-8 w-full min-w-0`}
         style={dx !== 0 ? ({ "--track-dx": `${dx}px` } as CSSProperties) : undefined}
       >
-        <Marquee className="text-[40px] font-medium leading-tight text-fg">{np.title}</Marquee>
-        <Marquee className="mt-1 text-[22px] leading-7 text-muted">
-          {np.artist}
-          {np.album && <SeparatorDot />}
-          {np.album}
-        </Marquee>
+        <MarqueeGroup>
+          <Marquee className="text-[40px] font-medium leading-tight text-fg">{np.title}</Marquee>
+          <Marquee className="mt-1 text-[22px] leading-7 text-muted">
+            {np.artist}
+            {np.album && <SeparatorDot />}
+            {np.album}
+          </Marquee>
+        </MarqueeGroup>
         {device && (
           <div className="mt-2">
             {/* size="lg" — DeviceTag's real room-scale knob; a className

@@ -8,13 +8,18 @@
  *
  *   rest at start → pan out → rest at end → pan back
  *
- * The start rest is the longer one and comes first, so a new song's title
- * sits still long enough to read its beginning (and for the track-change
- * slide to finish) before anything moves. Speed is in em/s, so a 40px Focus
- * title and a 12px pill artist pan at the same pace in characters. The pan
- * eases in and out on a sine curve: its peak speed is only ~1.6x the
- * average, where EASE.inOut (cubic) peaks at 3x and reads as a lurch over a
- * multi-second pan.
+ * The pan is LINEAR: it's text being read, so it moves at one steady reading
+ * pace (Emil Kowalski's easing rule: constant motion like a marquee is
+ * linear). The first cut eased in and out, which ran the middle of each pan
+ * ~1.6x faster than its average and made it hard to read (Thien,
+ * 2026-11-09). Speed is in em/s, so Focus's 40px title and the pill's 12px
+ * artist pan at the same pace in characters.
+ *
+ * Lines that belong together (a title and its artist) share one clock: same
+ * speed, same start, same rest, and they arrive home together. The shorter
+ * line finishes its pan out first and waits; on the way back it leaves later
+ * so both land at the start at the same moment. Panning at different speeds
+ * and times read as broken (Thien, 2026-11-09).
  */
 
 export const MARQUEE = {
@@ -22,14 +27,14 @@ export const MARQUEE = {
    * outside the column, so it must stay under the gap to the left
    * neighbor (8px pill, 10px expanded, 12px card at 12-15px text). */
   fadeEm: 0.5,
-  /** Average pan speed, in em per second (~26px/s at 12px). */
-  speedEmPerS: 2.2,
+  /** Pan speed, in em per second: ~20px/s for the 15px titles, a steady
+   * reading pace. Was 2.2 average with a 1.6x eased peak. */
+  speedEmPerS: 1.3,
   /** Floor for one pan, so a few pixels of overflow glide rather than twitch. */
   minPanMs: 1200,
+  /** Long enough to read the start (and let a track-change slide finish). */
   restStartMs: 3000,
-  restEndMs: 1600,
-  /** Sine in-out. */
-  ease: [0.37, 0, 0.63, 1],
+  restEndMs: 2000,
 } as const;
 
 /** Overflow under this many px isn't worth moving for (subpixel rounding). */
@@ -50,30 +55,52 @@ export function marqueeTravel(textPx: number, columnPx: number, fadePx: number):
   return Math.round((textPx - columnPx + fadePx) * 10) / 10;
 }
 
-export interface MarqueeCycle {
-  panMs: number;
-  totalMs: number;
-  keyframes: Keyframe[];
+/** One line's measurement: how far it travels, at what font size. */
+export interface MarqueeLine {
+  travelPx: number;
+  fontPx: number;
 }
 
-/** One full cycle for `travelPx` of travel at a font size of `fontPx`. */
-export function marqueeCycle(travelPx: number, fontPx: number): MarqueeCycle {
-  const pxPerMs = (MARQUEE.speedEmPerS * fontPx) / 1000;
-  const panMs = Math.max(MARQUEE.minPanMs, Math.round(travelPx / pxPerMs));
+/** The clock a group of lines shares. */
+export interface MarqueeClock {
+  /** Pan speed for every line in the group. */
+  pxPerMs: number;
+  /** The longest line's pan; the cycle is built around it. */
+  panMs: number;
+  totalMs: number;
+}
+
+/** The shared clock for the lines that pan, or null when none does. Speed
+ * comes from the largest panning font, so a title and its smaller artist
+ * line move together at the title's pace. */
+export function marqueeClock(lines: Iterable<MarqueeLine>): MarqueeClock | null {
+  let travel = 0;
+  let font = 0;
+  for (const l of lines) {
+    if (l.travelPx <= 0) continue;
+    travel = Math.max(travel, l.travelPx);
+    font = Math.max(font, l.fontPx);
+  }
+  if (travel <= 0) return null;
+  const pxPerMs = (MARQUEE.speedEmPerS * font) / 1000;
+  const panMs = Math.max(MARQUEE.minPanMs, Math.round(travel / pxPerMs));
+  return { pxPerMs, panMs, totalMs: MARQUEE.restStartMs + panMs + MARQUEE.restEndMs + panMs };
+}
+
+/** One line's keyframes on the group clock (linear between them). */
+export function marqueeKeyframes(travelPx: number, clock: MarqueeClock): Keyframe[] {
   const { restStartMs: r, restEndMs: e } = MARQUEE;
-  const totalMs = r + panMs + e + panMs;
-  const ease = `cubic-bezier(${MARQUEE.ease.join(", ")})`;
+  const P = clock.panMs;
+  const T = clock.totalMs;
+  const p = Math.min(P, Math.max(MARQUEE.minPanMs, Math.round(travelPx / clock.pxPerMs)));
   const home = "translateX(0px)";
   const away = `translateX(${-travelPx}px)`;
-  return {
-    panMs,
-    totalMs,
-    keyframes: [
-      { offset: 0, transform: home },
-      { offset: r / totalMs, transform: home, easing: ease },
-      { offset: (r + panMs) / totalMs, transform: away },
-      { offset: (r + panMs + e) / totalMs, transform: away, easing: ease },
-      { offset: 1, transform: home },
-    ],
-  };
+  return [
+    { offset: 0, transform: home },
+    { offset: r / T, transform: home },
+    { offset: (r + p) / T, transform: away },
+    // Leave late by the difference, so every line lands home together.
+    { offset: (r + P + e + (P - p)) / T, transform: away },
+    { offset: 1, transform: home },
+  ];
 }
