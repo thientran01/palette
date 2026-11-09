@@ -27,7 +27,8 @@ import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
 import { isProvisionalDuration, trackIdOf } from "./lib/trackId";
-import { driveWordRows, WIPE_FEATHER_PX, type WordRow } from "./lib/wordWipeDriver";
+import { driveWordRows, type WordRow } from "./lib/wordWipeDriver";
+import { letterSegments } from "./lib/letterRise";
 import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
@@ -129,22 +130,15 @@ function useWordWipe(
       const index = Number(el.dataset.wordRow);
       const words = lines[index]?.words;
       if (!words?.length) continue;
-      const spans = Array.from(el.querySelectorAll<HTMLElement>("[data-word]"));
-      // offsetWidth is the laid-out width, unaffected by the ink's scale.
-      rows.push({ index, words, style: el.style, el,
-        spans: spans.map(span => span.style), widths: spans.map(span => span.offsetWidth) });
+      const letters = Array.from(el.querySelectorAll<HTMLElement>("[data-word]"),
+        word => Array.from(word.querySelectorAll<HTMLElement>("[data-letter]"), letter => letter.style));
+      rows.push({ index, words, style: el.style, el, letters });
     }
     return driveWordRows(rows, currentLine, leadMs, posClock, {
       request: cb => requestAnimationFrame(cb), cancel: id => cancelAnimationFrame(id),
     });
   }, [list, lines, currentLine, leadMs, enabled]);
 }
-
-/** Soft edge on the wipe, either side of the light's center (--wipe, in
- * the span's own px). A hard stop strobes at 60fps; 11px reads as one
- * moving light. No white sheen on the filling word and no halo when it
- * completes: at one word per ~100ms syllable those flickered (2026-11-08). */
-const WORD_GRADIENT = `linear-gradient(to right, var(--word-bright, currentColor) calc(var(--wipe, -${WIPE_FEATHER_PX + 1}px) - ${WIPE_FEATHER_PX}px), currentColor calc(var(--wipe, -${WIPE_FEATHER_PX + 1}px) + ${WIPE_FEATHER_PX}px))`;
 
 export type LyricsState =
   // "none" = a definitive served miss (LRCLIB has no lyrics for this track);
@@ -645,17 +639,13 @@ const LyricLineRow = memo(function LyricLineRow({
       <span className="lyric-ink">
       {timed
         ? words.map((w, wi) => (
-            // Every span carries the same gradient (drawn only while the
-            // row is data-wiping, see index.css); useWordWipe moves only
-            // its --wipe stop, so a word boundary is a style write, not
-            // a re-render or a class swap.
-            <span
-              key={`${w.t}-${wi}`}
-              data-word
-              className="inline-block"
-              style={{ "--word-gradient": WORD_GRADIENT } as React.CSSProperties}
-            >
-              {w.text}
+            // Each letter rises on its own (letterRise.ts). useWordWipe
+            // writes only its --lit / --bend, so a syllable is a style
+            // write, not a re-render. The word stays one inline-block, so
+            // it never breaks across rows between its letters.
+            <span key={`${w.t}-${wi}`} data-word className="inline-block">
+              {letterSegments(w.text).map((seg, si) =>
+                seg.letter ? <span key={si} data-letter>{seg.text}</span> : seg.text)}
             </span>
           ))
         : lyricWrapSegments(text).map((seg, si) =>

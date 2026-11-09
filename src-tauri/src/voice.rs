@@ -21,7 +21,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
-/// Sung at least this long: a held note. Must match lineCursor.ts HELD_MS.
+/// Sung at least this long: a held note. Must match src/lib/voiceMotion.ts HELD_MS.
 pub const HELD_MS: i64 = 450;
 /// Frame step of a track.
 pub const HOP_MS: i64 = 10;
@@ -44,7 +44,8 @@ const LOUD_WIN: usize = 640;
 pub struct VoiceTrack {
     /// Pitch in cents from A440, smoothed; `UNVOICED` where none.
     pub c: Vec<i16>,
-    /// Loudness 0-100 against the song's held notes, smoothed.
+    /// Loudness 0-100 against the song's held notes, smoothed. Saved for
+    /// later use; the Rise highlight reads only pitch.
     pub l: Vec<u8>,
 }
 
