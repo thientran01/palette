@@ -159,18 +159,88 @@ pub(crate) fn parse_item(row: &serde_json::Value) -> Option<QueueTrack> {
     track.uri.starts_with("spotify:track:").then_some(track)
 }
 
-/// Walk a paged endpoint by its `next` links, up to `max_pages`. Returns the
-/// first page's `total` and every row from `field` (usually "items").
+/// Pages of an offset-paged list fetched side by side once the first page
+/// says how many there are. Walking `next` links one at a time made a
+/// 1,000-song Liked Songs 20 round trips back to back; four at a time it is
+/// six. Kept small: every page is one more request against Spotify's rate
+/// limit, and a 429 still gets api_call's one Retry-After wait.
+const PAGE_FANOUT: usize = 4;
+
+/// The offsets of the pages after the first, when `next` is an offset link
+/// and `total` says how far the list goes: `[limit, 2·limit, …]` up to
+/// `max_pages` pages in all. None = walk `next` links instead (cursor-paged
+/// lists like recently-played have no offset and no total).
+pub(crate) fn rest_offsets(
+    next: Option<&str>,
+    total: Option<i64>,
+    limit: usize,
+    max_pages: usize,
+) -> Option<Vec<usize>> {
+    let next = next?;
+    if !next.contains("offset=") || limit == 0 {
+        return None;
+    }
+    let total = usize::try_from(total?).ok()?;
+    let pages = total.div_ceil(limit).min(max_pages);
+    Some((1..pages).map(|i| i * limit).collect())
+}
+
+/// Walk a paged endpoint up to `max_pages`. Returns the first page's `total`
+/// and every row from `items`. Offset-paged lists fetch the rest of their
+/// pages in parallel (rest_offsets); anything else follows `next` links.
 fn walk(
     app: &AppHandle,
     first_url: String,
     max_pages: usize,
     on_403: &'static str,
 ) -> Result<(Option<i64>, Vec<serde_json::Value>), &'static str> {
-    let mut rows = Vec::new();
-    let mut total = None;
-    let mut url = Some(first_url);
-    for _ in 0..max_pages {
+    let Some(first) = spotify::api_call_impl(app, "GET", &first_url, None, on_403)? else {
+        return Ok((None, Vec::new()));
+    };
+    let mut total = first["total"].as_i64();
+    // No `items` array on the first page = Spotify answered with metadata
+    // only (a playlist the user doesn't own).
+    let Some(items) = first["items"].as_array() else {
+        return Err("restricted");
+    };
+    let mut rows: Vec<serde_json::Value> = items.clone();
+    let next = first["next"].as_str();
+    if let Some(offsets) = rest_offsets(next, total, PAGE as usize, max_pages) {
+        let sep = if first_url.contains('?') { '&' } else { '?' };
+        let urls: Vec<String> = offsets
+            .iter()
+            .map(|o| format!("{first_url}{sep}offset={o}"))
+            .collect();
+        // In page order, with the sequential walk's rules: an error fails
+        // the whole walk, an empty answer or a page without items ends it
+        // (and no further batch is sent).
+        for batch in urls.chunks(PAGE_FANOUT) {
+            let pages: Vec<_> = std::thread::scope(|scope| {
+                let handles: Vec<_> = batch
+                    .iter()
+                    .map(|u| {
+                        scope.spawn(move || spotify::api_call_impl(app, "GET", u, None, on_403))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or(Err("offline")))
+                    .collect()
+            });
+            for page in pages {
+                let Some(v) = page? else {
+                    return Ok((total, rows));
+                };
+                match v["items"].as_array() {
+                    Some(items) if !items.is_empty() => rows.extend(items.iter().cloned()),
+                    _ => return Ok((total, rows)),
+                }
+            }
+        }
+        return Ok((total, rows));
+    }
+    let mut url = next.map(String::from);
+    for _ in 1..max_pages {
         let Some(u) = url.take() else { break };
         let Some(v) = spotify::api_call_impl(app, "GET", &u, None, on_403)? else {
             break;
@@ -180,9 +250,6 @@ fn walk(
         }
         match v["items"].as_array() {
             Some(items) => rows.extend(items.iter().cloned()),
-            // No `items` array on the first page = Spotify answered with
-            // metadata only (a playlist the user doesn't own).
-            None if rows.is_empty() => return Err("restricted"),
             None => break,
         }
         url = v["next"].as_str().map(String::from);
@@ -203,17 +270,31 @@ fn library(app: &AppHandle) -> LibraryResult {
     if !spotify::has_scopes(app, &LIBRARY_SCOPES) {
         return LibraryResult::bare("needs_reconnect");
     }
-    let me = match me_id(app) {
+    // The account id, the playlists and the recently-played log don't need
+    // each other until the rows are parsed, so the three reads run side by
+    // side: back to back they were 1 + (pages) + up to 4 round trips before
+    // the Library could paint.
+    let (me, walked, recent) = std::thread::scope(|scope| {
+        let me = scope.spawn(|| me_id(app));
+        let recent = scope.spawn(|| recent_contexts(app));
+        let first = format!("https://api.spotify.com/v1/me/playlists?limit={PAGE}");
+        let walked = walk(app, first, MAX_PLAYLIST_PAGES, "needs_reconnect");
+        (
+            me.join().unwrap_or(Err("offline")),
+            walked,
+            recent.join().unwrap_or_default(),
+        )
+    });
+    let me = match me {
         Ok(id) => id,
         Err(e) => return LibraryResult::bare(e),
     };
-    let first = format!("https://api.spotify.com/v1/me/playlists?limit={PAGE}");
-    match walk(app, first, MAX_PLAYLIST_PAGES, "needs_reconnect") {
+    match walked {
         Ok((_, rows)) => LibraryResult {
             status: "ok".into(),
             playlists: rows.iter().filter_map(|r| parse_playlist(r, &me)).collect(),
             user_id: me,
-            recent_contexts: recent_contexts(app),
+            recent_contexts: recent,
         },
         Err("restricted") => LibraryResult::bare("offline"),
         Err(e) => LibraryResult::bare(e),
@@ -431,6 +512,23 @@ pub async fn spotify_play_context(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rest_offsets_pages_an_offset_list_up_to_the_cap() {
+        let next = Some("https://api.spotify.com/v1/me/tracks?offset=50&limit=50");
+        assert_eq!(
+            rest_offsets(next, Some(180), 50, 40),
+            Some(vec![50, 100, 150])
+        );
+        // Exactly two pages, and the page cap.
+        assert_eq!(rest_offsets(next, Some(100), 50, 40), Some(vec![50]));
+        assert_eq!(rest_offsets(next, Some(5000), 50, 3), Some(vec![50, 100]));
+        // No next page, a cursor link, or no total: walk `next` instead.
+        assert_eq!(rest_offsets(None, Some(180), 50, 40), None);
+        let cursor = Some("https://api.spotify.com/v1/me/player/recently-played?before=1&limit=50");
+        assert_eq!(rest_offsets(cursor, Some(180), 50, 40), None);
+        assert_eq!(rest_offsets(next, None, 50, 40), None);
+    }
 
     #[test]
     fn playlist_reads_new_items_total_and_old_tracks_total() {

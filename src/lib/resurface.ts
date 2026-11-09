@@ -28,10 +28,12 @@ export const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 /** A pick must have been genuinely listened to (cumulative). */
 export const RESURFACE_MIN_MS = 60_000;
-/** History page size (history_page clamps to 200). */
-const PAGE = 200;
+/** History page size for the whole-log read (history_page clamps to 1000).
+ * Was 200: Thien's 12,900-play log took 63 sequential IPC round trips on the
+ * first summon; at 1000 it takes 13. */
+const PAGE = 1000;
 /** Safety cap on pages read per sync: 100k plays. */
-const MAX_PAGES = 500;
+const MAX_PAGES = 100;
 /** Rows in the section. */
 export const RESURFACE_ROWS = 4;
 
@@ -66,26 +68,31 @@ type Pager = (before: number | null, limit: number) => Promise<HistoryEntry[]>;
 /** The whole play log, newest first, read once and then topped up with only
  * the plays logged since the last sync. history.jsonl is append-only, so a
  * top-up pages from the newest entry back until it meets one it already
- * holds. reset() is for history-cleared. */
+ * holds. reset() is for history-cleared. `syncEntries` is the same log as
+ * the raw rows, for the History section's filter (it searches every play,
+ * and walking the log again page by page cost it a second or more). */
 export interface HistoryLog {
   sync(): Promise<Listen[]>;
+  syncEntries(): Promise<readonly HistoryEntry[]>;
   reset(): void;
 }
 
 const listenId = (e: { key: string; started_at_ms: number }) => `${e.key}@${e.started_at_ms}`;
 
-export function createHistoryLog(page: Pager): HistoryLog {
+export function createHistoryLog(page: Pager, pageSize = PAGE): HistoryLog {
   let listens: Listen[] = [];
+  let entries: HistoryEntry[] = [];
   let ids = new Set<string>();
   let epoch = 0;
 
   const run = async (): Promise<Listen[]> => {
     const mine = epoch;
     const fresh: Listen[] = [];
+    const freshEntries: HistoryEntry[] = [];
     const freshIds = new Set<string>();
     let before: number | null = null;
     for (let i = 0; i < MAX_PAGES; i++) {
-      const batch = await page(before, PAGE);
+      const batch = await page(before, pageSize);
       if (mine !== epoch) return listens;
       let met = false;
       for (const e of batch) {
@@ -96,6 +103,7 @@ export function createHistoryLog(page: Pager): HistoryLog {
         }
         if (freshIds.has(id)) continue;
         freshIds.add(id);
+        freshEntries.push(e);
         fresh.push({
           key: e.key,
           title: e.title,
@@ -106,11 +114,12 @@ export function createHistoryLog(page: Pager): HistoryLog {
           uri: e.spotify_uri ?? null,
         });
       }
-      if (met || batch.length < PAGE) break;
+      if (met || batch.length < pageSize) break;
       before = batch[batch.length - 1].started_at_ms;
     }
     if (fresh.length) {
       listens = fresh.concat(listens);
+      entries = freshEntries.concat(entries);
       for (const id of freshIds) ids.add(id);
     }
     return listens;
@@ -119,20 +128,27 @@ export function createHistoryLog(page: Pager): HistoryLog {
   // two overlapping top-ups would both prepend the same new plays.
   let flight: Promise<Listen[]> | null = null;
 
+  const sync = () => {
+    if (!flight) {
+      const p: Promise<Listen[]> = run().finally(() => {
+        if (flight === p) flight = null;
+      });
+      flight = p;
+    }
+    return flight;
+  };
   return {
-    sync() {
-      if (!flight) {
-        const p: Promise<Listen[]> = run().finally(() => {
-          if (flight === p) flight = null;
-        });
-        flight = p;
-      }
-      return flight;
+    sync,
+    async syncEntries() {
+      const mine = epoch;
+      await sync();
+      return mine === epoch ? entries : [];
     },
     reset() {
       epoch++;
       flight = null;
       listens = [];
+      entries = [];
       ids = new Set();
     },
   };

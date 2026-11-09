@@ -61,14 +61,15 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, Window};
 use windows::core::BOOL;
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW,
-    GetWindowThreadProcessId, SetWindowPos, SystemParametersInfoW, GWL_EXSTYLE, HWND_TOPMOST,
-    SET_WINDOW_POS_FLAGS, SM_SWAPBUTTON, SPI_GETCLIENTAREAANIMATION, SWP_ASYNCWINDOWPOS,
-    SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect,
+    GetWindowThreadProcessId, IsWindowVisible, SetWindowPos, SystemParametersInfoW, GWL_EXSTYLE,
+    HWND_TOPMOST, SET_WINDOW_POS_FLAGS, SM_SWAPBUTTON, SPI_GETCLIENTAREAANIMATION,
+    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WS_EX_TOPMOST,
 };
 
@@ -621,6 +622,7 @@ fn spawn_animation(
 /// The raw geometry — NO corner-glide grace.
 fn anchored_rect(
     window: &WebviewWindow,
+    scale: f64,
     size: Option<(f64, f64)>,
     wx: i32,
     wy: i32,
@@ -630,7 +632,6 @@ fn anchored_rect(
     let Some((sw, sh)) = size else {
         return (wx, wy, ww, wh);
     };
-    let scale = window.scale_factor().unwrap_or(1.0);
     let hw = ((sw * scale).round() as i32).min(ww);
     let hh = ((sh * scale).round() as i32).min(wh);
     let corner = window
@@ -647,6 +648,7 @@ fn anchored_rect(
 /// click-through gate only.
 fn footprint_rect(
     window: &WebviewWindow,
+    scale: f64,
     wx: i32,
     wy: i32,
     ww: i32,
@@ -657,7 +659,7 @@ fn footprint_rect(
         .hit_size
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    anchored_rect(window, size, wx, wy, ww, wh)
+    anchored_rect(window, scale, size, wx, wy, ww, wh)
 }
 
 /// The VISIBLE widget's box — the mode's own MODE_SIZES rect, never the
@@ -679,7 +681,15 @@ fn placement_rect(
         .lock()
         .unwrap_or_else(PoisonError::into_inner))
     .or(*dock.hit_size.lock().unwrap_or_else(PoisonError::into_inner));
-    anchored_rect(window, size, wx, wy, ww, wh)
+    anchored_rect(
+        window,
+        window.scale_factor().unwrap_or(1.0),
+        size,
+        wx,
+        wy,
+        ww,
+        wh,
+    )
 }
 
 /// The window origin that puts a settled footprint at `landing`, plus a
@@ -703,7 +713,14 @@ fn window_origin(
 /// whole window during the corner-glide grace — while the shell travels
 /// between seats, no corner-anchored rect is honest, so the whole window
 /// stays interactive until it lands (see corner_changed / HIT_GRACE_MS).
-fn hit_rect(window: &WebviewWindow, wx: i32, wy: i32, ww: i32, wh: i32) -> (i32, i32, i32, i32) {
+fn hit_rect(
+    window: &WebviewWindow,
+    scale: f64,
+    wx: i32,
+    wy: i32,
+    ww: i32,
+    wh: i32,
+) -> (i32, i32, i32, i32) {
     let dock = window.state::<Dock>();
     let changed = *dock
         .corner_changed
@@ -712,7 +729,7 @@ fn hit_rect(window: &WebviewWindow, wx: i32, wy: i32, ww: i32, wh: i32) -> (i32,
     if changed.is_some_and(|t| t.elapsed() < Duration::from_millis(HIT_GRACE_MS)) {
         return (wx, wy, ww, wh);
     }
-    footprint_rect(window, wx, wy, ww, wh)
+    footprint_rect(window, scale, wx, wy, ww, wh)
 }
 
 /// Persist the docked corner (settings.json "dockCorner"). window-state
@@ -963,7 +980,7 @@ pub fn set_hit_size(dock: State<Dock>, width: f64, height: f64, mode_width: f64,
 /// main thread to pump — tao passes exactly these flags for its own
 /// always-on-top call, and this loop also drives click-through, so it must
 /// not inherit a main-thread stall (the PR #101/#103 hang class).
-fn reassert_topmost(window: &WebviewWindow, own_pid: u32) {
+fn reassert_topmost(hwnd: HWND, own_pid: u32) {
     unsafe {
         let fg = GetForegroundWindow();
         if fg == HWND::default() {
@@ -974,9 +991,8 @@ fn reassert_topmost(window: &WebviewWindow, own_pid: u32) {
         if pid == own_pid && GetWindowLongPtrW(fg, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0 {
             return; // Search / focus owns the front — leave our stack alone
         }
-        let Ok(hwnd) = window.hwnd() else { return };
         let _ = SetWindowPos(
-            HWND(hwnd.0),
+            hwnd,
             Some(HWND_TOPMOST),
             0,
             0,
@@ -984,6 +1000,39 @@ fn reassert_topmost(window: &WebviewWindow, own_pid: u32) {
             0,
             SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
+    }
+}
+
+/// The main window's HWND, carried into the hit watcher as an integer (HWND
+/// itself is not Send). Its reads match tao's own implementations exactly:
+/// is_visible() is IsWindowVisible, outer_position()/outer_size() are
+/// GetWindowRect, and scale_factor() is the window's DPI / 96 (tao caches it
+/// from WM_DPICHANGED; GetDpiForWindow reads the same value live). None of
+/// them sends a message, so none of them touches the main thread.
+#[derive(Clone, Copy)]
+struct WatchedWindow(isize);
+
+impl WatchedWindow {
+    fn hwnd(self) -> HWND {
+        HWND(self.0 as *mut core::ffi::c_void)
+    }
+
+    fn visible(self) -> bool {
+        unsafe { IsWindowVisible(self.hwnd()).as_bool() }
+    }
+
+    /// Outer rect in physical screen px: (x, y, width, height).
+    fn rect(self) -> Option<(i32, i32, i32, i32)> {
+        let mut r = RECT::default();
+        unsafe { GetWindowRect(self.hwnd(), &mut r) }.ok()?;
+        Some((r.left, r.top, r.right - r.left, r.bottom - r.top))
+    }
+
+    fn scale(self) -> f64 {
+        match unsafe { GetDpiForWindow(self.hwnd()) } {
+            0 => 1.0,
+            dpi => f64::from(dpi) / 96.0,
+        }
     }
 }
 
@@ -1001,7 +1050,24 @@ fn reassert_topmost(window: &WebviewWindow, own_pid: u32) {
 /// cadence fast enough that the taskbar can't be seen winning, and it already
 /// holds the window rect. A foreground-window CHANGE is the trigger, so the
 /// per-poll cost is one GetForegroundWindow call.
+///
+/// Every per-tick read goes straight to Win32 on this thread (WatchedWindow).
+/// WebviewWindow's getters (is_visible, outer_position, outer_size,
+/// scale_factor, hwnd) each post to the main thread and block on its reply.
+/// Four of them per tick woke the UI thread ~85 times a second with the
+/// widget just sitting there, and ~250 while the cursor was near it (at
+/// Windows' default 15.6ms timer), and stalled this gate whenever the UI
+/// thread was busy.
 pub fn spawn_hit_watcher(window: WebviewWindow) {
+    // The one main-thread hop: the HWND, resolved before the thread starts.
+    // "main" lives for the whole process (restart is a relaunch), so it
+    // never goes stale. No handle → the watcher can't gate anything; the
+    // window then just stays interactive, as it starts.
+    let Ok(hwnd) = window.hwnd() else {
+        log::error!("hit-watch: no main window handle, click-through gate off");
+        return;
+    };
+    let watched = WatchedWindow(hwnd.0 as isize);
     std::thread::Builder::new()
         .name("hit-watch".into())
         .spawn(move || {
@@ -1017,8 +1083,7 @@ pub fn spawn_hit_watcher(window: WebviewWindow) {
             let mut last_assert = Instant::now() - Duration::from_millis(TOPMOST_IDLE_MS);
             loop {
                 let mut near = false;
-                let visible = window.is_visible().unwrap_or(false);
-                if !visible {
+                if !watched.visible() {
                     // Forget the foreground while hidden, so the show that
                     // brings the widget back re-asserts instead of matching a
                     // stale value and skipping.
@@ -1032,7 +1097,7 @@ pub fn spawn_hit_watcher(window: WebviewWindow) {
                     let dock = window.state::<Dock>();
                     let (lock, cv) = &dock.show_signal;
                     let mut shown = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                    if !*shown && !window.is_visible().unwrap_or(false) {
+                    if !*shown && !watched.visible() {
                         let (g, _) = cv
                             .wait_timeout(shown, Duration::from_millis(HIT_PARK_SAFETY_MS))
                             .unwrap_or_else(PoisonError::into_inner);
@@ -1058,21 +1123,18 @@ pub fn spawn_hit_watcher(window: WebviewWindow) {
                 };
                 if due {
                     last_assert = now;
-                    reassert_topmost(&window, own_pid);
+                    reassert_topmost(watched.hwnd(), own_pid);
                 }
                 {
                     let mut p = windows::Win32::Foundation::POINT::default();
                     let got = unsafe { GetCursorPos(&mut p).is_ok() };
                     if got {
-                        if let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size())
-                        {
-                            let (wx, wy) = (pos.x, pos.y);
-                            let (ww, wh) = (size.width as i32, size.height as i32);
+                        if let Some((wx, wy, ww, wh)) = watched.rect() {
                             // Near keys on the same rect as the ignore gate
                             // (frontend hit box, or the whole window during
                             // HIT_GRACE_MS). The oversized WINDOW_MAX gutter
                             // must not run the 8ms path against thin air.
-                            let (l, t, hw, hh) = hit_rect(&window, wx, wy, ww, wh);
+                            let (l, t, hw, hh) = hit_rect(&window, watched.scale(), wx, wy, ww, wh);
                             near = p.x >= l - HIT_NEAR_PAD
                                 && p.x < l + hw + HIT_NEAR_PAD
                                 && p.y >= t - HIT_NEAR_PAD
