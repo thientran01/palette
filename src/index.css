@@ -500,8 +500,7 @@ body {
   transition:
     transform var(--transition-duration-4) var(--ease-in-out-tk),
     opacity var(--transition-duration-4) var(--ease-in-out-tk),
-    filter var(--transition-duration-4) var(--ease-in-out-tk),
-    --drop var(--transition-duration-4) var(--ease-in-out-tk);
+    filter var(--transition-duration-4) var(--ease-in-out-tk);
 }
 .lyric-row[data-current="true"] { --lyric-scale: 1; --lyric-filter: none; }
 /* Hovering a seekable row brings it into focus, so you can read what a
@@ -542,29 +541,22 @@ button.lyric-row:hover { --lyric-filter: none; }
   .lyric-row .lyric-ink { animation: none; }
 }
 
-/* Rise (src/lib/letterRise.ts): each letter brightens and floats up into
- * place as it's sung. --lit (0..1) is written per letter by the word
- * driver. While a row is being sung (data-singing) its unsung letters sit
- * --drop below their place; the drop eases in with the line's own scale-up
- * (same 220ms curve) so the line doesn't jump when it becomes current.
- * Plain colored text (no clipped gradient), so it keeps ClearType.
- * --bend is a held note riding the singer's pitch (voiceMotion.ts). */
-@property --drop {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 0px;
+/* The word wipe paints each word as a gradient clipped to its glyphs, and
+ * clipped text is always grayscale. Worse, one clipped word turns off
+ * ClearType for every line in the same layer. So only rows the wipe driver
+ * is painting (data-wiping) wear it, each in its own layer (will-change);
+ * every other row's gradient is one flat color anyway, so it draws as
+ * plain text and keeps ClearType. */
+.lyric-row[data-wiping] [data-word] {
+  background-image: var(--word-gradient);
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
-.lyric-row[data-singing] .lyric-ink { --drop: 2.5px; }
-.lyric-row [data-letter] {
-  display: inline-block;
-  color: color-mix(in srgb, var(--word-bright, currentColor) calc(var(--lit, 0) * 100%), currentColor);
-  transform: translateY(calc(var(--drop) * (1 - var(--lit, 0)) + var(--bend, 0px)));
+.lyric-row[data-wiping] .lyric-ink {
+  will-change: transform;
 }
-@media (prefers-reduced-motion: reduce) {
-  .lyric-row [data-letter] { transform: none; }
-}
-/* The depth-of-field blur: a filtered row turns the sharp rows next to it
- * grayscale, so each blurred row gets its own layer. The
+/* Same for the depth-of-field blur: a filtered row turns the sharp rows
+ * next to it grayscale too, so each blurred row gets its own layer. The
  * blurred rows are soft anyway; the current and ±1 rows keep ClearType. */
 .lyric-row[data-blurred] .lyric-ink {
   will-change: filter;

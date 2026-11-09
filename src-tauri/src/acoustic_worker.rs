@@ -17,9 +17,6 @@ const IDLE: Duration = Duration::from_secs(5 * 60);
 /// began: its 14 passes take about 90s on Thien's PC, after the first pass
 /// over the song, so only a busy PC reaches this.
 const EAR_DEADLINE: Duration = Duration::from_secs(120);
-/// The voice pass on held notes (voice.rs) starts no stretch this long
-/// after the align began. Its budget is about 64s on Thien's PC.
-const VOICE_DEADLINE: Duration = Duration::from_secs(150);
 struct Request {
     pcm: Vec<i16>,
     /// Full-rate stereo kept for separation (the vocal trial, or the
@@ -219,44 +216,11 @@ fn run(rx: mpsc::Receiver<Request>) {
             } else {
                 model.align(&request.pcm, &request.lines, &request.map)
             };
-            let aligned = aligning.elapsed();
-            // The singer's voice on held notes, with the same separator.
-            // The vocal trial (whole-song vocals) skips it: dev-only.
-            let mut result = result;
-            if let (Ok(words), Some(separator), false) =
-                (result.as_mut(), models.separator.as_mut(), preview)
-            {
-                let voicing = Instant::now();
-                let mut ear = VocalEar {
-                    separator,
-                    stereo: request.stereo.as_ref(),
-                    mono16k: &request.pcm,
-                    target_hz: hz,
-                    deadline: Some(aligning + VOICE_DEADLINE),
-                    heard: 0,
-                    passes: 0,
-                };
-                let voiced = crate::voice::listen(
-                    words,
-                    &request.map,
-                    request.pcm.len(),
-                    hz,
-                    &mut ear,
-                    crate::voice::PASS_BUDGET,
-                );
-                log::info!(
-                    "karaoke: voice on {} of {} held notes in {:.2}s ({} passes)",
-                    voiced,
-                    words.iter().filter(|w| crate::voice::is_held(w)).count(),
-                    voicing.elapsed().as_secs_f64(),
-                    ear.passes,
-                );
-            }
             log::info!(
                 "karaoke: model reused={}, load {:.2}s, align {:.2}s, second ear on {:.1}s of {:.1}s ({} passes)",
                 reused,
                 loaded.as_secs_f64(),
-                aligned.as_secs_f64(),
+                aligning.elapsed().as_secs_f64(),
                 heard as f64 / hz as f64,
                 request.pcm.len() as f64 / hz as f64,
                 passes,

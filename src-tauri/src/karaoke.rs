@@ -494,24 +494,11 @@ fn superseded(stored: &str, expected: &str) -> bool {
     expected == acoustic::RECIPE && acoustic::EARLIER_RECIPES.contains(&stored)
 }
 
-/// `detail_v` 3: held notes were listened to for the singer's voice
-/// (voice.rs). Only possible with the second ear installed, so a song saved
-/// without it says 2 and relearns once the separator arrives.
-const VOICE_DETAIL_V: u32 = 3;
-
-fn detail_v() -> u32 {
-    if acoustic::second_ear_installed() {
-        VOICE_DETAIL_V
-    } else {
-        2
-    }
-}
-
 fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        detail_v: detail_v(),
+        detail_v: 2,
         recipe: crate::vocal_preview::cache_recipe(&dir.join(format!("{key}.json")), recipe())
             .to_string(),
         synced: Some(synced.to_string()),
@@ -564,9 +551,6 @@ fn has_file(dir: &Path, key: &str, synced: Option<&str>) -> bool {
         .is_some_and(|file| {
             file.recipe == crate::vocal_preview::cache_recipe(&path, recipe())
                 && (crate::acoustic::assets().is_none() || file.detail_v >= 1)
-                // A song saved before the voice pass relearns once, so its
-                // held notes get the singer's pitch and loudness.
-                && (!acoustic::second_ear_installed() || file.detail_v >= VOICE_DETAIL_V)
         })
 }
 
@@ -1048,7 +1032,7 @@ fn write_dump(
     let to_io = |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let words_json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        detail_v: detail_v(),
+        detail_v: 2,
         recipe: recipe().to_string(),
         synced: Some(lrc.to_string()),
         words: words.to_vec(),
@@ -1604,7 +1588,6 @@ mod tests {
             end: Some(1200),
             line_t: Some(1000),
             points: Vec::new(),
-            voice: None,
         }];
         write_file(&dir, &key, source, &words).unwrap();
         assert_eq!(load(&dir, "a", "b", "c", 180_000, Some(source)), words);
@@ -1660,7 +1643,6 @@ mod tests {
                 end: Some(1200),
                 line_t: Some(1000),
                 points: Vec::new(),
-                voice: None,
             },
             Word {
                 t: 1800,
@@ -1668,7 +1650,6 @@ mod tests {
                 end: Some(2100),
                 line_t: Some(2000),
                 points: Vec::new(),
-                voice: None,
             },
         ];
         assert_eq!(line_coverage(&lines, &words), 100);
@@ -1801,7 +1782,6 @@ mod tests {
                 end: Some(1200),
                 line_t: Some(1000),
                 points: Vec::new(),
-                voice: None,
             },
             Word {
                 t: 1300,
@@ -1809,7 +1789,6 @@ mod tests {
                 end: Some(1500),
                 line_t: Some(1000),
                 points: Vec::new(),
-                voice: None,
             },
         ];
         write_file(&dir, "abc", "[00:01.00]one two", &words).unwrap();
@@ -1832,7 +1811,6 @@ mod tests {
                     end: Some(t + ms),
                     line_t: Some(line_t),
                     points: Vec::new(),
-                    voice: None,
                 });
                 words.push(Word {
                     t: t + ms,
@@ -1840,7 +1818,6 @@ mod tests {
                     end: Some(t + ms),
                     line_t: Some(line_t),
                     points: Vec::new(),
-                    voice: None,
                 });
             }
         }
@@ -1950,7 +1927,6 @@ mod tests {
             end: Some(1400),
             line_t: Some(1000),
             points: Vec::new(),
-            voice: None,
         }];
         assert_eq!(line_coverage(&lines, &words), 33);
         assert!(line_coverage(&lines, &[]) == 0);
@@ -2145,7 +2121,6 @@ mod sync_status_tests {
                 end: Some(2000),
                 line_t: Some(1000),
                 points: Vec::new(),
-                voice: None,
             };
             write_file(&dir, key, &source, &[word]).unwrap();
             let path = dir.join(format!("{key}.json"));

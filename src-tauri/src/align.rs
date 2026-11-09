@@ -34,9 +34,6 @@ pub struct Word {
     pub line_t: Option<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub points: Vec<WordPoint>,
-    /// Held notes only: the singer's pitch and loudness (voice.rs).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voice: Option<crate::voice::VoiceTrack>,
 }
 
 /// Sample-index → track-position map for one recording: a least-squares
@@ -621,7 +618,6 @@ fn spread(tokens: &[String], weights: &[f32], p: LinePrior, next_t: i64) -> Vec<
             end: Some(if i + 1 < n { starts[i + 1] } else { last_end }),
             line_t: None,
             points: Vec::new(),
-            voice: None,
         })
         .collect()
 }

@@ -1020,7 +1020,6 @@ impl AcousticAligner {
                     end: Some(to_time(begin as f64 + end as f64 * ratio)),
                     line_t: Some(line.t),
                     points,
-                    voice: None,
                 });
             }
             if knobs.vocable_tolerance_ms > 0 {
@@ -1900,7 +1899,6 @@ mod tests {
                 end: Some(t + 100),
                 line_t: Some(10_000),
                 points: vec![WordPoint { t, fraction: 0.0 }],
-                voice: None,
             })
             .collect()
     }

@@ -1183,25 +1183,15 @@ export const commands = {
           const text = `Mock lyric line ${++n} — la la la (${title})`;
           lines.push(`${stamp(s)}${text}`);
           const parts = text.split(" ");
-          // The last word is a held note (1.3s) with a synthetic voice
-          // track: steady, then a ±70-cent 5.5Hz vibrato, so the mock shows
-          // voiceMotion.ts's sway.
-          const span = 2400;
-          const dt = span / (parts.length - 1);
+          const span = 3200;
+          const dt = span / parts.length;
           parts.forEach((p, i) => {
             const t = s * 1000 + i * dt;
-            const last = i === parts.length - 1;
-            const end = Math.round(t + (last ? 1300 : dt));
-            const n = Math.ceil((end - t) / 10);
             words.push({
               t: Math.round(t),
-              text: last ? p : `${p} `,
-              end,
+              text: i < parts.length - 1 ? `${p} ` : p,
+              end: Math.round(t + dt),
               line_t: s * 1000,
-              ...(last ? { voice: {
-                c: Array.from({ length: n }, (_, k) => Math.round(-600 + (k < 30 ? 0 : 70 * Math.sin(2 * Math.PI * 5.5 * (k - 30) / 100)))),
-                l: Array.from({ length: n }, (_, k) => Math.round(60 + 30 * Math.min(1, k / 60))),
-              } } : {}),
             });
           });
         }
