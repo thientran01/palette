@@ -55,6 +55,7 @@ import {
 } from "./Queue";
 import { DeviceTag } from "./DeviceTag";
 import { SeparatorDot, Waveform } from "./Waveform";
+import { Marquee } from "./Marquee";
 import {
   IN_TAURI,
   type NowPlaying,
@@ -148,9 +149,10 @@ function useHistoryThumb(artId: string | null): void {
  * flyby. Native `title` waits about this long; this is the styled stand-in. */
 const TIP_DELAY_MS = 500;
 
-/** Truncating text line that reveals its full value in a mini tooltip after
- * a hover hold — only when the text is actually clipped, measured at hover
- * time so mode resizes can't leave a stale flag. The full string is already
+/** Header text line: pans to show all of itself when it's too long (Marquee).
+ * Under reduced motion it truncates instead and reveals its full value in a
+ * mini tooltip after a hover hold — only when the text is actually clipped,
+ * measured at hover time so mode resizes can't leave a stale flag. The full string is already
  * in the accessibility tree (truncate is a visual clip), so the tooltip is
  * aria-hidden decoration, not the AT path. Chrome rules apply: raised
  * neutral surface, no accent. */
@@ -179,9 +181,13 @@ function TruncateTip({ text, className }: { text: string; className: string }) {
   return (
     <span className="relative block min-w-0">
       <span
-        className={`block truncate ${className}`}
+        className="block min-w-0"
         onMouseEnter={(e) => {
-          const el = e.currentTarget;
+          // Panning already shows the whole line; the tooltip is the
+          // reduced-motion stand-in.
+          if (!reducedMotion) return;
+          const el = e.currentTarget.firstElementChild as HTMLElement | null;
+          if (!el) return;
           clear();
           // +1 forgives subpixel rounding: a line clipped by half a pixel
           // isn't hiding anything worth a tooltip.
@@ -192,7 +198,7 @@ function TruncateTip({ text, className }: { text: string; className: string }) {
           setOpen(false);
         }}
       >
-        {text}
+        <Marquee className={className}>{text}</Marquee>
       </span>
       <AnimatePresence>
         {open && (
@@ -1209,12 +1215,12 @@ function ExpandedView({
                     the band is absolute, so that guarantee now holds for BOTH
                     occupants without spending a row the wave's seat needs. */}
                 <div className="mt-3 min-w-0 self-stretch text-center">
-                  <p className="truncate text-sm font-medium text-fg">{np.title}</p>
-                  <p className="truncate text-xs text-muted">
+                  <Marquee className="text-sm font-medium text-fg">{np.title}</Marquee>
+                  <Marquee className="text-xs text-muted">
                     {np.artist}
                     {np.album && <SeparatorDot />}
                     {np.album}
-                  </p>
+                  </Marquee>
                 </div>
               </motion.div>
             </AnimatePresence>
@@ -2143,9 +2149,9 @@ function App() {
                   k={trackIdOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
-                  className="min-w-0 truncate"
+                  className="min-w-0"
                 >
-                  {np.title}
+                  <Marquee>{np.title}</Marquee>
                 </TrackFadeSpan>
                 {/* Its own 16px line box, so align-middle seats the capsules
                     on the text's middle exactly as the inline flow did. */}
@@ -2157,9 +2163,9 @@ function App() {
                   k={trackIdOf(np)}
                   suppress={announceSuppressed}
                   dx={trackDir * SLIDE_PX.pill}
-                  className="min-w-0 flex-1 truncate font-normal text-muted"
+                  className="min-w-0 flex-1 font-normal text-muted"
                 >
-                  {np.artist}
+                  <Marquee>{np.artist}</Marquee>
                 </TrackFadeSpan>
               </p>
               <PillTime np={np} />
@@ -2236,15 +2242,15 @@ function App() {
                   {/* One track-change grammar (2026-07-23): the card's titles
                       join the directional slide — the waveform beside them
                       never moves (its announcement is the pill's beat). */}
-                  <p className="min-w-0 truncate text-[15px] font-medium text-fg">
+                  <p className="min-w-0 text-[15px] font-medium text-fg">
                     <TrackFadeSpan
                       key={`ct:${slideEpoch}`}
                       k={trackIdOf(np)}
                       suppress={announceSuppressed}
                       dx={trackDir * SLIDE_PX.card}
-                      className="inline-block max-w-full truncate align-top"
+                      className="block min-w-0"
                     >
-                      {np.title}
+                      <Marquee>{np.title}</Marquee>
                     </TrackFadeSpan>
                   </p>
                   <span className="ml-1 flex shrink-0 items-center">
@@ -2256,17 +2262,19 @@ function App() {
                     Only when the audio is on a non-PC device (remoteDevice),
                     so it explains the waveform sitting on its resting dot. */}
                 <div className="flex min-w-0 items-center gap-1">
-                  <p className="min-w-0 flex-1 truncate text-xs leading-4 text-muted">
+                  <p className="min-w-0 flex-1 text-xs leading-4 text-muted">
                     <TrackFadeSpan
                       key={`ca:${slideEpoch}`}
                       k={trackIdOf(np)}
                       suppress={announceSuppressed}
                       dx={trackDir * SLIDE_PX.card}
-                      className="inline-block max-w-full truncate align-top"
+                      className="block min-w-0"
                     >
-                      {np.artist}
-                      {np.album && <SeparatorDot />}
-                      {np.album}
+                      <Marquee>
+                        {np.artist}
+                        {np.album && <SeparatorDot />}
+                        {np.album}
+                      </Marquee>
                     </TrackFadeSpan>
                   </p>
                   {remoteDevice && <DeviceTag device={remoteDevice} playing={playing} />}
