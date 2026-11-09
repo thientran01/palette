@@ -341,6 +341,10 @@ fn score(lines: &[Line], words: &[Word]) -> serde_json::Value {
             "truth": line.truth,
             "predicted": predicted.iter().map(|w| w.t).collect::<Vec<_>>(),
             "delta": deltas,
+            // What the Lyric syncs panel's estimate is fitted from
+            // (`sync_library::on_time`).
+            "support": predicted.iter().map(|w| w.support).collect::<Vec<_>>(),
+            "reheard": predicted.iter().map(|w| w.reheard).collect::<Vec<_>>(),
         }));
     }
     rows.into()
