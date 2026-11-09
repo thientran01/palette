@@ -747,6 +747,10 @@ impl AcousticAligner {
             .map_err(|e| e.to_string())?
             .with_inter_op_spinning(spinning)
             .map_err(|e| e.to_string())?
+            // Every line window is a different length, so a memory pattern
+            // planned for one shape never fits the next (same output).
+            .with_memory_pattern(false)
+            .map_err(|e| e.to_string())?
             .commit_from_file(model)
             .map_err(|e| e.to_string())?;
         Ok(Self {

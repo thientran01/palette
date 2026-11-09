@@ -741,15 +741,7 @@ impl Run<'_> {
                         });
                         let _ = std::fs::create_dir_all(&dir);
                         let mut ear = CachedEar {
-                            ear: VocalEar {
-                                separator: sep,
-                                stereo: ear_stereo.as_ref(),
-                                mono16k: &pcm,
-                                target_hz: TARGET_HZ,
-                                deadline: None,
-                                heard: 0,
-                                passes: 0,
-                            },
+                            ear: VocalEar::new(sep, ear_stereo.as_ref(), &pcm, TARGET_HZ, None),
                             dir,
                             stem: &song.stem,
                             passes: 0,
