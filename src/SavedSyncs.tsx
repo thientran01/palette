@@ -78,7 +78,8 @@ function SongMap({mode}:{mode:MapMode}){
 const MAP_FALLBACK=36;
 function CurrentSong({np,mine,job,lines,current,busy,onRelearn}:{np:NowPlaying;mine:SavedSync|null;job:ActiveSync|null;lines:number;current:{title:string;detail:string;phase:SyncStatus["phase"]};busy:boolean;onRelearn:()=>void}){
  const art=useArt(np.art_id??null);
- const saved=current.phase==="saved";
+ // A saved song being relearned shows the new listen, not the old check.
+ const saved=current.phase==="saved"&&!job;
  const check=saved?mine?.check??null:null;
  const count=check?check.lines.length:lines||MAP_FALLBACK;
  const heard=job?.phase==="processing"||current.phase==="processing"?1:job?.phase==="learning"?(job.progress??0)/100:saved?1:0;
@@ -86,6 +87,7 @@ function CurrentSong({np,mine,job,lines,current,busy,onRelearn}:{np:NowPlaying;m
   :job?.phase==="learning"?{value:`${job.progress??0}%`,label:"heard",title:"How much of this listen has been captured"}
   :null;
  const note=check?checkSummary(check)
+  :job&&current.phase==="saved"?"Relearning on this listen. Your saved timing stays until it finishes."
   :!saved?current.detail
   :mine?.refresh?"Relearns on your next full listen. This timing stays until then."
   :mine?.relearns?"Saved before syncs were checked. Your next full listen checks it."
@@ -97,7 +99,7 @@ function CurrentSong({np,mine,job,lines,current,busy,onRelearn}:{np:NowPlaying;m
    {figure&&<div className="shrink-0 text-right" title={figure.title}><div className="text-[22px] font-semibold leading-none tracking-[-0.01em] tabular-nums">{figure.value}</div><div className="mt-1 text-[10.5px] text-muted">{figure.label}</div></div>}
   </div>
   <div className="mt-3"><SongMap mode={check?{kind:"check",check}:{kind:"heard",count,share:heard}}/></div>
-  {!saved&&<div className="mt-2.5 flex items-center gap-1.5 text-xs font-medium"><MorphIcon name={SYNC_GLYPHS[current.phase]} size={15} dur={DUR[5]}/><span>{current.title}</span></div>}
+  {!saved&&<div className="mt-2.5 flex items-center gap-1.5 text-xs font-medium"><MorphIcon name={SYNC_GLYPHS[job?.phase??current.phase]} size={15} dur={DUR[5]}/><span>{job&&current.phase==="saved"?"Relearning timing":current.title}</span></div>}
   <p className={`${saved?"mt-2.5":"mt-1"} text-[11.5px] leading-[17px] ${saved?"text-fg/80":"text-muted"}`}>{note}</p>
   {saved&&mine&&!mine.refresh&&<button className={`${actionStyle} -mb-1 -ml-2 mt-1.5`} disabled={busy} title="Learn this song again on your next full listen" onClick={onRelearn}><Glyph kind="refresh" size={14}/>Relearn</button>}
  </section>;
