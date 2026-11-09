@@ -34,6 +34,18 @@ pub struct Word {
     pub line_t: Option<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub points: Vec<WordPoint>,
+    /// The review's support for this word's onset (`sync_review`), to two
+    /// places: the posterior share within 150ms of where the path put it.
+    /// Absent where the review didn't run (punctuation, line-only timing,
+    /// the vocal trial). The Lyric syncs panel turns it into a song's
+    /// estimated words on time (`sync_library::Check`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support: Option<f32>,
+    /// The second ear listened to this word's line again on separated
+    /// vocals. Whether that fixed it shows in `support`: a line it couldn't
+    /// make surer kept the mix's decode and its doubt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reheard: bool,
 }
 
 /// Sample-index → track-position map for one recording: a least-squares
@@ -618,6 +630,7 @@ fn spread(tokens: &[String], weights: &[f32], p: LinePrior, next_t: i64) -> Vec<
             end: Some(if i + 1 < n { starts[i + 1] } else { last_end }),
             line_t: None,
             points: Vec::new(),
+            ..Default::default()
         })
         .collect()
 }

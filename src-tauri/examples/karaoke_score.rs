@@ -580,6 +580,7 @@ mod tests {
                 line_t: Some(1000),
                 end: Some(1200),
                 points: Vec::new(),
+                ..Default::default()
             },
             Word {
                 t: 1300,
@@ -587,6 +588,7 @@ mod tests {
                 line_t: Some(1000),
                 end: Some(1500),
                 points: Vec::new(),
+                ..Default::default()
             },
         ];
         assert_eq!(prediction_indices(&d, &words).unwrap(), vec![0, 1]);

@@ -697,6 +697,8 @@ struct LineWork {
     decode: LineDecode,
     /// The second look's diagnostics, when there was one.
     second: serde_json::Value,
+    /// The second ear heard this line again (whichever decode won).
+    reheard: bool,
 }
 
 pub struct AcousticAligner {
@@ -1031,6 +1033,7 @@ impl AcousticAligner {
                 guide_next,
                 decode,
                 second: serde_json::Value::Null,
+                reheard: false,
             });
         }
         if let Some(ear) = ear {
@@ -1045,6 +1048,7 @@ impl AcousticAligner {
             plan,
             decode,
             second,
+            reheard,
             ..
         } in work
         {
@@ -1060,6 +1064,8 @@ impl AcousticAligner {
             } = decode;
             let positions = word_frames(&plan.ranges, &spans);
             let line_start = words.len();
+            // `support` holds one entry per spoken word, in order.
+            let mut supports = support.iter();
             if let Some(rows) = diagnostics.as_deref_mut() {
                 rows.push(serde_json::json!({
                     "line_index": li, "line_t": line.t, "next_t": next,
@@ -1089,12 +1095,18 @@ impl AcousticAligner {
                         )
                     })
                     .unwrap_or_default();
+                let support = range
+                    .as_ref()
+                    .and_then(|_| supports.next())
+                    .map(|&p| (p.clamp(0.0, 1.0) * 100.0).round() / 100.0);
                 words.push(Word {
                     text,
                     t: to_time(begin as f64 + start as f64 * ratio),
                     end: Some(to_time(begin as f64 + end as f64 * ratio)),
                     line_t: Some(line.t),
                     points,
+                    support,
+                    reheard,
                 });
             }
             if knobs.vocable_tolerance_ms > 0 {
@@ -1192,6 +1204,7 @@ impl AcousticAligner {
                     }
                 }
                 let pick = surest(&w.decode, &candidates);
+                w.reheard = true;
                 if want {
                     w.second = serde_json::json!({
                         "candidates": candidates.iter().map(|c| serde_json::json!({
@@ -1988,6 +2001,7 @@ mod tests {
                 end: Some(t + 100),
                 line_t: Some(10_000),
                 points: vec![WordPoint { t, fraction: 0.0 }],
+                ..Default::default()
             })
             .collect()
     }

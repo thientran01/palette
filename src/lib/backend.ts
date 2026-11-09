@@ -1696,8 +1696,20 @@ function lyricsLatestWins(start: () => Promise<Lyrics>): Promise<Lyrics> {
     .then((l) => (gen === lyricsGen ? l : LYRICS_MISS));
 }
 
-export type SavedSync = {key:string;title:string;artist:string;thumb_key:string|null;saved_at:number;refresh:boolean};
-const mockSaved: SavedSync[] = IN_TAURI ? [] : MOCK_TRACKS.map((t,i)=>({key:String(i+1),title:t.title,artist:t.artist,thumb_key:null,saved_at:Date.now()/1000-i*1000,refresh:false}));
+/** What the karaoke review found for one saved sync (sync_library::Check).
+ * `lines` holds one letter per lyric line: s sure, l loose, u unsure, n line timing only. */
+export type SyncCheck = {on_time:number;lines:string;unsure:number;reheard:number;fixed:number};
+export type SavedSync = {key:string;title:string;artist:string;thumb_key:string|null;saved_at:number;refresh:boolean;relearns:boolean;check:SyncCheck|null};
+// Browser preview: a spread of checked songs plus a couple learned before the check.
+const MOCK_CHECKS: (SyncCheck|null)[] = [
+  {on_time:0.943,lines:"ssssslsssssssussssssllssssssssssssussslssssn",unsure:2,reheard:7,fixed:5},
+  {on_time:0.981,lines:"ssssssssssssslssssssssssssss",unsure:0,reheard:1,fixed:1},
+  {on_time:0.862,lines:"ssulsssussslsussssulsssssslsss",unsure:5,reheard:14,fixed:9},
+  {on_time:0.914,lines:"sssslssusssssslssssussss",unsure:2,reheard:0,fixed:0},
+  null,
+];
+const MOCK_LIBRARY = [...MOCK_TRACKS, {title:"Haunted",artist:"Laufey"}, {title:"Baby Flower",artist:"tripleS"}, {title:"Change",artist:"J. Cole"}];
+const mockSaved: SavedSync[] = IN_TAURI ? [] : MOCK_LIBRARY.map((t,i)=>{const check=MOCK_CHECKS[i%MOCK_CHECKS.length];return {key:String(i+1),title:t.title,artist:t.artist,thumb_key:null,saved_at:Date.now()/1000-i*40000,refresh:false,relearns:!check,check};});
 const mockDeleted = new Map<string,{song:SavedSync;revision:number}>();
 let mockSyncRevision=0;
 export async function savedSyncs(): Promise<SavedSync[]> {return IN_TAURI ? invoke<SavedSync[]>("saved_syncs") : [...mockSaved];}

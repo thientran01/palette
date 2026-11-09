@@ -1,13 +1,14 @@
-import {useEffect, useRef, useState} from "react";
+import {useEffect, useRef, useState, type ReactNode} from "react";
 import {researchAction, researchStatus, type ResearchStatus} from "./lib/backend";
 import type {NowPlaying} from "./types";
 
 const LABELS = {armed:"Replay from the beginning",recording:"Recording",saving:"Saving…",saved:"Recording saved",error:"Couldn’t finish recording"};
-const actionStyle = "inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-fg/80 transition-colors duration-2 hover:bg-fg/10 hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg/50 disabled:opacity-40";
+export const actionStyle = "inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-fg/80 transition-colors duration-2 hover:bg-fg/10 hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg/50 disabled:opacity-40";
 function RecordGlyph({active=false}:{active?:boolean}) {
   return <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><path d="M6 3.5H4a.5.5 0 0 0-.5.5v2M14 3.5h2a.5.5 0 0 1 .5.5v2M16.5 14v2a.5.5 0 0 1-.5.5h-2M6 16.5H4a.5.5 0 0 1-.5-.5v-2"/>{active?<rect x="7" y="7" width="6" height="6" rx="1" fill="currentColor" stroke="none"/>:<circle cx="10" cy="10" r="3"/>}</svg>;
 }
-export function ResearchRecording({np}:{np:NowPlaying}) {
+/** `lead` sits first in the action row (the panel's Relearn). */
+export function ResearchRecording({np,lead}:{np:NowPlaying;lead?:ReactNode}) {
   const [status,setStatus]=useState<ResearchStatus|null>(null);
   const [busy,setBusy]=useState(false),[error,setError]=useState("");
   const alive=useRef(false),pending=useRef(false),generation=useRef(0);
@@ -47,10 +48,11 @@ export function ResearchRecording({np}:{np:NowPlaying}) {
       {detail&&<p className="mt-1 text-[11px] leading-4 text-muted">{detail}</p>}
     </div>}
     <div className="flex flex-wrap items-center gap-0.5">
+      {lead}
       {!working&&<button className={actionStyle} disabled={busy||!eligible||!status} onClick={()=>void act("start")}><RecordGlyph/>Record for research</button>}
       {phase==="recording"&&<button className={actionStyle} disabled={busy} onClick={()=>void act("stop")}><RecordGlyph active/>Stop &amp; save</button>}
       {(phase==="armed"||phase==="recording")&&<button className={actionStyle} disabled={busy} onClick={()=>void act("cancel")}>Cancel</button>}
-      {!working&&<button className={`${actionStyle} ml-auto text-muted`} title="Local recordings · latest 5" disabled={busy} onClick={()=>void act("open")}>Open folder</button>}
+      {!working&&<button className={`${actionStyle} ml-auto text-muted`} title="Research recordings on this device · latest 5" aria-label="Open research recordings folder" disabled={busy} onClick={()=>void act("open")}>Folder</button>}
     </div>
     {error&&<p role="alert" className="px-1 py-1 text-[11px] text-muted">{error}</p>}
   </div>;

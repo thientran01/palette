@@ -165,6 +165,11 @@ const COLLAPSE_MIN_LINES: usize = 8;
 /// v5 binds word times to the exact synced LRC as well as the aligner recipe.
 /// Older files lack source identity and must be recorded again.
 const STORE_V: u32 = 5;
+/// What a v5 file carries beyond its words: 1 per-letter spelling points,
+/// 2 digits spelled as said, 3 the review's support per word (the Lyric
+/// syncs panel's estimate). A file below it still displays, and the next
+/// full listen relearns it.
+const DETAIL_V: u32 = 3;
 fn recipe() -> &'static str {
     if acoustic::assets().is_some() {
         acoustic::RECIPE
@@ -410,23 +415,42 @@ fn load_cached(dir: &Path, key: &str, synced: Option<&str>, preview_enabled: boo
 }
 
 fn read_file(path: &Path, synced: Option<&str>) -> Vec<Word> {
-    read_file_inner(path, synced, true)
+    read_store(path, synced, true).map_or_else(Vec::new, |f| f.words)
 }
 pub(crate) fn read_file_preserving(path: &Path, synced: Option<&str>) -> Vec<Word> {
-    read_file_inner(path, synced, false)
+    read_store(path, synced, false).map_or_else(Vec::new, |f| f.words)
 }
-fn read_file_inner(path: &Path, synced: Option<&str>, prune: bool) -> Vec<Word> {
+
+/// A saved sync as the Lyric syncs panel lists it.
+pub(crate) struct SavedFile {
+    pub words: Vec<Word>,
+    /// The next full listen relearns it (an earlier recipe, or saved
+    /// before the review's support was kept). Its words still display.
+    pub relearns: bool,
+}
+
+/// `read_file_preserving`, plus whether the song will be relearned.
+pub(crate) fn read_saved(path: &Path, synced: Option<&str>) -> Option<SavedFile> {
+    let file = read_store(path, synced, false)?;
+    let relearns = !settled(path, &file);
+    Some(SavedFile {
+        words: file.words,
+        relearns,
+    })
+}
+
+/// Saved under the current recipe and detail: nothing left to relearn.
+fn settled(path: &Path, file: &StoreFile) -> bool {
+    file.recipe == crate::vocal_preview::cache_recipe(path, recipe())
+        && (crate::acoustic::assets().is_none() || file.detail_v >= DETAIL_V)
+}
+
+fn read_store(path: &Path, synced: Option<&str>, prune: bool) -> Option<StoreFile> {
     // No current source means no usable word cache; keep the file for a
     // later successful lyrics fetch instead of deleting it on a transient miss.
-    let Some(synced) = synced.filter(|s| !s.trim().is_empty()) else {
-        return Vec::new();
-    };
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(file) = serde_json::from_str::<StoreFile>(&raw) else {
-        return Vec::new();
-    };
+    let synced = synced.filter(|s| !s.trim().is_empty())?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let file = serde_json::from_str::<StoreFile>(&raw).ok()?;
     // Only numeric caches need the revised pronunciation targets. Preserve
     // unrelated songs and their already accurate acoustic timings.
     let stale_digits = file.detail_v < 2
@@ -443,7 +467,7 @@ fn read_file_inner(path: &Path, synced: Option<&str>, prune: bool) -> Vec<Word> 
         if prune {
             let _ = std::fs::remove_file(path);
         }
-        return Vec::new();
+        return None;
     }
     // Saved before the guard in commit_recording existed. Line karaoke
     // beats a racing highlight, and has_file then relearns the song.
@@ -451,9 +475,10 @@ fn read_file_inner(path: &Path, synced: Option<&str>, prune: bool) -> Vec<Word> 
         if prune {
             let _ = std::fs::remove_file(path);
         }
-        return Vec::new();
+        return None;
     }
-    file.words
+    // An empty file is no sync at all.
+    (!file.words.is_empty()).then_some(file)
 }
 
 /// True when the median judged line spends under COLLAPSED_MS_PER_WORD per
@@ -498,7 +523,7 @@ fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::R
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        detail_v: 2,
+        detail_v: DETAIL_V,
         recipe: crate::vocal_preview::cache_recipe(&dir.join(format!("{key}.json")), recipe())
             .to_string(),
         synced: Some(synced.to_string()),
@@ -539,19 +564,10 @@ fn has_file(dir: &Path, key: &str, synced: Option<&str>) -> bool {
         return false;
     }
     let path = dir.join(format!("{key}.json"));
-    if read_file(&path, synced).is_empty() {
-        return false;
-    }
     // Old accurate word caches remain readable while the next full listen
     // upgrades acoustic detail or relearns under a newer recipe. Mark the
     // attempt even for non-English songs.
-    std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<StoreFile>(&bytes).ok())
-        .is_some_and(|file| {
-            file.recipe == crate::vocal_preview::cache_recipe(&path, recipe())
-                && (crate::acoustic::assets().is_none() || file.detail_v >= 1)
-        })
+    read_store(&path, synced, true).is_some_and(|file| settled(&path, &file))
 }
 
 /// Cache eligibility is stricter than the 55% diagnostic-dump threshold:
@@ -1032,7 +1048,7 @@ fn write_dump(
     let to_io = |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let words_json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        detail_v: 2,
+        detail_v: DETAIL_V,
         recipe: recipe().to_string(),
         synced: Some(lrc.to_string()),
         words: words.to_vec(),
@@ -1450,7 +1466,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(cache.join(format!("{key}.json"))).unwrap())
                 .unwrap();
         assert_eq!(stored.recipe, acoustic::RECIPE);
-        assert_eq!(stored.detail_v, 2);
+        assert_eq!(stored.detail_v, DETAIL_V);
         let detailed = words.iter().filter(|w| !w.points.is_empty()).count();
         assert!(detailed > 0, "English evidence must retain acoustic detail");
         for word in &words {
@@ -1588,6 +1604,7 @@ mod tests {
             end: Some(1200),
             line_t: Some(1000),
             points: Vec::new(),
+            ..Default::default()
         }];
         write_file(&dir, &key, source, &words).unwrap();
         assert_eq!(load(&dir, "a", "b", "c", 180_000, Some(source)), words);
@@ -1643,6 +1660,7 @@ mod tests {
                 end: Some(1200),
                 line_t: Some(1000),
                 points: Vec::new(),
+                ..Default::default()
             },
             Word {
                 t: 1800,
@@ -1650,6 +1668,7 @@ mod tests {
                 end: Some(2100),
                 line_t: Some(2000),
                 points: Vec::new(),
+                ..Default::default()
             },
         ];
         assert_eq!(line_coverage(&lines, &words), 100);
@@ -1782,6 +1801,7 @@ mod tests {
                 end: Some(1200),
                 line_t: Some(1000),
                 points: Vec::new(),
+                ..Default::default()
             },
             Word {
                 t: 1300,
@@ -1789,6 +1809,7 @@ mod tests {
                 end: Some(1500),
                 line_t: Some(1000),
                 points: Vec::new(),
+                ..Default::default()
             },
         ];
         write_file(&dir, "abc", "[00:01.00]one two", &words).unwrap();
@@ -1811,6 +1832,7 @@ mod tests {
                     end: Some(t + ms),
                     line_t: Some(line_t),
                     points: Vec::new(),
+                    ..Default::default()
                 });
                 words.push(Word {
                     t: t + ms,
@@ -1818,6 +1840,7 @@ mod tests {
                     end: Some(t + ms),
                     line_t: Some(line_t),
                     points: Vec::new(),
+                    ..Default::default()
                 });
             }
         }
@@ -1927,6 +1950,7 @@ mod tests {
             end: Some(1400),
             line_t: Some(1000),
             points: Vec::new(),
+            ..Default::default()
         }];
         assert_eq!(line_coverage(&lines, &words), 33);
         assert!(line_coverage(&lines, &[]) == 0);
@@ -2121,6 +2145,7 @@ mod sync_status_tests {
                 end: Some(2000),
                 line_t: Some(1000),
                 points: Vec::new(),
+                ..Default::default()
             };
             write_file(&dir, key, &source, &[word]).unwrap();
             let path = dir.join(format!("{key}.json"));
