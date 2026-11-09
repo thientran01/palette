@@ -122,17 +122,19 @@ pub struct Check {
 /// `acoustic::REVIEW_BELOW`: a word under it makes its line doubted.
 const DOUBT: f32 = 0.5;
 const SURE: f32 = 0.9;
-/// Share of words within 300ms by support, on JamendoLyrics' mix (79
-/// songs, 21,580 words; docs/specs/2026-11-08-karaoke-sync-review.md):
-/// (support below, share on time). Words at 0.9 or more: 99.2%.
+/// Share of words within 300ms by support: (support below, share on time).
+/// Measured on JamendoLyrics (79 songs, 21,580 words) with the second ear,
+/// as the app aligns. Against each song's measured share the estimate was
+/// within 1.8 points on average (Pearson 0.91), and it ran a few points
+/// high on the hardest songs (docs/specs/2026-09-06-saved-syncs.md).
 const ON_TIME: [(f32, f32); 5] = [
-    (0.1, 0.36),
-    (0.3, 0.48),
-    (0.5, 0.67),
-    (0.7, 0.79),
-    (SURE, 0.89),
+    (0.1, 0.30),
+    (0.3, 0.45),
+    (0.5, 0.57),
+    (0.7, 0.81),
+    (SURE, 0.895),
 ];
-const ON_TIME_SURE: f32 = 0.992;
+const ON_TIME_SURE: f32 = 0.993;
 
 fn on_time(support: f32) -> f32 {
     ON_TIME
@@ -325,8 +327,8 @@ mod tests {
         let c = check(&lines, &words).unwrap();
         assert_eq!(c.lines, "slsun");
         assert_eq!((c.unsure, c.reheard, c.fixed), (1, 2, 1));
-        // 4 sure words, one at 0.6 (79%), one at 0.2 (48%).
-        let expected = (4.0 * 0.992 + 0.79 + 0.48) / 6.0;
+        // 4 sure words, one at 0.6 (81%), one at 0.2 (45%).
+        let expected = (4.0 * 0.993 + 0.81 + 0.45) / 6.0;
         assert!((c.on_time - expected).abs() < 0.001, "{}", c.on_time);
         // Saved before the review kept support: nothing to judge.
         assert_eq!(check(&lines, &[word(1000, None, false)]), None);

@@ -26,7 +26,18 @@ All five states use an authored ribbon family with stable left/signal/right corr
 
 The panel says how good each saved sync is, from the review's own numbers (`docs/specs/2026-11-08-karaoke-sync-review.md`). Those were computed during the align and then thrown away. Now each word keeps its `support`, rounded to two places, plus `reheard` when the second ear listened to its line again. A file without them (`detail_v` below 3, or below 4 where the second ear also writes held-note voice data) still displays, and the next full listen relearns it, as the mms-int8/4 recipe already does.
 
-- **Words on time** is an estimate: each word's support maps to the share of JamendoLyrics words at that support that landed within 300 ms (0.36 under 0.1 up to 0.992 at 0.9 or more), averaged over the song. It is shown as a whole percent and never reaches 100.
+- **Words on time** is an estimate. Each word's support maps to the share of JamendoLyrics words at that support that landed within 300 ms, measured with the second ear on (79 songs, 21,580 words), and the song's value is the average of those shares. The estimate is shown as a whole percent and never reaches 100.
+
+  | support | words | within 300 ms |
+  |---|---|---|
+  | < 0.1 | 0.2% | 30% |
+  | 0.1–0.3 | 1.1% | 45% |
+  | 0.3–0.5 | 1.7% | 57% |
+  | 0.5–0.7 | 3.7% | 81% |
+  | 0.7–0.9 | 6.6% | 89.5% |
+  | ≥ 0.9 | 86.7% | 99.3% |
+
+  Checked per song against the human onsets, the estimate was within 1.8 points on average and within 3 points for 68 of 79 songs (Pearson 0.91, Spearman 0.84). Over the whole set it was exact (96.5% vs 96.5%). It runs a few points high on the hardest songs: Embers was estimated at 83% and measured at 72%. Lines the second ear re-heard came out at 88.9% estimated vs 86.9% measured.
 - **Line map**: one tick per lyric line (blank stamps and repeated stamps skipped). Sure lines (every word at 0.9 or more) are short and faint, loose lines are mid, and unsure lines (a word under 0.5, what the review doubts) stand full height in full ink. Lines with no word timing are hollow. The ink is neutral, nothing on it moves, and it has no playhead.
 - **Second listen**: lines re-heard on isolated vocals, and how many came back sure enough not to be doubted.
 - **Least sure** sorts by the estimate, with unchecked songs last.

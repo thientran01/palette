@@ -10,7 +10,7 @@ const row = (key: string, saved_at: number, c: SyncCheck | null): SavedSync =>
 describe("sync check", () => {
   it("rounds the estimate and never claims 100%", () => {
     expect(onTimePercent(check(0.942))).toBe(94);
-    expect(onTimePercent(check(0.992))).toBe(99);
+    expect(onTimePercent(check(0.993))).toBe(99);
   });
 
   it("tells what the second listen did", () => {

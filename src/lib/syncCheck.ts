@@ -1,7 +1,7 @@
 import type { SavedSync, SyncCheck } from "./backend";
 
 /** Estimated words on time as a whole percent. Never shows 100: the
- * estimate tops out at 99.2% (sure words, JamendoLyrics). */
+ * estimate tops out at 99.3% (sure words, JamendoLyrics). */
 export function onTimePercent(check: SyncCheck): number {
   return Math.min(99, Math.round(check.on_time * 100));
 }
