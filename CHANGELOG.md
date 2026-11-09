@@ -10,6 +10,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Changed
 
+- Lyrics take far less work to draw while karaoke plays: about 40% less main-thread time per second in the widget and in focus mode, with no change to how anything looks. Line changes no longer re-read every letter of the song, and a hidden, pre-opened focus window no longer animates karaoke nobody can see.
 - Word karaoke follows Japanese singing much more closely. It used to listen for every kanji in its Chinese reading (水面 as "shuimian", 一人 as "1 ren"), for っ as "tsu" and for きょ as "ki-yo". っ, small kana and ー are now heard as sung. With the optional Japanese dictionary installed beside the karaoke model, kanji and numbers get their Japanese readings and the particles は and へ are heard as "wa" and "e". On five Japanese songs, lines the aligner doubts went from 45% to 23%. Saved syncs relearn on each song's next full listen.
 
 ### Fixed

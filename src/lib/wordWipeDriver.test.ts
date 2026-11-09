@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { attachWords, parseLrc, type LyricWord } from "./lrc";
 import { letterCount } from "./letterRise";
-import { driveWordRows, type WordRow } from "./wordWipeDriver";
+import { driveWordRows, settleRows, type WordRow } from "./wordWipeDriver";
 
 function style() {
   const values = new Map<string, string>();
@@ -230,5 +230,90 @@ describe("a held note's letters ride the singer's pitch", () => {
     const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
     for (const t of [1020, 1040, 1060]) { h.frame(t); expect(r.letters[0][0].values.has("--bend")).toBe(false); }
     stop();
+  });
+});
+
+describe("a line change hands the running driver the new line", () => {
+  // The panel used to rebuild the driver on every line change; now it calls
+  // setCurrentLine. Both must leave every row and letter exactly the same.
+  const snapshot = (rows: ReturnType<typeof row>[]) => rows.map(r => ({
+    row: [...r.style.values],
+    letters: r.letters.map(w => w.map(s => [...s.values])),
+  }));
+  it("writes the same styles as a rebuild at every frame", () => {
+    const make = () => [row(0, 1000, 1600), row(1, 2000, 2600), row(2, 2400, 3500), row(3, 6000, 6400)];
+    const a = make(); const b = make();
+    const ha = harness(900); const hb = harness(900);
+    let stopA = driveWordRows(a, 0, 0, ha.clock, ha.frames);
+    const driverB = driveWordRows(b, 0, 0, hb.clock, hb.frames);
+    // Line marker as the panel moves it, including a jump back (a seek).
+    const lineAt = (t: number) => t < 2000 ? 0 : t < 2400 ? 1 : t < 6000 ? 2 : 3;
+    let line = 0;
+    for (const t of [...Array.from({ length: 400 }, (_, i) => 900 + i * 16), 1500, ...Array.from({ length: 60 }, (_, i) => 1500 + i * 16)]) {
+      if (t === 1500) { ha.anchor(t); hb.anchor(t); } else { ha.frame(t); hb.frame(t); }
+      const next = lineAt(t);
+      if (next !== line) {
+        line = next;
+        stopA();
+        stopA = driveWordRows(a, line, 0, ha.clock, ha.frames);
+        driverB.setCurrentLine(line);
+      }
+      expect(snapshot(b)).toEqual(snapshot(a));
+    }
+    stopA(); driverB();
+  });
+  it("keeps the current row sung while it is current, even past its words", () => {
+    const h = harness(5000); const r = row(0, 1000, 1200); const el = { toggleAttribute: vi.fn() };
+    const driver = driveWordRows([{ ...r, el }], -1, 0, h.clock, h.frames);
+    expect(r.style.values.has("--word-bright")).toBe(false);
+    driver.setCurrentLine(0);
+    expect(r.style.values.get("--word-bright")).toBe("rgb(var(--fg))");
+    expect(el.toggleAttribute).toHaveBeenLastCalledWith("data-singing", true);
+    driver.setCurrentLine(1);
+    expect(r.style.values.has("--word-bright")).toBe(false);
+    driver();
+  });
+});
+
+describe("a row's letters move only while it sings or settles", () => {
+  it("marks a row settling when it stops singing, and on stop", () => {
+    const h = harness(1000);
+    const attrs = new Map<string, boolean>();
+    const el = { toggleAttribute: vi.fn((name: string, on?: boolean) => { attrs.set(name, !!on); return !!on; }) };
+    const stop = driveWordRows([{ ...row(0, 1000, 1200), el }], -1, 0, h.clock, h.frames);
+    expect(attrs.get("data-singing")).toBe(true);
+    expect(attrs.has("data-settling")).toBe(false);
+    h.frame(5000);
+    expect(attrs.get("data-singing")).toBe(false);
+    expect(attrs.get("data-settling")).toBe(true);
+    h.anchor(1100, false);
+    attrs.delete("data-settling");
+    stop();
+    expect(attrs.get("data-settling")).toBe(true);
+  });
+  it("lifts data-settling when the row's drop has eased out", () => {
+    const listeners = new Map<string, (e: Event) => void>();
+    const root = {
+      addEventListener: (type: string, cb: (e: Event) => void) => { listeners.set(type, cb); },
+      removeEventListener: (type: string) => { listeners.delete(type); },
+    } as unknown as HTMLElement;
+    let settling = true;
+    let running: { transitionProperty: string; playState: string }[] = [];
+    const rowEl = { removeAttribute: vi.fn(() => { settling = false; }) };
+    const ink = { closest: () => (settling ? rowEl : null), getAnimations: () => running };
+    const fire = (type: string, propertyName: string) =>
+      listeners.get(type)?.({ propertyName, target: ink } as unknown as Event);
+    const off = settleRows(root);
+    fire("transitionend", "transform");
+    expect(settling).toBe(true);
+    // The row sang again mid-ease: a fresh drop is still running.
+    running = [{ transitionProperty: "--drop", playState: "running" }];
+    fire("transitioncancel", "--drop");
+    expect(settling).toBe(true);
+    running = [];
+    fire("transitionend", "--drop");
+    expect(settling).toBe(false);
+    off();
+    expect(listeners.size).toBe(0);
   });
 });

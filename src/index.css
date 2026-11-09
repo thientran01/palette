@@ -565,10 +565,17 @@ button.lyric-row:hover { --lyric-filter: none; }
 .lyric-row [data-letter] {
   display: inline-block;
   color: color-mix(in srgb, var(--word-bright, currentColor) calc(var(--lit, 0) * 100%), currentColor);
+}
+/* Only rows that are singing, or easing their drop back out after
+ * (data-settling, wordWipeDriver.ts settleRows), move their letters.
+ * Everywhere else the transform would be translateY(0), and even an
+ * identity transform costs a paint chunk per letter that the compositor
+ * re-sorts on every karaoke frame. */
+.lyric-row:is([data-singing], [data-settling]) [data-letter] {
   transform: translateY(calc(var(--drop) * (1 - var(--lit, 0)) + var(--bend, 0px)));
 }
 @media (prefers-reduced-motion: reduce) {
-  .lyric-row [data-letter] { transform: none; }
+  .lyric-row:is([data-singing], [data-settling]) [data-letter] { transform: none; }
 }
 /* The depth-of-field blur: a filtered row turns the sharp rows next to it
  * grayscale, so each blurred row gets its own layer. The
