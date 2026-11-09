@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState, type ReactNode} from "react";
+import {useEffect, useRef, useState} from "react";
 import {researchAction, researchStatus, type ResearchStatus} from "./lib/backend";
 import type {NowPlaying} from "./types";
 
@@ -7,8 +7,7 @@ export const actionStyle = "inline-flex items-center gap-1.5 rounded-md px-2 py-
 function RecordGlyph({active=false}:{active?:boolean}) {
   return <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><path d="M6 3.5H4a.5.5 0 0 0-.5.5v2M14 3.5h2a.5.5 0 0 1 .5.5v2M16.5 14v2a.5.5 0 0 1-.5.5h-2M6 16.5H4a.5.5 0 0 1-.5-.5v-2"/>{active?<rect x="7" y="7" width="6" height="6" rx="1" fill="currentColor" stroke="none"/>:<circle cx="10" cy="10" r="3"/>}</svg>;
 }
-/** `lead` sits first in the action row (the panel's Relearn). */
-export function ResearchRecording({np,lead}:{np:NowPlaying;lead?:ReactNode}) {
+export function ResearchRecording({np}:{np:NowPlaying}) {
   const [status,setStatus]=useState<ResearchStatus|null>(null);
   const [busy,setBusy]=useState(false),[error,setError]=useState("");
   const alive=useRef(false),pending=useRef(false),generation=useRef(0);
@@ -41,14 +40,13 @@ export function ResearchRecording({np,lead}:{np:NowPlaying;lead?:ReactNode}) {
   const detail=phase==="armed"||phase==="recording" ? "Keep Palette visible."
     : phase==="error" ? status?.detail : "";
   const label=partial ? "Partial recording saved" : phase ? LABELS[phase] : "";
-  return <div className="mt-2" aria-label="Research recording">
+  return <div aria-label="Research recording">
     {phase && <div className="px-1 pb-1 pt-1" role="status">
       <div className="flex items-center gap-1.5 text-[11px] font-medium">{label}{phase==="recording"&&<span className="ml-auto tabular-nums text-muted">{Math.floor(seconds/60)}:{String(seconds%60).padStart(2,"0")}</span>}</div>
       {status?.title!==np.title && <p className="mt-1 truncate text-[11px] text-fg/80">{status?.title}</p>}
       {detail&&<p className="mt-1 text-[11px] leading-4 text-muted">{detail}</p>}
     </div>}
     <div className="flex flex-wrap items-center gap-0.5">
-      {lead}
       {!working&&<button className={actionStyle} disabled={busy||!eligible||!status} onClick={()=>void act("start")}><RecordGlyph/>Record for research</button>}
       {phase==="recording"&&<button className={actionStyle} disabled={busy} onClick={()=>void act("stop")}><RecordGlyph active/>Stop &amp; save</button>}
       {(phase==="armed"||phase==="recording")&&<button className={actionStyle} disabled={busy} onClick={()=>void act("cancel")}>Cancel</button>}

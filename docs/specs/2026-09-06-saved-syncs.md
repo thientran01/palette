@@ -41,5 +41,8 @@ The panel says how good each saved sync is, from the review's own numbers (`docs
 - **Line map**: one tick per lyric line (blank stamps and repeated stamps skipped). Sure lines (every word at 0.9 or more) are short and faint, loose lines are mid, and unsure lines (a word under 0.5, what the review doubts) stand full height in full ink. Lines with no word timing are hollow. The ink is neutral, nothing on it moves, and it has no playhead.
 - **Second listen**: lines re-heard on isolated vocals, and how many came back sure enough not to be doubted.
 - **Least sure** sorts by the estimate, with unchecked songs last.
-- The current song's card replaces the old status block. The status line remains while a song is waiting, learning or failed. Relearn sits beside Record for research.
+- The current song sits on a soft card that keeps its shape in every state. Its strip of line ticks fills in as the listen is captured (with "% heard" in the number's place), and then rises into the line map once the check lands. That is a one-shot, staggered height change. The status line remains while a song is waiting, learning or failed. Relearn sits under the summary.
+- Other songs being synced are listed under "Also syncing". The current song's own job is shown on its card.
+- Saved rows carry a 40 px version of the map, folded into 14 stretches, each drawn as its least sure line. The list header counts how many songs are checked.
+- Record for research and Folder sit in a footer, apart from the song's story.
 - The panel reaches the window's bottom edge (at most 560 px in focus mode) instead of 65vh. It covers the transport while open. The mode cluster hides under it, because the panel sits in the text plane's stacking context below the cluster's z-20.

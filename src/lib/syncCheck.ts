@@ -1,4 +1,5 @@
 import type { SavedSync, SyncCheck } from "./backend";
+import type { LyricLine } from "./lrc";
 
 /** Estimated words on time as a whole percent. Never shows 100: the
  * estimate tops out at 99.3% (sure words, JamendoLyrics). */
@@ -37,4 +38,10 @@ export function sortSyncs(rows: SavedSync[], sort: SyncSort): SavedSync[] {
     if (!a.check || !b.check) return Number(!a.check) - Number(!b.check) || b.saved_at - a.saved_at;
     return a.check.on_time - b.check.on_time || b.saved_at - a.saved_at;
   });
+}
+
+/** Sung lines as the sync check counts them (sync_library::check): no
+ * instrumental-break rows, no blank stamps, one row per stamp. */
+export function lyricLineCount(lines: LyricLine[]): number {
+  return new Set(lines.filter(l => l.end === undefined && l.text.trim()).map(l => l.t)).size;
 }

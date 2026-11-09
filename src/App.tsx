@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/
 import type { MorphName } from "./icons/geometry";
 import { MorphIcon } from "./icons/MorphIcon";
 import { LyricSyncStatus } from "./LyricSyncStatus";
+import { lyricLineCount } from "./lib/syncCheck";
 import { useKaraokePreference } from "./lib/karaokePreference";
 import { useBracketPulse } from "./icons/useBracketPulse";
 import {
@@ -1328,7 +1329,7 @@ function ExpandedView({
         className="pointer-events-none absolute right-[7px] top-9 z-20 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-100"
         onMouseDown={e => e.stopPropagation()}
       >
-        <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
+        <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} lines={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) ? lyricLineCount(lyrics.lines) : 0} />
       </div>
       {/* Keep the original sync seat below the view toggle on every surface. */}
       <ViewToggle

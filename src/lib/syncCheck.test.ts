@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SavedSync, SyncCheck } from "./backend";
-import { checkSummary, onTimePercent, savedWhen, sortSyncs } from "./syncCheck";
+import { checkSummary, lyricLineCount, onTimePercent, savedWhen, sortSyncs } from "./syncCheck";
 
 const check = (on_time: number, extra: Partial<SyncCheck> = {}): SyncCheck =>
   ({ on_time, lines: "sss", unsure: 0, reheard: 0, fixed: 0, ...extra });
@@ -35,5 +35,12 @@ describe("sync check", () => {
     const rows = [row("new", 30, null), row("good", 20, check(0.97)), row("old", 10, null), row("shaky", 5, check(0.86))];
     expect(sortSyncs(rows, "recent")).toBe(rows);
     expect(sortSyncs(rows, "least").map(r => r.key)).toEqual(["shaky", "good", "new", "old"]);
+  });
+
+  it("counts sung lines the way the check does", () => {
+    expect(lyricLineCount([
+      { t: 0, text: "one" }, { t: 1000, text: "" }, { t: 2000, text: "two" },
+      { t: 2000, text: "two" }, { t: 3000, text: "", end: 9000 },
+    ])).toBe(2);
   });
 });

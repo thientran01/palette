@@ -42,6 +42,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { MorphIcon } from "./icons/MorphIcon";
 import { LyricSyncStatus } from "./LyricSyncStatus";
+import { lyricLineCount } from "./lib/syncCheck";
 import { useKaraokePreference } from "./lib/karaokePreference";
 import {
   commands,
@@ -572,7 +573,7 @@ export default function Focus() {
       {!nothing && (
         <div className="group/sync-trigger absolute right-[10%] top-[calc(11vh-32px)] z-30">
           <div className="pointer-events-none opacity-0 transition-opacity duration-2 ease-out-tk group-hover/sync-trigger:pointer-events-auto group-hover/sync-trigger:opacity-100 group-has-[[data-focus-content]:hover]/focus:pointer-events-auto group-has-[[data-focus-content]:hover]/focus:opacity-100 group-has-[[data-focus-content]_:focus-visible]/focus:pointer-events-auto group-has-[[data-focus-content]_:focus-visible]/focus:opacity-100 has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-100">
-            <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
+            <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} lines={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) ? lyricLineCount(lyrics.lines) : 0} />
           </div>
         </div>
       )}

@@ -1741,7 +1741,7 @@ export async function activeSyncs(): Promise<ActiveSync[]> {
   if (IN_TAURI) return invoke<ActiveSync[]>("active_syncs");
   return new URLSearchParams(location.search).has("syncQueue") ? [
     {key:"preview-finishing",title:"Baby Flower",artist:"tripleS",phase:"processing",progress:null},
-    {key:"preview-listening",title:"Change",artist:"J. Cole",phase:"learning",progress:42},
+    {key:"preview-listening",title:mock.title,artist:mock.artist,phase:"learning",progress:42},
   ] : [];
 }
 

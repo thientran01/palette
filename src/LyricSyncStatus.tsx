@@ -11,7 +11,7 @@ const titles = {waiting:"Waiting to learn",learning:"Learning timing",processing
 /** Direct sync-library access in the shared corner controls, including queue.
  * The existing ribbon is a stable entry icon; live status lives in the library,
  * so closing it cannot leave a stale processing glyph in the corner. */
-export function LyricSyncStatus({np, saved}: {np:NowPlaying; saved:boolean}) {
+export function LyricSyncStatus({np, saved, lines}: {np:NowPlaying; saved:boolean; lines:number}) {
   const [preview, setPreview] = useState(false);
   const [library, setLibrary] = useState(false);
   const [snapshot, setSnapshot] = useState<{key:string; status:SyncStatus} | null>(null);
@@ -67,6 +67,6 @@ export function LyricSyncStatus({np, saved}: {np:NowPlaying; saved:boolean}) {
       onClick={() => setLibrary(current => !current)}>
       <MorphIcon name="syncSaved" size={16} dur={DUR[5]} />
     </button>
-    {library && <SavedSyncs np={np} onClose={close} current={{title,detail,phase:status.phase}}/>}
+    {library && <SavedSyncs np={np} lines={lines} onClose={close} current={{title,detail,phase:status.phase}}/>}
   </div>;
 }
