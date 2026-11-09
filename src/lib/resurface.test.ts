@@ -83,7 +83,7 @@ describe("history log", () => {
     const log: HistoryEntry[] = [];
     for (let i = 0; i < 1000; i++) log.push(entry(i, NOW - (1000 - i) * 300_000));
     const { page, calls } = pager(log);
-    const h = createHistoryLog(page);
+    const h = createHistoryLog(page, 200);
     expect((await h.sync()).length).toBe(1000);
     // Five full pages, then the empty one that says the log ended.
     expect(calls.length).toBe(6);
@@ -94,6 +94,31 @@ describe("history log", () => {
     expect(after.length).toBe(1002);
     expect(after[0].key).toBe("k1001");
     expect(calls).toEqual([null]);
+  });
+
+  it("reads 1000 plays a page by default", async () => {
+    const log: HistoryEntry[] = [];
+    for (let i = 0; i < 2500; i++) log.push(entry(i, NOW - (2500 - i) * 300_000));
+    const { page, calls } = pager(log);
+    expect((await createHistoryLog(page).sync()).length).toBe(2500);
+    expect(calls.length).toBe(3);
+  });
+
+  it("keeps the raw rows, newest first, in step with the listens", async () => {
+    const log: HistoryEntry[] = [];
+    for (let i = 0; i < 450; i++) log.push(entry(i, NOW - (450 - i) * 300_000));
+    const h = createHistoryLog(pager(log).page, 200);
+    const rows = await h.syncEntries();
+    expect(rows.length).toBe(450);
+    expect(rows[0]).toBe(log[449]);
+    expect(rows[449]).toBe(log[0]);
+    log.push(entry(450, NOW));
+    const after = await h.syncEntries();
+    expect(after.length).toBe(451);
+    expect(after[0].key).toBe("k450");
+    h.reset();
+    log.length = 0;
+    expect(await h.syncEntries()).toEqual([]);
   });
 
   it("forgets everything on reset", async () => {

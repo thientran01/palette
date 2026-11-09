@@ -1317,6 +1317,7 @@ pub fn run() {
             history::history_page,
             history::history_thumb,
             history::history_thumb_url,
+            history::history_thumb_urls,
             spotify_connect,
             hide_widget,
             quit_app,

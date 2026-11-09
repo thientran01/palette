@@ -10,7 +10,10 @@ import {
   matchRank,
   matchSongs,
   nextSection,
+  norm,
   playlistSubtitle,
+  playTime,
+  restOfLog,
   songCount,
   sortRecent,
 } from "./searchLibrary";
@@ -138,12 +141,54 @@ describe("history by day", () => {
     expect([...dayTotals(list, now, false).keys()]).toEqual(["Today"]);
   });
 
+  it("labels every row as dayLabel does, in any order and across DST", () => {
+    // Every 7h37m across the March and November clock changes, shuffled
+    // back and forth so the per-day shortcut has to recompute.
+    const times: number[] = [];
+    for (let t = new Date(2026, 2, 1).getTime(); t < new Date(2026, 10, 6).getTime(); t += 27_420_000) times.push(t);
+    times.reverse();
+    const mixed = [...times.slice(0, 50), ...times.slice(200, 260), ...times.slice(40, 120)];
+    const labels = groupByDay(mixed.map(entry), now);
+    let last = "";
+    mixed.forEach((t, i) => {
+      const want = dayLabel(t, now);
+      expect(labels[i].header).toBe(want === last ? null : want);
+      last = want;
+    });
+  });
+
+  it("formats play times the same through the memo", () => {
+    const fmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+    for (let t = now - 3 * 86_400_000; t < now; t += 1_234_567) {
+      expect(playTime(t)).toBe(fmt.format(t));
+      expect(playTime(t + 1)).toBe(fmt.format(t + 1));
+    }
+  });
+
+  it("continues a loaded page from the cached whole log", () => {
+    const all = [5, 4, 3, 2, 1].map((i) => entry(now - i));
+    expect(restOfLog(all, all.slice(0, 2))?.map((e) => e.started_at_ms)).toEqual([now - 3, now - 2, now - 1]);
+    expect(restOfLog(all, all)).toEqual([]);
+    // A row the log doesn't hold, or nothing loaded: page the old way.
+    expect(restOfLog(all, [entry(now - 99)])).toBeNull();
+    expect(restOfLog(all, [])).toBeNull();
+  });
+
   it("summarizes a day in songs and listening time", () => {
     expect(daySummary(1, 170_000)).toBe("1 song · 3 min listened");
     expect(daySummary(14, 52 * 60_000)).toBe("14 songs · 52 min listened");
     expect(daySummary(31, 125 * 60_000)).toBe("31 songs · 2 hr 5 min listened");
     expect(daySummary(20, 120 * 60_000)).toBe("20 songs · 2 hr listened");
     expect(daySummary(1, 5_000)).toBe("1 song · 1 min listened");
+  });
+});
+
+describe("norm", () => {
+  it("answers the same from the memo", () => {
+    expect(norm("  ＮｅｗＪｅａｎｓ ")).toBe("newjeans");
+    expect(norm("  ＮｅｗＪｅａｎｓ ")).toBe("newjeans");
+    for (let i = 0; i < 20_100; i++) expect(norm(`Song ${i}`)).toBe(`song ${i}`);
+    expect(norm("Ｂ")).toBe("b");
   });
 });
 
