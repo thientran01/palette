@@ -1,5 +1,5 @@
 import { WORD_ATTACK_MS, type LyricWord } from "./lrc";
-import { letterLit, letterOnsets, RISE_MS } from "./letterRise";
+import { letterLit, rowLetterOnsets, RISE_EARLY_MS, RISE_MS } from "./letterRise";
 import { heldBend } from "./voiceMotion";
 
 /** How long a row stays sung after its last letter lands: long enough for a
@@ -52,9 +52,9 @@ export function driveWordRows(
   const tracks = rows.filter(r => r.words.length > 0 && r.letters.length === r.words.length)
     .map(row => {
       const letters: Letter[] = [];
+      const rowOnsets = rowLetterOnsets(row.words);
       row.words.forEach((w, wi) => {
-        const nextT = row.words[wi + 1]?.t;
-        const onsets = letterOnsets(w, nextT);
+        const onsets = rowOnsets[wi];
         const spans = row.letters[wi];
         if (spans.length !== onsets.length) return;
         // The last letter takes the rest of the word's sound.
@@ -63,8 +63,8 @@ export function driveWordRows(
           next: onsets[k + 1] ?? end, lit: "", bend: "" }));
       });
       return { row, letters, active: false,
-        start: Math.min(...row.words.map(w => w.t)),
-        end: Math.max(...letters.map(l => l.onset + Math.max(RISE_MS, l.next - l.onset)),
+        start: Math.min(...row.words.map(w => w.t)) - RISE_EARLY_MS,
+        end: Math.max(...letters.map(l => l.onset - RISE_EARLY_MS + Math.max(RISE_MS, l.next - l.onset)),
           ...row.words.map(w => (w.end ?? w.t) + 1)) + TAIL_MS,
       };
     });

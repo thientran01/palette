@@ -6,23 +6,25 @@
  * each finished one, at one word per ~100ms syllable in Korean. Thien:
  * "it makes the words jump by syllables really fast."
  *
- * Now each letter brightens and floats up into place as it's sung. A
- * letter's rise starts at its own onset (the aligner's letter checkpoints
- * where it has them, else spread across the word's sung span) and lasts
- * at least RISE_MS, so rises overlap: a run of quick syllables reads as
- * one wave instead of a strobe, and a held letter rises as slowly as it is
- * held. Onsets are exactly as measured; only how long a letter takes to
- * settle is smoothed.
+ * Now each letter brightens and floats up into place as it's sung. Letter
+ * onsets come from one smooth cursor per row (lineCursor.ts), which passes
+ * every word onset exactly and keeps its speed continuous between them, so
+ * letters and syllables follow each other evenly instead of in bursts.
+ * Each rise lasts at least RISE_MS and eases in and out (no jolt when it
+ * starts), so neighbouring rises overlap into one smooth wave, and a held
+ * letter rises as slowly as it is held. Word onsets are exactly as
+ * measured; only the motion between them is smoothed.
  *
  * docs/specs/2026-11-08-karaoke-sung-highlight.md
  */
-import { wordFillEnd, type LyricWord } from "./lrc";
+import { wordWipeFraction, type LyricWord } from "./lrc";
+import { lineCursor } from "./lineCursor";
 
-/** Shortest rise. Long enough that neighbouring syllables overlap. */
-export const RISE_MS = 260;
-/** A rise starts this much before its letter's onset so the letter is
- * visibly moving as it is sung, not just after. */
-export const RISE_EARLY_MS = 30;
+/** Shortest rise. Long enough that neighbouring letters overlap. */
+export const RISE_MS = 300;
+/** A rise starts this much before its letter's onset, so the letter is
+ * visibly on its way as it is sung, not just after. */
+export const RISE_EARLY_MS = 90;
 // Intl.Segmenter is in WebView2 and Node; the project's TS lib predates it.
 type Graphemes = { segment(text: string): Iterable<{ segment: string }> };
 const Segmenter = (Intl as unknown as {
@@ -41,30 +43,44 @@ export function letterCount(text: string): number {
   return letterSegments(text).filter(s => s.letter).length;
 }
 
-/** Song-clock onset of each letter of `w`. With acoustic checkpoints, a
- * letter starts where the fill first reaches its share; otherwise letters
- * are spread across the word's displayed fill (lrc.ts wordFillEnd). */
-export function letterOnsets(w: LyricWord, nextT?: number): number[] {
-  const n = letterCount(w.text);
-  if (n === 0) return [];
-  const pts = w.points;
-  const valid = w.timing !== "phrase" && pts && pts.length >= 2 && pts[0].t === w.t &&
-    pts.every((p, i) => i === 0 || (p.t >= pts[i - 1].t && p.fraction >= pts[i - 1].fraction));
-  if (valid) {
-    return Array.from({ length: n }, (_, k) => {
-      const share = k / n;
-      return (pts.find(p => p.fraction >= share - 1e-6) ?? pts[pts.length - 1]).t;
-    });
+/** Earliest instant in [lo, hi] at which monotone `f` reaches `x`. */
+function reach(f: (t: number) => number, x: number, lo: number, hi: number): number {
+  if (f(lo) >= x) return lo;
+  if (!(f(hi) >= x)) return hi;
+  while (hi - lo > 0.5) {
+    const mid = (lo + hi) / 2;
+    if (f(mid) >= x) hi = mid;
+    else lo = mid;
   }
-  const span = Math.max(wordFillEnd(w, nextT) - w.t, 90);
-  return Array.from({ length: n }, (_, k) => w.t + span * k / n);
+  return hi;
+}
+
+/** Song-clock onset of every letter in a row, per word. In-order words
+ * share the row cursor; a word sung out of order (a backing reply) keeps
+ * its own fill (lrc.ts wordWipeFraction). Each word's first letter starts
+ * exactly at its onset. */
+export function rowLetterOnsets(words: readonly LyricWord[]): number[][] {
+  const counts = words.map(w => letterCount(w.text));
+  const cursor = lineCursor(words, counts);
+  return words.map((w, i) => {
+    const n = counts[i];
+    if (cursor.owns[i]) {
+      const end = Math.max(cursor.end, w.t);
+      return Array.from({ length: n }, (_, k) =>
+        k === 0 ? w.t : reach(t => cursor.at(t), cursor.offsets[i] + k - 1e-6, w.t, end));
+    }
+    const nextT = words[i + 1]?.t;
+    const end = Math.max(w.end ?? w.t, nextT ?? w.t, w.t + 1);
+    const fill = (t: number) => wordWipeFraction(w, t, 0, nextT);
+    return Array.from({ length: n }, (_, k) => k === 0 ? w.t : reach(fill, k / n - 1e-6, w.t, end));
+  });
 }
 
 /** How far a letter has risen, 0 (unsung) to 1 (in place), at a
- * song-clock instant (already led). Ease-out: quick to start moving,
- * gentle to land. */
+ * song-clock instant (already led). Smoothstep: no jolt when a letter
+ * starts moving and none when it lands. */
 export function letterLit(onset: number, nextOnset: number, clock: number): number {
   const duration = Math.max(RISE_MS, nextOnset - onset);
   const u = Math.min(1, Math.max(0, (clock - onset + RISE_EARLY_MS) / duration));
-  return 1 - (1 - u) ** 3;
+  return u * u * (3 - 2 * u);
 }

@@ -41,16 +41,20 @@ Thien picked C.
 Every word is split into letters (graphemes, so a Hangul block or an
 accented letter is one) and each letter is its own inline-block span.
 
-- A letter's onset is exactly as measured: where the aligner's letter
-  checkpoints first reach its share of the word, or, without checkpoints,
-  spread evenly across the word's displayed fill (`wordFillEnd`: the 90 ms
-  attack for short Latin words, the sung span for syllable scripts and
-  long words).
-- Its rise starts 30 ms before the onset and lasts until the next letter's
-  onset, but never less than 260 ms, with an ease-out. Quick syllables
-  therefore overlap into one wave instead of strobing, and a held letter
-  rises as slowly as it is held. Only how long a letter takes to settle is
-  smoothed; when it starts is never moved.
+- Letter onsets come from one cursor per row (`src/lib/lineCursor.ts`,
+  the cursor prototype A drew its wipe with), in letters. It passes every
+  word onset exactly; between onsets it is a monotone cubic
+  (Fritsch-Carlson): continuous speed, never backward, no overshoot.
+  Inside a phrase (next onset within 220 ms of a word's end) it runs
+  straight on; before a longer rest it ends where the word's sound ends.
+  A word gets at least 55 ms per letter. Held words with letter
+  checkpoints are keyed where each checkpoint's plateau ends (the same
+  reading as `sampleFill`), so the held letter rises slowly. Words sung out
+  of order (a backing reply) keep their own fill.
+- A rise starts 90 ms before its onset and lasts until the next letter's
+  onset, but never less than 300 ms, on a smoothstep: no jolt when a
+  letter starts moving or lands. Neighbouring rises overlap into one wave,
+  and a held letter rises as slowly as it is held.
 - The driver writes `--lit` (0–1) per letter. The color mixes from the
   row's tone to `--word-bright` by `--lit`, and the letter sits
   `--drop` (1.75 px) × (1 − `--lit`) below its place.
@@ -70,6 +74,14 @@ minimal", briefly picked Glide, then asked for Rise toned down. A 1 px
 float with a sub-pixel sway (word moving as one) was too little; he asked
 for "in between", so the float is 1.75 px, the sway up to ±1.5 px and the
 letter wave 9 ms.
+
+Smoothness (2026-11-09): Thien then found it "too bumpy" between
+syllables and letters. Each word had timed its own letters (short words
+packed into the 90 ms attack, then a pause; held words stepping on
+checkpoints) and each rise was an ease-out that started at full speed.
+The row cursor and the smoothstep cut the frame-to-frame change in how
+fast the line lights (mean |Δv| / mean |v| of the summed `--lit`) from
+0.24–0.31 to 0.08–0.12 on Thien's five saved syncs.
 
 Letters as inline-blocks lose kerning across letter pairs; the line's
 layout never changes while it is sung.

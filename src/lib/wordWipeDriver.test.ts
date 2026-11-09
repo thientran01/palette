@@ -53,11 +53,10 @@ describe("data-singing marks only the rows being sung", () => {
 
 describe("letters rise from their own onsets", () => {
   it("lights the letters of a word in order across its sung span", () => {
-    // A syllable-script word with no checkpoints spreads its letters
-    // across its whole sung span.
+    // A word before a rest spreads its letters across its whole sound.
     const h = harness(1000); const r = rowOf(0, [{ t: 1000, end: 1400, text: "한국어요" }]);
     const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
-    h.frame(1250);
+    h.frame(1150);
     const [a, b, c, d] = r.letters[0].map(lit);
     expect(a).toBeGreaterThan(b); expect(b).toBeGreaterThan(c);
     expect(c).toBeGreaterThan(0); expect(d).toBe(0);
@@ -89,13 +88,13 @@ describe("letters rise from their own onsets", () => {
     ] }];
     const h = harness(1000); const r = rowOf(0, words);
     const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
-    h.frame(1500);
+    h.frame(1800);
     const l = r.letters[0].map(lit);
-    // "ha" quick, the second "l" (held) halfway through its long rise,
-    // later letters still waiting for their onset.
+    // The checkpoint's plateau is held (lrc.ts sampleFill's reading): "a"
+    // is partway through its long rise, later letters wait for 1900.
     expect(l[0]).toBe(1);
-    expect(l[2]).toBeGreaterThan(0.3); expect(l[2]).toBeLessThan(1);
-    expect(l[4]).toBe(0);
+    expect(l[1]).toBeGreaterThan(0.1); expect(l[1]).toBeLessThan(1);
+    expect(l[2]).toBe(0);
     stop();
   });
 });
