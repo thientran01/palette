@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/
 import type { MorphName } from "./icons/geometry";
 import { MorphIcon } from "./icons/MorphIcon";
 import { LyricSyncStatus } from "./LyricSyncStatus";
+import { lyricLineCount } from "./lib/syncCheck";
 import { useKaraokePreference } from "./lib/karaokePreference";
 import { useBracketPulse } from "./icons/useBracketPulse";
 import {
@@ -538,6 +539,8 @@ const POPOVER_ORIGIN: Record<DockCorner, string> = {
  * but plain focus-within also matched the residual focus a mouse click
  * leaves on the clicked button, pinning the chrome open after the cursor
  * left (Thien, 2026-07-10). Mouse clicks don't set :focus-visible; Tab does.
+ * Invisible while the Lyric syncs panel is open: the panel reaches down over
+ * this corner but lives in the text plane's stacking context, under z-20.
  */
 function ModeCluster({
   mode,
@@ -553,7 +556,7 @@ function ModeCluster({
       // The cluster stays revealed while the queue UI is open — the corner
       // chrome holds as one band while the popover/surface is up, so the
       // mode ladder stays reachable without re-earning the hover.
-      className={`pointer-events-none absolute bottom-[4px] right-[7px] z-20 flex items-center gap-1 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 ${
+      className={`pointer-events-none absolute bottom-[4px] right-[7px] z-20 flex items-center gap-1 opacity-0 group-has-[[data-sync-library]]/widget:invisible transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 ${
         queueOpen ? "pointer-events-auto opacity-100" : ""
       }`}
       // Swallow mousedown: pointer-events-none makes a DISABLED button
@@ -1326,7 +1329,7 @@ function ExpandedView({
         className="pointer-events-none absolute right-[7px] top-9 z-20 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 has-[[aria-expanded=true]]:pointer-events-auto has-[[aria-expanded=true]]:opacity-100"
         onMouseDown={e => e.stopPropagation()}
       >
-        <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} />
+        <LyricSyncStatus np={np} saved={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) && lyrics.lines.some(l => l.words?.some(w => w.timing !== "phrase"))} lines={lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np) ? lyricLineCount(lyrics.lines) : 0} />
       </div>
       {/* Keep the original sync seat below the view toggle on every surface. */}
       <ViewToggle

@@ -21,3 +21,28 @@ Activity polling reads memory once per second only while the popover is mounted 
 The trigger's hover/focus label now names its action, Lyric syncs. The full state explanation lives inside the library under the current song, with its title and artist. Opening the library suppresses the label; the label is bound to the trigger rather than the entire popover wrapper. Expanded styling makes the active button recognizable.
 
 All five states use an authored ribbon family with stable left/signal/right correspondence. Every state retains three visible two-cubic paths, so transitions reshape the same strokes without adding or removing parts. The same glyphs appear in the trigger, current-song explanation and active jobs. The existing 260ms in-out morph and reduced-motion behavior remain shared with Palette's icon system; there is no idle animation.
+
+## Sync check (2026-11-09)
+
+The panel says how good each saved sync is, from the review's own numbers (`docs/specs/2026-11-08-karaoke-sync-review.md`). Those were computed during the align and then thrown away. Now each word keeps its `support`, rounded to two places, plus `reheard` when the second ear listened to its line again. A file without them (`detail_v` below 3, or below 4 where the second ear also writes held-note voice data) still displays, and the next full listen relearns it, as the mms-int8/4 recipe already does.
+
+- **Words on time** is an estimate. Each word's support maps to the share of JamendoLyrics words at that support that landed within 300 ms, measured with the second ear on (79 songs, 21,580 words), and the song's value is the average of those shares. The estimate is shown as a whole percent and never reaches 100.
+
+  | support | words | within 300 ms |
+  |---|---|---|
+  | < 0.1 | 0.2% | 30% |
+  | 0.1–0.3 | 1.1% | 45% |
+  | 0.3–0.5 | 1.7% | 57% |
+  | 0.5–0.7 | 3.7% | 81% |
+  | 0.7–0.9 | 6.6% | 89.5% |
+  | ≥ 0.9 | 86.7% | 99.3% |
+
+  Checked per song against the human onsets, the estimate was within 1.8 points on average and within 3 points for 68 of 79 songs (Pearson 0.91, Spearman 0.84). Over the whole set it was exact (96.5% vs 96.5%). It runs a few points high on the hardest songs: Embers was estimated at 83% and measured at 72%. Lines the second ear re-heard came out at 88.9% estimated vs 86.9% measured.
+- **Line map**: one tick per lyric line (blank stamps and repeated stamps skipped). Sure lines (every word at 0.9 or more) are short and faint, loose lines are mid, and unsure lines (a word under 0.5, what the review doubts) stand full height in full ink. Lines with no word timing are hollow. The ink is neutral, nothing on it moves, and it has no playhead.
+- **Second listen**: lines re-heard on isolated vocals, and how many came back sure enough not to be doubted.
+- **Least sure** sorts by the estimate, with unchecked songs last.
+- The current song sits on a soft card that keeps its shape in every state. Its strip of line ticks fills in as the listen is captured (with "% heard" in the number's place), and then rises into the line map once the check lands. That is a one-shot, staggered height change. The status line remains while a song is waiting, learning or failed. Relearn sits under the summary.
+- Other songs being synced are listed under "Also syncing". The current song's own job is shown on its card.
+- Saved rows carry a 40 px version of the map, folded into 14 stretches, each drawn as its least sure line. The list header counts how many songs are checked.
+- Record for research and Folder sit in a footer, apart from the song's story.
+- The panel reaches the window's bottom edge (at most 560 px in focus mode) instead of 65vh. It covers the transport while open. The mode cluster hides under it, because the panel sits in the text plane's stacking context below the cluster's z-20.
