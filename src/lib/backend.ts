@@ -25,6 +25,7 @@ import {
 import type { LyricWord } from "./lrc";
 import * as posClock from "./posClock";
 import { isWindowShown } from "./windowShown";
+import { listenHere } from "./listenHere";
 
 const MOCK_DURATION = 204_000;
 
@@ -214,7 +215,7 @@ function pushMockSpotify(connected: boolean): void {
  * always "shown"; `?section=library` picks the starting section). */
 export function onSearchShown(cb: (section: SearchSection) => void): () => void {
   if (!IN_TAURI) return () => {};
-  const un = listen<SearchSection>("search-shown", (e) => cb(e.payload ?? "songs"));
+  const un = listenHere<SearchSection>("search-shown", (e) => cb(e.payload ?? "songs"));
   return () => {
     un.then((f) => f());
   };
@@ -224,7 +225,7 @@ export function onSearchShown(cb: (section: SearchSection) => void): () => void 
  * (search.rs toggle): the same section hides, another switches. */
 export function onSearchSection(cb: (section: SearchSection) => void): () => void {
   if (!IN_TAURI) return () => {};
-  const un = listen<SearchSection>("search-section", (e) => cb(e.payload ?? "songs"));
+  const un = listenHere<SearchSection>("search-section", (e) => cb(e.payload ?? "songs"));
   return () => {
     un.then((f) => f());
   };
@@ -294,7 +295,7 @@ function mockLibraryGate(): "needs_reconnect" | "offline" | "disconnected" | nul
  * window is always "shown"). */
 export function onFocusShown(cb: () => void): () => void {
   if (!IN_TAURI) return () => {};
-  const un = listen("focus-shown", () => cb());
+  const un = listenHere("focus-shown", () => cb());
   return () => {
     un.then((f) => f());
   };
@@ -776,7 +777,7 @@ export interface AudioBands {
 /** ~30Hz band energies while music plays; zeroed on stop/hide. */
 export function onAudioBands(cb: (b: AudioBands) => void): () => void {
   if (IN_TAURI) {
-    const un = listen<AudioBands>("audio-bands", (e) => cb(e.payload));
+    const un = listenHere<AudioBands>("audio-bands", (e) => cb(e.payload));
     return () => {
       un.then((f) => f());
     };
@@ -948,7 +949,7 @@ export function onSpotifyAuthError(cb: (message: string) => void): () => void {
 /** Nudge to a section when prefs is already open (tray "Shortcuts / Help"). */
 export function onPrefsSection(cb: (section: string) => void): () => void {
   if (!IN_TAURI) return () => {};
-  const un = listen<string>("prefs-section", (e) => cb(e.payload));
+  const un = listenHere<string>("prefs-section", (e) => cb(e.payload));
   return () => {
     un.then((f) => f());
   };

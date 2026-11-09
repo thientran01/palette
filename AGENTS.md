@@ -15,6 +15,7 @@ Before opening a PR, run what CI runs: `npm run build`, `npm test`, and `cargo t
 - Never `PUT play uris` into a live Spotify context, because it kills the context.
 - The Last.fm key is personal and must never be a constant. The repo is public.
 - Write config through `settings.rs`. Never overwrite `settings.json` wholesale.
+- Listen for an event Rust sends with `emit_to` through `listenHere` (`src/lib/listenHere.ts`). A plain `listen()` also hears every other window's `emit_to`.
 - A new window label must be added to `src-tauri/capabilities/default.json`, or that window gets no IPC and nothing reports it.
 - Player quirks are in `docs/smtc-support-matrix.md`. Apple Music can't seek, and its session disappears when playback stops.
 
