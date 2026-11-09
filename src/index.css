@@ -253,6 +253,14 @@ html[data-opaque] {
   animation: skeleton-breathe 1300ms var(--ease-in-out-tk) infinite;
 }
 
+/* A hidden Tauri window keeps animating (lib/windowShown.ts sets this
+ * attribute from Rust's shown signal). Only the infinite breathers pause:
+ * they pick up mid-breath on show, which nobody can tell, while a paused
+ * one-shot would finish late in front of the user. */
+:root[data-window-hidden] :is(.resting-pulse, .skeleton-pulse) {
+  animation-play-state: paused;
+}
+
 /* Pull-refresh row swap (Search.tsx): on a user-invoked refresh the fresh
  * picks resolve IN PLACE through a light blur — the house content-swap mask
  * (the Phantom screen-enter idiom), NOT a re-entrance. The first cut faded

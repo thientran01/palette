@@ -9,6 +9,7 @@ Before opening a PR, run what CI runs: `npm run build`, `npm test`, and `cargo t
 - Never resize the main window. WebView2 shakes. Mode changes are CSS inside a fixed window, and `tauri.conf.json` must match `MODE_SIZES.expanded`.
 - Anything that pops out of the widget must be added to the hit rect, or clicks fall through to the desktop.
 - Show/hide the main window only through `apply_visibility`.
+- Any window show/hide must also call `tell_shown`. A hidden Tauri webview still reports `document.hidden === false` and runs rAF at full rate, so pages pause on `src/lib/windowShown.ts` instead.
 - `src/lib/posClock.ts` is the only owner of playback position.
 - Never trust a command's return value (SMTC or Spotify). Re-read state to verify.
 - Never `PUT play uris` into a live Spotify context, because it kills the context.

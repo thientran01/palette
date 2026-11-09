@@ -1,6 +1,7 @@
 import {useEffect, useRef, useState} from "react";
 import {researchAction, researchStatus, type ResearchStatus} from "./lib/backend";
 import type {NowPlaying} from "./types";
+import {isWindowShown,onWindowShown} from "./lib/windowShown";
 
 const LABELS = {armed:"Replay from the beginning",recording:"Recording",saving:"Saving…",saved:"Recording saved",error:"Couldn’t finish recording"};
 const actionStyle = "inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-fg/80 transition-colors duration-2 hover:bg-fg/10 hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg/50 disabled:opacity-40";
@@ -15,15 +16,15 @@ export function ResearchRecording({np}:{np:NowPlaying}) {
     alive.current=true; let live=true,inFlight=false; let timer:number|undefined;
     const poll=async()=>{
       window.clearTimeout(timer);
-      if(!live || document.hidden) return;
+      if(!live || !isWindowShown()) return;
       if(inFlight||pending.current){timer=window.setTimeout(poll,1000);return;}
       inFlight=true;const n=generation.current;
       try { const s=await researchStatus(); if(live&&n===generation.current){setStatus(s);setError(e=>e==="Recording status is unavailable."?"":e);} }
       catch { if(live&&n===generation.current)setError("Recording status is unavailable."); }
-      finally { inFlight=false;if(live&&!document.hidden)timer=window.setTimeout(poll,1000); }
+      finally { inFlight=false;if(live&&isWindowShown())timer=window.setTimeout(poll,1000); }
     };
-    void poll(); document.addEventListener("visibilitychange",poll);
-    return ()=>{live=false;alive.current=false;generation.current++;window.clearTimeout(timer);document.removeEventListener("visibilitychange",poll);};
+    void poll(); const offShown=onWindowShown(()=>void poll()); // not visibilitychange: lib/windowShown.ts
+    return ()=>{live=false;alive.current=false;generation.current++;window.clearTimeout(timer);offShown();};
   },[]);
   async function act(action:"start"|"stop"|"cancel"|"open") {
     if(pending.current)return; pending.current=true;generation.current++;setBusy(true);setError("");

@@ -161,6 +161,7 @@ fn open(app: &AppHandle) {
     // screen, and only the focus window's Destroyed event clears
     // the flag (quick-review catch; Ctrl+Alt+M carries a recovery
     // path regardless).
+    crate::tell_shown(app, LABEL, true);
     if win.show().is_err() {
         log::error!("focus: show failed — aborting the takeover");
         let _ = win.destroy();
