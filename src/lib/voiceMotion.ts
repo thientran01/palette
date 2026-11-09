@@ -77,7 +77,10 @@ export function heldBend(w: LyricWord, nextT: number | undefined, clock: number,
   if (!w.voice || !isHeld(w) || clock < w.t) return 0;
   const end = w.end ?? w.t;
   const release = nextT === undefined ? end + RELEASE_MS : Math.min(nextT, end + RELEASE_MS);
-  const settle = clock < release ? 1 : Math.max(0, 1 - (clock - release) / SETTLE_MS);
+  // Glide back to the line with an ease-in-out, not a constant-speed slide
+  // that stops dead.
+  const back = clock < release ? 0 : Math.min(1, (clock - release) / SETTLE_MS);
+  const settle = 1 - back * back * (3 - 2 * back);
   if (settle <= 0) return 0;
   // Held notes come in from HELD_MS on; full sway from about a second.
   const held = clamp((end - w.t - 350) / 600, 0, 1);

@@ -121,7 +121,7 @@ the pitch 80 ms into the note (clamped to ±1.5 px, and eased in for notes
 under about a second): vibrato is a gentle sway and a slide or a dragged
 note a drift. Each later letter reads the pitch 9 ms earlier, a slight
 wave through the word. Unvoiced frames hold
-the last pitch, and the letters settle back over 260 ms after the note's
+the last pitch, and the letters glide back (ease-in-out) over 260 ms after the note's
 release. Short syllables never follow pitch, which would bring back the
 syllable-rate jitter. Loudness is saved with the track but not drawn.
 
