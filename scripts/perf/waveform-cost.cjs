@@ -7,7 +7,9 @@
 // Each scene is measured three ways: fed (a visible window), "hidden: no
 // payloads" (what audio.rs BandFanout gives a hidden window; the mock's
 // __mockUnfed), and "waveform off" (reduced motion, so no Waveform work at
-// all: the floor). Headless Chromium on a shared machine is noisy (about
+// all: the floor). The focus room draws its playing bars on a canvas
+// (src/lib/roomCanvas.ts), so its "bars" and "transform writes/s" read 0;
+// compare its task ms/s. Headless Chromium on a shared machine is noisy (about
 // ±5 ms/s on task time between runs), so compare medians, not single runs.
 const { chromium } = require("playwright");
 const URL = process.env.URL || "http://localhost:1422/";
