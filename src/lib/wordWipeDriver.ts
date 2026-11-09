@@ -32,6 +32,8 @@ const ROW_PROPS = ["--word-bright", "--lyric-scale", "--lyric-opacity", "--lyric
 interface Letter {
   style: Style;
   word: number;
+  /** Index within its word, for the held note's slight wave. */
+  k: number;
   onset: number;
   next: number;
   lit: string;
@@ -57,7 +59,7 @@ export function driveWordRows(
         if (spans.length !== onsets.length) return;
         // The last letter takes the rest of the word's sound.
         const end = Math.max(w.end ?? w.t + WORD_ATTACK_MS, onsets[onsets.length - 1] ?? w.t);
-        spans.forEach((style, k) => letters.push({ style, word: wi, onset: onsets[k],
+        spans.forEach((style, k) => letters.push({ style, word: wi, k, onset: onsets[k],
           next: onsets[k + 1] ?? end, lit: "", bend: "" }));
       });
       return { row, letters, active: false,
@@ -106,7 +108,7 @@ export function driveWordRows(
         }
         // A held note's letters ride the pitch once they've risen.
         const word = row.words[letter.word];
-        const px = e * heldBend(word, row.words[letter.word + 1]?.t, p);
+        const px = e * heldBend(word, row.words[letter.word + 1]?.t, p, letter.k);
         const bend = px === 0 ? "" : `${(-px).toFixed(2)}px`;
         if (bend !== letter.bend) {
           if (bend) letter.style.setProperty("--bend", bend);

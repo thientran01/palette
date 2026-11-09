@@ -53,7 +53,7 @@ accented letter is one) and each letter is its own inline-block span.
   smoothed; when it starts is never moved.
 - The driver writes `--lit` (0–1) per letter. The color mixes from the
   row's tone to `--word-bright` by `--lit`, and the letter sits
-  `--drop` (1 px) × (1 − `--lit`) below its place.
+  `--drop` (1.75 px) × (1 − `--lit`) below its place.
 - `--drop` applies only while the row is being sung (`data-singing`) and
   transitions with the line's own 220 ms scale-up, so unsung letters ease
   down as the line arrives instead of jumping.
@@ -66,8 +66,10 @@ accented letter is one) and each letter is its own inline-block span.
 Tuning (2026-11-09): the first build floated letters up 2.5 px and swayed
 held notes ±2.2 px with the letters running as a wave. On his PC Thien
 found it "moves the characters too much ... i want palette to feel pretty
-minimal", briefly picked Glide, then asked for Rise toned down. Now the
-float is 1 px and the sway under a pixel, with the word moving as one.
+minimal", briefly picked Glide, then asked for Rise toned down. A 1 px
+float with a sub-pixel sway (word moving as one) was too little; he asked
+for "in between", so the float is 1.75 px, the sway up to ±1.5 px and the
+letter wave 9 ms.
 
 Letters as inline-blocks lose kerning across letter pairs; the line's
 layout never changes while it is sung.
@@ -93,10 +95,11 @@ after the alignment and the second ear:
 On the whole of "Haunted" (69 held notes) the budget voiced 29 in 9
 passes; analysis took 0.4 s of CPU, so the separator is the whole cost.
 
-On screen, a held note's risen letters move together 1 px per 110 cents
-away from the pitch 80 ms into the note (clamped to ±0.9 px, and eased in
-for notes under about a second): vibrato is a faint sway and a slide or a
-dragged note a slight drift. Unvoiced frames hold
+On screen, a held note's risen letters move 1 px per 75 cents away from
+the pitch 80 ms into the note (clamped to ±1.5 px, and eased in for notes
+under about a second): vibrato is a gentle sway and a slide or a dragged
+note a drift. Each later letter reads the pitch 9 ms earlier, a slight
+wave through the word. Unvoiced frames hold
 the last pitch, and the letters settle back over 260 ms after the note's
 release. Short syllables never follow pitch, which would bring back the
 syllable-rate jitter. Loudness is saved with the track but not drawn.

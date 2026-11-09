@@ -6,9 +6,10 @@
  * On a held note (HELD_MS or longer) with a voice track, each letter that
  * has risen moves up and down with the sung pitch, relative to where the
  * note started: vibrato becomes a gentle sway, a slide or a dragged note a
- * drift. The whole word moves together, under a pixel: Thien found the
- * first version (2.2px, letters swaying as a wave) "too much" and wants
- * Palette minimal. Short syllables never follow pitch:
+ * drift, with a slight lag from letter to letter. Tuned with Thien on
+ * his PC: the first version (2.2px, an 18ms letter wave) was "too much",
+ * a sub-pixel one too little; this sits between. Short syllables never
+ * follow pitch:
  * that would bring back the syllable-rate jitter this work removes.
  *
  * The voice track comes from the karaoke worker (src-tauri/src/voice.rs):
@@ -30,11 +31,13 @@ export const UNVOICED = -32768;
 const RELEASE_MS = 120;
 const SETTLE_MS = 260;
 /** 1px per this many cents away from the note's start, clamped: a
- * typical ±80-cent vibrato sways about ±0.7px. */
-const CENTS_PER_PX = 110;
-const MAX_BEND_PX = 0.9;
+ * typical ±80-cent vibrato sways about ±1px. */
+const CENTS_PER_PX = 75;
+const MAX_BEND_PX = 1.5;
 /** Where a held note's reference pitch is read, past the attack's scoop. */
 const REF_MS = 80;
+/** Each later letter reads the pitch this much earlier: a slight wave. */
+const LETTER_LAG_MS = 9;
 
 const clamp = (x: number, a: number, b: number) => Math.min(b, Math.max(a, x));
 
@@ -67,10 +70,10 @@ function reference(c: readonly number[], ms: number): number | undefined {
   return pitchAt(c, ms);
 }
 
-/** How far held word `w` sits above its line, in px, at a song-clock
- * instant (already led), given the next onset in its row. Zero for
- * anything that isn't a voiced held note. */
-export function heldBend(w: LyricWord, nextT: number | undefined, clock: number): number {
+/** How far letter `k` of held word `w` sits above its line, in px, at a
+ * song-clock instant (already led), given the next onset in its row.
+ * Zero for anything that isn't a voiced held note. */
+export function heldBend(w: LyricWord, nextT: number | undefined, clock: number, k = 0): number {
   if (!w.voice || !isHeld(w) || clock < w.t) return 0;
   const end = w.end ?? w.t;
   const release = nextT === undefined ? end + RELEASE_MS : Math.min(nextT, end + RELEASE_MS);
@@ -80,7 +83,7 @@ export function heldBend(w: LyricWord, nextT: number | undefined, clock: number)
   const held = clamp((end - w.t - 350) / 600, 0, 1);
   const sung = Math.min(clock, release) - w.t;
   const ref = reference(w.voice.c, REF_MS);
-  const now = pitchAt(w.voice.c, Math.max(0, sung));
+  const now = pitchAt(w.voice.c, Math.max(0, sung - k * LETTER_LAG_MS));
   if (ref === undefined || now === undefined) return 0;
   return held * settle * clamp((now - ref) / CENTS_PER_PX, -MAX_BEND_PX, MAX_BEND_PX);
 }

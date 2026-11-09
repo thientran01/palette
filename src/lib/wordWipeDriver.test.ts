@@ -218,11 +218,7 @@ describe("a held note's letters ride the singer's pitch", () => {
     const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
     const bends: number[] = [];
     for (let t = 1500; t < 2100; t += 10) { h.frame(t); bends.push(parseFloat(r.letters[0][0].values.get("--bend") ?? "0")); }
-    expect(Math.max(...bends) - Math.min(...bends)).toBeGreaterThan(0.9);
-    // The whole word moves as one (scaled only by how far each letter has
-    // risen; the held last letter is still rising).
-    const [h0, h1] = r.letters[0].map(s => parseFloat(s.values.get("--bend") ?? "0"));
-    expect(h1).toBeCloseTo(h0 * lit(r.letters[0][1]), 1);
+    expect(Math.max(...bends) - Math.min(...bends)).toBeGreaterThan(1.4);
     h.frame(2400 + 120 + 300);
     expect(r.letters[0][0].values.has("--bend")).toBe(false);
     stop();

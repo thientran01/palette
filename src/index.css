@@ -554,7 +554,7 @@ button.lyric-row:hover { --lyric-filter: none; }
   inherits: true;
   initial-value: 0px;
 }
-.lyric-row[data-singing] .lyric-ink { --drop: 1px; }
+.lyric-row[data-singing] .lyric-ink { --drop: 1.75px; }
 .lyric-row [data-letter] {
   display: inline-block;
   color: color-mix(in srgb, var(--word-bright, currentColor) calc(var(--lit, 0) * 100%), currentColor);

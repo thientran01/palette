@@ -14,10 +14,14 @@ describe("held notes ride the pitch", () => {
     const w = held();
     const ys = Array.from({ length: 60 }, (_, k) => heldBend(w, 3000, 1500 + k * 10));
     const span = Math.max(...ys) - Math.min(...ys);
-    // ±70 cents: a faint sway, well under two pixels end to end.
-    expect(span).toBeGreaterThan(0.9);
-    expect(span).toBeLessThan(1.9);
+    // ±70 cents: a gentle sway of about two pixels end to end.
+    expect(span).toBeGreaterThan(1.4);
+    expect(span).toBeLessThan(2.6);
     expect([1100, 1200, 1250].every(t => heldBend(w, 3000, t) === 0)).toBe(true);
+  });
+  it("runs later letters slightly behind", () => {
+    const w = held();
+    expect(heldBend(w, 3000, 1700, 0)).not.toBeCloseTo(heldBend(w, 3000, 1700, 3), 2);
   });
   it("settles after the note ends and ignores short syllables", () => {
     const w = held();
@@ -30,6 +34,6 @@ describe("held notes ride the pitch", () => {
     const c = w.voice.c.map((v, k) => k >= 100 && k < 110 ? UNVOICED : v);
     const a = heldBend({ ...w, voice: { ...w.voice, c } }, 3000, 1995);
     const b = heldBend({ ...w, voice: { ...w.voice, c } }, 3000, 2050);
-    expect(Math.abs(a - b)).toBeLessThan(0.25);
+    expect(Math.abs(a - b)).toBeLessThan(0.4);
   });
 });
