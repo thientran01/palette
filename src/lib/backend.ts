@@ -506,6 +506,15 @@ if (!IN_TAURI) {
   };
 }
 
+// Preview affordance: NO band payloads for `ms` — what a hidden window gets
+// now that audio.rs (BandFanout) feeds only the windows the user can see.
+let mockUnfedUntil = 0;
+if (!IN_TAURI) {
+  (window as unknown as { __mockUnfed?: (ms: number) => void }).__mockUnfed = (ms) => {
+    mockUnfedUntil = Date.now() + ms;
+  };
+}
+
 /** Mutate the mock payload, advancing the seq stamp like the backend does. */
 function pushMock(patch: Partial<NowPlaying>): void {
   mock = { ...mock, ...patch, seq: mock.seq + 1 };
@@ -773,6 +782,7 @@ export function onAudioBands(cb: (b: AudioBands) => void): () => void {
   }
   // Mock: musical-ish motion so preview exercises the reactive layer.
   const id = window.setInterval(() => {
+    if (Date.now() < mockUnfedUntil) return;
     if (mock.status !== "playing" || Date.now() < mockSilenceUntil) {
       cb({ bass: 0, mid: 0, high: 0, level: 0, spectrum: new Array<number>(SPECTRUM_BINS).fill(0) });
       return;

@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from "react";
 import { type AudioBands } from "./lib/backend";
 import { Envelope, reactiveOn, subscribeBands } from "./lib/reactive";
+import { bandsStale } from "./lib/waveformFrame";
 
 /** Four renditions of the same instrument: "sm" is the pill's inline text
  * separator (5 bars); "md" is the card and lyrics-header separator (7 bars,
@@ -244,6 +245,9 @@ export function Waveform({
     // Per-bar peak ceiling: the room silhouette envelope; a flat 1 elsewhere.
     const peaks = size === "room" ? bins.map((_, i) => roomPeak(i, bins.length)) : bins.map(() => 1);
     let latest: AudioBands | null = null;
+    // When `latest` arrived. A hidden window stops getting payloads
+    // (audio.rs BandFanout), so a stale one reads as silence (bandsStale).
+    let latestAt = 0;
     let raf = 0;
     let running = false;
     let last = 0;
@@ -265,7 +269,7 @@ export function Waveform({
       if (now - last < 33) return; // ~30fps
       const dt = Math.min(now - last, 100);
       last = now;
-      const b = latest;
+      const b = latest !== null && !bandsStale(now, latestAt) ? latest : null;
       let peak = 0;
       for (let i = 0; i < bins.length; i++) {
         const bin = bins[i];
@@ -359,6 +363,7 @@ export function Waveform({
 
     const unsub = subscribeBands((b) => {
       latest = b;
+      latestAt = performance.now();
       if (b.level > WAKE_LEVEL) {
         // Any wake abandons an in-flight settle (snap-back, or a bloom that
         // reveals plainly) — disarm the drop stagger so a later bloom
