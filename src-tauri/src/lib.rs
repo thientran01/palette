@@ -37,6 +37,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+/// The opaque windows' first-paint color, = index.css `--surface`
+/// (20 18 16). Set on the focus and prefs builders so the HWND and the
+/// WebView2 default background are dark BEFORE the page paints. Without
+/// it, both default to white, and every focus open flashed white for
+/// ~8 frames and then faded its room in over white (Thien's demo
+/// recording, 2026-11-08). Keep in step with `--surface` in index.css.
+pub(crate) const SURFACE: tauri::window::Color = tauri::window::Color(20, 18, 16, 255);
+
 const POLL_INTERVAL_MS: u64 = 500;
 // After a GSMTC event wakes the media loop, wait this long and drain the
 // channel before snapshotting — players fire several events per track change

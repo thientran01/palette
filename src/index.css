@@ -112,6 +112,13 @@ body {
   user-select: none;
 }
 
+/* Opaque windows (focus, prefs; flagged in main.tsx) paint the page in
+ * --surface, so the focus room's 200ms .room-in fade and the pending blank
+ * resolve over dark, never over WebView2's white. */
+html[data-opaque] {
+  background-color: rgb(var(--surface));
+}
+
 /* Text plane: an opaque, rectangular, composited layer for text in a
  * TRANSPARENT window (the widget, search). Chromium only draws ClearType
  * (subpixel) text into a layer it knows is opaque; the transparent page

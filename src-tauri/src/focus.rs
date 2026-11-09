@@ -87,6 +87,10 @@ fn create(app: &AppHandle) {
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
+    // Dark before the first paint: the window AND WebView2 default to
+    // white, which showed on every open until the page painted, and
+    // under the room's 200ms .room-in fade (crate::SURFACE).
+    .background_color(crate::SURFACE)
     // Born hidden so open()'s position → fullscreen → show sequence is
     // deterministic (fullscreen takes the window's CURRENT monitor) — and so
     // a warmed window stays invisible until it is actually opened.
