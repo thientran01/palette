@@ -68,11 +68,13 @@ describe("letters rise from their own onsets", () => {
     const words = [0, 1, 2, 3].map(i => ({ t: 1000 + i * 100, end: 1000 + i * 100 + 80, text: "가" }));
     const h = harness(1000); const r = rowOf(0, words);
     const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
-    h.frame(1290);
+    h.frame(1180);
     const levels = r.letters.map(l => lit(l[0]));
-    // Several syllables are mid-rise at once, each a little behind.
-    expect(levels.filter(v => v > 0 && v < 1).length).toBeGreaterThanOrEqual(3);
-    for (let i = 1; i < levels.length; i++) expect(levels[i]).toBeLessThan(levels[i - 1]);
+    // Neighbouring syllables are mid-rise at once, each a little behind.
+    expect(levels.filter(v => v > 0 && v < 1).length).toBeGreaterThanOrEqual(2);
+    expect(levels[0]).toBeGreaterThan(levels[1]);
+    expect(levels[1]).toBeGreaterThan(levels[2]);
+    expect(levels[2]).toBeGreaterThan(levels[3]);
     stop();
   });
   it("applies the word lead", () => {

@@ -10,21 +10,25 @@
  * onsets come from one smooth cursor per row (lineCursor.ts), which passes
  * every word onset exactly and keeps its speed continuous between them, so
  * letters and syllables follow each other evenly instead of in bursts.
- * Each rise lasts at least RISE_MS and eases in and out (no jolt when it
- * starts), so neighbouring rises overlap into one smooth wave, and a held
- * letter rises as slowly as it is held. Word onsets are exactly as
- * measured; only the motion between them is smoothed.
+ * Each rise takes RISE_MS and eases in and out (no jolt when it starts),
+ * so neighbouring rises overlap into one smooth wave. It is quick and
+ * centred near the onset: a letter is half up 20ms after it is sung and
+ * fully up 120ms after (Thien, 2026-11-09: a rise that took the whole
+ * gap, or a held letter's whole hold, "doesn't happen fast enough and it
+ * looks weird relative to the beat or the actual singing"). Word onsets
+ * are exactly as measured; only the motion between them is smoothed.
  *
  * docs/specs/2026-11-08-karaoke-sung-highlight.md
  */
 import { wordWipeFraction, type LyricWord } from "./lrc";
 import { lineCursor } from "./lineCursor";
 
-/** Shortest rise. Long enough that neighbouring letters overlap. */
-export const RISE_MS = 300;
+/** How long a letter takes to rise. Long enough that neighbouring letters
+ * overlap, short enough to land with the singing. */
+export const RISE_MS = 200;
 /** A rise starts this much before its letter's onset, so the letter is
  * visibly on its way as it is sung, not just after. */
-export const RISE_EARLY_MS = 90;
+export const RISE_EARLY_MS = 80;
 // Intl.Segmenter is in WebView2 and Node; the project's TS lib predates it.
 type Graphemes = { segment(text: string): Iterable<{ segment: string }> };
 const Segmenter = (Intl as unknown as {
@@ -79,8 +83,7 @@ export function rowLetterOnsets(words: readonly LyricWord[]): number[][] {
 /** How far a letter has risen, 0 (unsung) to 1 (in place), at a
  * song-clock instant (already led). Smoothstep: no jolt when a letter
  * starts moving and none when it lands. */
-export function letterLit(onset: number, nextOnset: number, clock: number): number {
-  const duration = Math.max(RISE_MS, nextOnset - onset);
-  const u = Math.min(1, Math.max(0, (clock - onset + RISE_EARLY_MS) / duration));
+export function letterLit(onset: number, clock: number): number {
+  const u = Math.min(1, Math.max(0, (clock - onset + RISE_EARLY_MS) / RISE_MS));
   return u * u * (3 - 2 * u);
 }

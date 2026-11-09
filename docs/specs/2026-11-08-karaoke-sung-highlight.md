@@ -51,10 +51,11 @@ accented letter is one) and each letter is its own inline-block span.
   checkpoints are keyed where each checkpoint's plateau ends (the same
   reading as `sampleFill`), so the held letter rises slowly. Words sung out
   of order (a backing reply) keep their own fill.
-- A rise starts 90 ms before its onset and lasts until the next letter's
-  onset, but never less than 300 ms, on a smoothstep: no jolt when a
-  letter starts moving or lands. Neighbouring rises overlap into one wave,
-  and a held letter rises as slowly as it is held.
+- A rise starts 80 ms before its onset and takes 200 ms on a smoothstep:
+  no jolt when a letter starts moving or lands, half up 20 ms after it is
+  sung and fully up 120 ms after. Neighbouring rises overlap into one
+  wave. A held letter rises as quickly as any other; the hold shows as the
+  next letter waiting, and as the pitch sway.
 - The driver writes `--lit` (0–1) per letter. The color mixes from the
   row's tone to `--word-bright` by `--lit`, and the letter sits
   `--drop` (1.75 px) × (1 − `--lit`) below its place.
@@ -82,6 +83,14 @@ checkpoints) and each rise was an ease-out that started at full speed.
 The row cursor and the smoothstep cut the frame-to-frame change in how
 fast the line lights (mean |Δv| / mean |v| of the summed `--lit`) from
 0.24–0.31 to 0.08–0.12 on Thien's five saved syncs.
+
+Speed (2026-11-09): with rises that lasted the whole gap to the next
+letter (a held letter's whole hold), Thien found the rise "doesn't happen
+fast enough and it looks weird relative to the beat or the actual
+singing". Rises are now a fixed 200 ms, half up 20 ms after the onset
+(it was 60 ms for quick letters and far later for held ones). The same
+measure is 0.18: still under the 0.24–0.31 of the first build, and the
+cursor keeps letters evenly spaced.
 
 Letters as inline-blocks lose kerning across letter pairs; the line's
 layout never changes while it is sung.

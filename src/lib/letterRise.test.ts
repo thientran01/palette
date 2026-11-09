@@ -47,16 +47,14 @@ describe("letter onsets follow one smooth cursor per row", () => {
   });
 });
 
-describe("each rise eases in and out", () => {
+describe("each rise is quick and eases in and out", () => {
   const start = 1000 - RISE_EARLY_MS;
-  it("starts gently a little before the onset and lands after RISE_MS", () => {
-    expect(letterLit(1000, 1010, start)).toBe(0);
-    expect(letterLit(1000, 1010, start + 10)).toBeLessThan(0.01);
-    expect(letterLit(1000, 1010, 1000)).toBeGreaterThan(0.1);
-    expect(letterLit(1000, 1010, start + RISE_MS / 2)).toBeCloseTo(0.5, 6);
-    expect(letterLit(1000, 1010, start + RISE_MS)).toBe(1);
-  });
-  it("rises as slowly as a letter is held", () => {
-    expect(letterLit(1000, 2000, 1500)).toBeLessThan(1);
+  it("starts gently just before the onset and lands soon after it", () => {
+    expect(letterLit(1000, start)).toBe(0);
+    expect(letterLit(1000, start + 10)).toBeLessThan(0.01);
+    expect(letterLit(1000, 1000)).toBeGreaterThan(0.2);
+    expect(letterLit(1000, start + RISE_MS / 2)).toBeCloseTo(0.5, 6);
+    expect(letterLit(1000, start + RISE_MS)).toBe(1);
+    expect(start + RISE_MS - 1000).toBeLessThanOrEqual(150);
   });
 });
