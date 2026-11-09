@@ -26,7 +26,7 @@ Preconditions:
 - Connected mock (`/?window=palette` without `spotify=off`).
 - Search pool: Savior, Instagram, WHERE YOU AT?, plus **Happy Ending** / Kep1er, **About Love** / Red Velvet, **Euphoria** / keshi.
 
-- **History empty state.** Open `/?window=palette`. A combobox named `Search Spotify` is focused, placeholder **Play something…**. A listbox named `From your history` has one to three rows (reasons such as **Most played**, **Haven't heard in a while**, **Today's pick**, **On this day**). Hint copy `↵ play · ⇧↵ queue` is visible.
+- **History empty state.** Open `/?window=palette`. A combobox named `Search Spotify` is focused, placeholder **Play something…**. A listbox named `From your history` has up to four rows (reasons such as **On repeat lately**, **Most played**, **Haven't heard in a while**, **Forgotten favorite**, **Today's pick**, **On this day**, **Played before**). The mock log is under a week old, so it shows **Most played** rather than **Haven't heard in a while**. Hint copy `↵ play · ⇧↵ queue` is visible.
 - **Search match.** Fill `Search Spotify` with `dean`. After ~250ms debounce + ~180ms mock latency, the listbox name is `Search results` and contains **Instagram**.
 - **Search extra.** Replace the query with `kep`. Results contain **Happy Ending**.
 - **Search miss.** Replace the query with `volcano`. Status **No matches on Spotify** appears. The results list is empty.

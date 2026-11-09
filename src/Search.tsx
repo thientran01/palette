@@ -34,11 +34,20 @@
  * holds the resting value, effectively unused).
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { commands, onSearchSection, onSearchShown } from "./lib/backend";
+import { commands, onHistoryCleared, onSearchSection, onSearchShown } from "./lib/backend";
 import { RowThumb, useSpotifyStatus } from "./Queue";
 import { playNowNote } from "./lib/playNowStatus";
 import { browserStorage, createDiscoveryCache } from "./lib/discoveryCache";
 import { nextSection, SECTIONS } from "./lib/searchLibrary";
+import {
+  aggregate,
+  createHistoryLog,
+  createShownMemory,
+  DAY_MS,
+  pickResurfaced,
+  RESURFACE_MIN_MS,
+  type Agg,
+} from "./lib/resurface";
 import { SpotifyConnectButton } from "./SpotifyConnectButton";
 import {
   BackIcon,
@@ -70,7 +79,7 @@ import {
   type OpenTarget,
   type SearchRow,
 } from "./SearchSections";
-import { IN_TAURI, type HistoryEntry, type QueueTrack, type SearchSection } from "./types";
+import { IN_TAURI, type QueueTrack, type SearchSection } from "./types";
 
 const RESULT_LIMIT = 8;
 /** History rows rendered at once; scrolling (or arrowing) near the end
@@ -93,10 +102,6 @@ const SECTION_GLYPH: Record<SearchSection, () => React.ReactNode> = {
   history: () => <HistoryIcon />,
 };
 const DEBOUNCE_MS = 250;
-/** History pages scanned for the resurfacing picks (3 × 200 entries). */
-const RESURFACE_PAGES = 3;
-/** A pick must have been genuinely listened to (cumulative). */
-const RESURFACE_MIN_MS = 60_000;
 
 /** Resolve-on-demand cache for resurfaced rows (the Queue.tsx uriCache
  * pattern) — successes only: the search window lives for the whole app
@@ -111,21 +116,6 @@ async function resolveUri(row: SearchRow): Promise<string | null> {
   if (uri) uriCache.set(row.key, uri);
   return uri;
 }
-
-/** One history track, aggregated across its listens. */
-interface Agg {
-  key: string;
-  title: string;
-  artist: string;
-  /** Cumulative ms listened, all time in the scanned window. */
-  ms: number;
-  /** Cumulative ms listened within the last 7 days (the "on repeat" signal). */
-  ms7: number;
-  last: number;
-  uri: string | null;
-}
-
-const DAY_MS = 86_400_000;
 
 /** The freshness clock for the empty state: three blocks a day (morning /
  * afternoon / evening, local time). Rotation is per day-PART now, not per day
@@ -206,108 +196,53 @@ function discoveryFailureNote(status: string | null): string | null {
   }
 }
 
+/** The play log for "From your history": read whole on the first summon,
+ * then topped up with only the new plays (lib/resurface). */
+const historyLog = createHistoryLog((before, limit) => commands.historyPage(before, limit));
+/** What the section has shown this day-block, so refreshes move on. */
+const resurfaceShown = createShownMemory(browserStorage());
+/** The discovery seed pool keeps its old scope: the newest plays, not the
+ * all-time list, so "Something different" leans on what you're into now. */
+const DISCOVERY_POOL_LISTENS = 600;
+
 /** The "From your history" section: up to four resurfacing picks over the
- * local play log, each a relative measure (the log is young; absolute
- * thresholds would answer nothing for months) with a short reason label, and
- * artist-diversified so the four don't read as one artist. Returns the picks
- * AND the aggregate pool, so the discovery seeds reuse it instead of
- * re-scanning history. Deterministic within a day-block (see blockSeed). */
+ * whole local play log, each with a short reason label (lib/resurface).
+ * The summon set (refreshN 0) is the block's stable, dated set; a refresh
+ * excludes everything shown this block, so it brings songs not seen yet.
+ * Returns the picks AND the discovery seed pool + every played track, so
+ * discovery reuses the scan instead of re-reading history. */
 async function computeResurfaced(
   now: number,
-  offset = 0,
+  refreshN = 0,
 ): Promise<{ rows: SearchRow[]; pool: Agg[]; played: Agg[] }> {
-  const entries: HistoryEntry[] = [];
-  let before: number | null = null;
-  for (let i = 0; i < RESURFACE_PAGES; i++) {
-    const page = await commands.historyPage(before, 200);
-    entries.push(...page);
-    if (page.length < 200) break;
-    before = page[page.length - 1].started_at_ms;
-  }
-  const byKey = new Map<string, Agg>();
-  for (const e of entries) {
-    const cur = byKey.get(e.key) ?? {
-      key: e.key,
-      title: e.title,
-      artist: e.artist,
-      ms: 0,
-      ms7: 0,
-      last: 0,
-      uri: null,
-    };
-    cur.ms += e.ms_listened;
-    if (now - e.started_at_ms < 7 * DAY_MS) cur.ms7 += e.ms_listened;
-    cur.last = Math.max(cur.last, e.ended_at_ms);
-    cur.uri = cur.uri ?? e.spotify_uri;
-    byKey.set(e.key, cur);
-  }
+  const listens = await historyLog.sync();
   // Every track the log has seen (any listen, even below the pick floor) —
   // the exclude source for discovery, so "different" means genuinely un-played.
-  const played = [...byKey.values()];
-  const all = played.filter((t) => t.ms >= RESURFACE_MIN_MS);
-  const rested = all.filter((t) => now - t.last > DAY_MS);
-  const pool = (rested.length ? rested : all).slice().sort((a, b) => b.ms - a.ms);
+  const played = aggregate(listens, now);
+  const recent = aggregate(listens.slice(0, DISCOVERY_POOL_LISTENS), now).filter(
+    (t) => t.ms >= RESURFACE_MIN_MS,
+  );
+  const rested = recent.filter((t) => now - t.last > DAY_MS);
+  const pool = (rested.length ? rested : recent).slice().sort((a, b) => b.ms - a.ms);
 
-  const picks: { agg: Agg; reason: string }[] = [];
-  const taken = new Set<string>();
-  // Push the FIRST candidate (from a priority-ordered list) that is neither
-  // already taken nor a repeat artist — so a strategy whose top choice was
-  // already claimed still contributes its next-best instead of silently
-  // yielding nothing. A relaxed top-up pass below fills any remainder when
-  // diversity ran the pool dry (a one-artist library still fills its rows).
-  const pushFirst = (cands: Agg[], reason: string, start = 0): void => {
-    const n = cands.length;
-    for (let k = 0; k < n; k++) {
-      const agg = cands[(start + k) % n];
-      if (taken.has(agg.key)) continue;
-      const artist = agg.artist.trim().toLowerCase();
-      if (picks.some((p) => p.agg.artist.trim().toLowerCase() === artist)) continue;
-      picks.push({ agg, reason });
-      taken.add(agg.key);
-      return;
-    }
-  };
-
-  // Each strategy walks its ranked list from `offset`, so a pull-to-refresh
-  // (offset++) advances the whole section to the next-best of each category —
-  // the labels stay category-accurate, and mod-wrap means it never empties.
-  // 1. The most lived-in track (pool is sorted by ms desc).
-  pushFirst(pool, rested.length ? "Haven't heard in a while" : "Most played", offset);
-  // 2. A prior month's same date, when one exists (usually absent).
-  const today = new Date(now).getDate();
-  pushFirst(
-    all.filter((t) => new Date(t.last).getDate() === today && now - t.last > 25 * DAY_MS),
-    "On this day",
-    offset,
-  );
-  // 3. On repeat this week.
-  pushFirst(
-    all.filter((t) => t.ms7 >= RESURFACE_MIN_MS).sort((a, b) => b.ms7 - a.ms7),
-    "On repeat lately",
-    offset,
-  );
-  // 4. Heavy once, untouched for a month+.
-  pushFirst(
-    all.filter((t) => now - t.last > 30 * DAY_MS).sort((a, b) => b.ms - a.ms),
-    "Forgotten favorite",
-    offset,
-  );
-  // 5. A rotating deep cut from the top listens (day-block wildcard + refresh
-  // offset), starting the walk at the combined offset.
-  const rest = pool.filter((t) => !taken.has(t.key)).slice(0, 10);
-  if (rest.length) pushFirst(rest, "Today's pick", (blockSeed(now) + offset) % rest.length);
-  // Top-up: if diversity left us short of four, backfill from the pool
-  // (offset-walked too) ignoring the artist constraint (one-artist library).
-  for (let k = 0; k < pool.length; k++) {
-    if (picks.length >= 4) break;
-    const agg = pool[(offset + k) % pool.length];
-    if (taken.has(agg.key)) continue;
-    picks.push({ agg, reason: "Played before" });
-    taken.add(agg.key);
+  const block = blockSeed(now);
+  const shown = refreshN === 0 ? new Set<string>() : resurfaceShown.get(block);
+  const seed = refreshN === 0 ? block : block * 1009 + shown.size + refreshN;
+  let picks = pickResurfaced(played, now, { seed, exclude: shown });
+  // A refresh that had to reuse a shown song has run through the candidates:
+  // start a new cycle, picked afresh so the rows keep their real labels
+  // instead of falling back to "Played before".
+  if (picks.some((p) => shown.has(p.agg.key))) {
+    resurfaceShown.clear();
+    picks = pickResurfaced(played, now, { seed: seed + 1 });
   }
+  resurfaceShown.add(
+    block,
+    picks.map((p) => p.agg.key),
+  );
 
   const rows: SearchRow[] = await Promise.all(
-    picks.slice(0, 4).map(async (p) => ({
+    picks.map(async (p) => ({
       key: p.agg.key,
       title: p.agg.title,
       artist: p.agg.artist,
@@ -320,19 +255,28 @@ async function computeResurfaced(
   return { rows, pool, played };
 }
 
+/** Spotify covers already looked up for history picks this session
+ * (successes only). Picks now reach months back, past the 300-file thumb
+ * cache, so the fallback runs more often than it used to. */
+const historyArtCache = new Map<string, string>();
+
 /** Disk thumb first (captured while the widget was visible). Hidden listens
  * and eviction leave a null — fall back to a Spotify cover so Search does
  * not show the note glyph for a track the user has already heard. */
 async function artForHistory(agg: Agg): Promise<string | null> {
   const thumb = await commands.historyThumbUrl(agg.key);
   if (thumb) return thumb;
+  const hit = historyArtCache.get(agg.key);
+  if (hit) return hit;
   try {
     const res = await commands.spotifySearch(
       `track:${agg.title} artist:${agg.artist}`,
       1,
     );
     if (res.status !== "ok") return null;
-    return res.tracks[0]?.art_url ?? null;
+    const art = res.tracks[0]?.art_url ?? null;
+    if (art) historyArtCache.set(agg.key, art);
+    return art;
   } catch {
     return null;
   }
@@ -828,6 +772,17 @@ export default function Search() {
         void refreshEmptyState(0);
       }),
     [refreshEmptyState, goSection],
+  );
+  // Prefs' Erase history: drop the cached log and what was shown, so the
+  // section can't keep resurfacing erased listens.
+  useEffect(
+    () =>
+      onHistoryCleared(() => {
+        historyLog.reset();
+        resurfaceShown.clear();
+        if (shownRef.current) void refreshEmptyState(0);
+      }),
+    [refreshEmptyState],
   );
   // After the first show, a Spotify connect flip refills discovery without
   // waiting for the next summon. Skip while still hidden so a launch-time
