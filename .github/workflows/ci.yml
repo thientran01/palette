@@ -2,9 +2,18 @@ name: CI
 
 # Push/PR gate for main. Windows-only because Palette is a Windows-only app
 # (GSMTC / WASAPI / Win32) — its Rust tests won't even compile elsewhere.
-# Mirrors release.yml's setup (checkout → node 22 + npm cache → rust stable →
+# Mirrors release.yml's setup (checkout → node 22 + npm cache → pinned rust →
 # rust-cache on src-tauri) but runs the actual build + tests instead of the
 # tauri-action release bundle.
+#
+# What changed decides what runs (see "Decide what to run"):
+#   docs only (*.md, docs/)            → nothing; the job still goes green
+#   frontend / scripts                 → npm build + tests + Python tests (~1 min)
+#   src-tauri, package*.json, the Rust
+#   toolchain file or this workflow    → everything, including cargo (~3 min)
+# The job always runs and reports, so a required check never sits waiting.
+# Audit behind this (2026-11-09): in 427 runs, cargo test never failed on an
+# assertion; failures were fmt, clippy lint drift, and one broken dev example.
 
 on:
   push:
@@ -28,43 +37,94 @@ jobs:
     steps:
       # Actions pinned to full commit SHAs (not mutable tags) for supply-chain
       # safety; trailing comment = the version the SHA resolved to when pinned.
+      # Full history so the change check below can diff against main.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - name: Decide what to run
+        id: changes
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          range=""
+          if [ "$EVENT" = pull_request ]; then
+            range="origin/$BASE_REF...HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+              && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range="$BEFORE..HEAD"
+          fi
+          if [ -z "$range" ] || ! files=$(git diff --name-only "$range"); then
+            echo "No base to compare against, so running everything."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          code=false
+          rust=false
+          while IFS= read -r f; do
+            case "$f" in
+              "") ;;
+              *.md|docs/*) ;;
+              src-tauri/*|rust-toolchain.toml|package.json|package-lock.json|.github/workflows/*)
+                code=true; rust=true ;;
+              *) code=true ;;
+            esac
+          done <<< "$files"
+          echo "Changed files ($range):"
+          echo "$files"
+          echo "code=$code rust=$rust"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+
+      - if: steps.changes.outputs.code == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
 
       # Frontend must build before the Rust side: tauri-build embeds the Vite
       # output (frontendDist = ../dist), so dist/ has to exist before cargo.
-      - run: npm ci
+      - if: steps.changes.outputs.code == 'true'
+        run: npm ci
 
-      - run: npm run build
+      - if: steps.changes.outputs.code == 'true'
+        run: npm run build
 
       # Frontend unit tests (vitest — the posClock kernel net).
-      - run: npm test
+      - if: steps.changes.outputs.code == 'true'
+        run: npm test
 
       # Tap-page regressions execute generated JavaScript with the Node above.
-      - run: python -m unittest discover -s scripts -p "test_karaoke_*.py"
+      - if: steps.changes.outputs.code == 'true'
+        run: python -m unittest discover -s scripts -p "test_karaoke_*.py"
 
-      # dtolnay/rust-toolchain reads the toolchain from its @ref, so a SHA pin
-      # must name the toolchain explicitly (the SHA is not "stable").
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 'stable' branch @ 2026-07-18
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+      # The version, components and target come from rust-toolchain.toml
+      # (rustup >= 1.28 installs the file's toolchain when given no name).
+      - name: Install Rust (pinned in rust-toolchain.toml)
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          rustup toolchain install
+          rustc --version
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - if: steps.changes.outputs.rust == 'true'
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: src-tauri
 
       - name: cargo test
+        if: steps.changes.outputs.rust == 'true'
         run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
 
       # Hard gates since 2026-07-15: the tree was formatted and the last
       # clippy warnings cleared in the Milestone D housekeeping pass.
       - name: cargo fmt --check
+        if: steps.changes.outputs.rust == 'true'
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
       - name: cargo clippy
+        if: steps.changes.outputs.rust == 'true'
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
