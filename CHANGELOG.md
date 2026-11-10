@@ -10,8 +10,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Changed
 
-- English karaoke rises one syllable at a time, the way Korean and Japanese rise one character at a time. Letters used to take equal turns, so silent letters and commas rose on their own while the singer held a vowel, and the same word moved differently each time it repeated. Now "away," rises as "a" then "way," right when each is sung, every repeat looks the same, and each syllable snaps up quickly as it is sung. Korean and Japanese are unchanged.
-- Held notes in word karaoke no longer sway with the singer's pitch. Letters just rise into place.
+- Word karaoke fills instead of rising. Each letter brightens as the singing passes through it, and nothing moves: a held note keeps brightening for as long as it's held, a fast line keeps up, and each word finishes exactly as it's sung, with no flash at the end. English no longer hops through letters the singer isn't voicing. Held notes no longer sway with the singer's pitch.
 
 ### Fixed
 

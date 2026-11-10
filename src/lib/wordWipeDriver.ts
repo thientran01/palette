@@ -1,8 +1,7 @@
 import type { LyricWord } from "./lrc";
-import { riseCurve, rowLetterOnsets, RISE_EARLY_MS, RISE_MS } from "./letterRise";
+import { FILL_LEAD_MS, letterFill, rowLetterSpans, type LetterSpan } from "./letterFill";
 
-/** How long a row stays sung after its last letter lands, so its drop
- * doesn't ease out the instant the last letter is up. */
+/** How long a row stays sung after its last letter fills. */
 const TAIL_MS = 400;
 
 type Style = Pick<CSSStyleDeclaration, "setProperty" | "removeProperty">;
@@ -10,11 +9,9 @@ export interface WordRow {
   index: number;
   words: LyricWord[];
   style: Style;
-  /** Each word's letter spans, in order (letterRise.ts letterSegments). */
+  /** Each word's letter spans, in order (letterFill.ts letterSegments). */
   letters: Style[][];
-  /** The row element: carries `data-singing` while the row is active,
-   * which lowers its unsung letters so they can rise (index.css), then
-   * `data-settling` while that drop eases back out (settleRows). */
+  /** The row element: carries `data-singing` while the row is active. */
   el?: Pick<Element, "toggleAttribute">;
 }
 export interface WipeClock {
@@ -31,33 +28,31 @@ const ROW_PROPS = ["--word-bright", "--lyric-scale", "--lyric-opacity", "--lyric
 
 interface Letter {
   style: Style;
-  onset: number;
-  /** letterLit, or syllableLit for a word that rises by syllable. */
-  rise: (onset: number, clock: number) => number;
+  span: LetterSpan;
   lit: string;
 }
 
 /** A running driver: call it to stop. `setCurrentLine` hands it the next
  * line without rebuilding (a rebuild re-queried every letter span and
- * re-derived every row's onsets on each line change: a 5-12ms hitch on
+ * re-derived every row's spans on each line change: a 5-12ms hitch on
  * real songs, landing on the frame the line transitions start). */
 export type WordDriver = (() => void) & { setCurrentLine(line: number): void };
 
-/** Letter onsets per row, by the row's words array: a pure function of it,
+/** Letter spans per row, by the row's words array: a pure function of it,
  * and the arrays live as long as their lyrics (attachWords makes new ones
  * when a sync lands), so a driver rebuilt for a word-lead nudge reuses them. */
-const onsetCache = new WeakMap<readonly LyricWord[], number[][]>();
-function cachedOnsets(words: readonly LyricWord[]): number[][] {
-  let onsets = onsetCache.get(words);
-  if (!onsets) onsetCache.set(words, onsets = rowLetterOnsets(words));
-  return onsets;
+const spanCache = new WeakMap<readonly LyricWord[], LetterSpan[][]>();
+function cachedSpans(words: readonly LyricWord[]): LetterSpan[][] {
+  let spans = spanCache.get(words);
+  if (!spans) spanCache.set(words, spans = rowLetterSpans(words));
+  return spans;
 }
 
-/** One driver for the panel. Letter onsets choose which rows sing; the
+/** One driver for the panel. Letter spans choose which rows sing; the
  * separate lyric-line clock continues to own scrolling and the highlight.
  * Only active rows visit letters. Inactive rows inherit their normal tone.
  * Every letter keeps its own timing, so a backing voice printed after the
- * lead but sung over it rises on its own. */
+ * lead but sung over it fills on its own. */
 export function driveWordRows(
   rows: WordRow[], currentLine: number, leadMs: number,
   clock: WipeClock, frames: FrameScheduler,
@@ -65,18 +60,16 @@ export function driveWordRows(
   const tracks = rows.filter(r => r.words.length > 0 && r.letters.length === r.words.length)
     .map(row => {
       const letters: Letter[] = [];
-      const rowOnsets = cachedOnsets(row.words);
-      row.words.forEach((w, wi) => {
-        const onsets = rowOnsets[wi];
-        const rise = riseCurve(w);
-        const spans = row.letters[wi];
-        if (spans.length !== onsets.length) return;
-        spans.forEach((style, k) => letters.push({ style, onset: onsets[k],
-          rise, lit: "" }));
+      const rowSpans = cachedSpans(row.words);
+      row.words.forEach((_, wi) => {
+        const spans = rowSpans[wi];
+        const styles = row.letters[wi];
+        if (styles.length !== spans.length) return;
+        styles.forEach((style, k) => letters.push({ style, span: spans[k], lit: "" }));
       });
       return { row, letters, active: false,
-        start: Math.min(...row.words.map(w => w.t)) - RISE_EARLY_MS,
-        end: Math.max(...letters.map(l => l.onset - RISE_EARLY_MS + RISE_MS),
+        start: Math.min(...row.words.map(w => w.t)) - FILL_LEAD_MS,
+        end: Math.max(...letters.map(l => l.span.off),
           ...row.words.map(w => (w.end ?? w.t) + 1)) + TAIL_MS,
       };
     });
@@ -105,14 +98,13 @@ export function driveWordRows(
           track.letters.forEach(clear);
         }
         row.el?.toggleAttribute("data-singing", active);
-        if (!active) row.el?.toggleAttribute("data-settling", true);
         track.active = active;
       }
       if (!active) continue;
       for (const letter of track.letters) {
         // Compare the values CSS receives, not unrounded progress: only
         // redundant writes vanish.
-        const e = letter.rise(letter.onset, p);
+        const e = letterFill(letter.span, p);
         const lit = e.toFixed(3);
         if (lit !== letter.lit) {
           letter.lit = lit;
@@ -147,7 +139,6 @@ export function driveWordRows(
       for (const prop of ROW_PROPS) track.row.style.removeProperty(prop);
       track.letters.forEach(clear);
       track.row.el?.toggleAttribute("data-singing", false);
-      track.row.el?.toggleAttribute("data-settling", true);
     }
   };
   return Object.assign(stop, {
@@ -157,31 +148,4 @@ export function driveWordRows(
       kick();
     },
   });
-}
-
-/** Letters carry their rise transform only while their row sings and while
- * its drop eases back out afterwards (index.css). A transform on every
- * letter of every row, even an identity one, gave each letter its own paint
- * chunk: thousands per song, all re-layerized on every frame a karaoke row
- * repainted. When a row's --drop transition ends (its letters are back at
- * rest, identity transforms), this lifts `data-settling` so the letters
- * paint as plain text again. Lives outside driveWordRows because a drop
- * can outlast a driver (one is rebuilt when the lyrics or word lead change). */
-export function settleRows(root: HTMLElement): () => void {
-  const done = (e: Event) => {
-    if ((e as TransitionEvent).propertyName !== "--drop") return;
-    const ink = e.target as Element;
-    const row = ink.closest?.("[data-settling]");
-    if (!row) return;
-    // A row that sang again mid-ease starts a fresh drop: wait for that one.
-    const running = ink.getAnimations?.().some(a =>
-      (a as CSSTransition).transitionProperty === "--drop" && a.playState === "running");
-    if (!running) row.removeAttribute("data-settling");
-  };
-  root.addEventListener("transitionend", done);
-  root.addEventListener("transitioncancel", done);
-  return () => {
-    root.removeEventListener("transitionend", done);
-    root.removeEventListener("transitioncancel", done);
-  };
 }

@@ -1,6 +1,6 @@
 /**
  * One smooth cursor per lyric row, in letters, that sets when each letter
- * rises (letterRise.ts). Thien (2026-11-09) on the first Rise: "it needs
+ * fills (letterFill.ts). Thien (2026-11-09) on the first Rise: "it needs
  * to feel smoother between syllables and letters. it feels too bumpy."
  * Each word used to time its own letters: short words packed theirs into a
  * 90ms attack and then paused, held words stepped on the aligner's

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { attachWords, parseLrc, type LyricWord } from "./lrc";
-import { letterCount } from "./letterRise";
-import { driveWordRows, settleRows, type WordRow } from "./wordWipeDriver";
+import { letterCount } from "./letterFill";
+import { driveWordRows, type WordRow } from "./wordWipeDriver";
 
 function style() {
   const values = new Map<string, string>();
@@ -51,7 +51,7 @@ describe("data-singing marks only the rows being sung", () => {
   });
 });
 
-describe("letters rise from their own onsets", () => {
+describe("letters fill as the singing passes them", () => {
   it("lights the letters of a word in order across its sung span", () => {
     // A word before a rest spreads its letters across its whole sound.
     const h = harness(1000); const r = rowOf(0, [{ t: 1000, end: 1400, text: "한국어요" }]);
@@ -70,7 +70,7 @@ describe("letters rise from their own onsets", () => {
     const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
     h.frame(1180);
     const levels = r.letters.map(l => lit(l[0]));
-    // Neighbouring syllables are mid-rise at once, each a little behind.
+    // Neighbouring syllables are mid-fill at once, each a little behind.
     expect(levels.filter(v => v > 0 && v < 1).length).toBeGreaterThanOrEqual(2);
     expect(levels[0]).toBeGreaterThan(levels[1]);
     expect(levels[1]).toBeGreaterThan(levels[2]);
@@ -83,23 +83,24 @@ describe("letters rise from their own onsets", () => {
     expect(lit(r.letters[0][0])).toBeGreaterThan(0);
     stop();
   });
-  it("waits for a held syllable's next sound before rising it", () => {
-    // "hall·way": the aligner heard "w" at 1900, after a long "hall".
-    const words = [{ t: 1000, end: 2000, text: "hallway", points: [
-      { t: 1000, fraction: 0 }, { t: 1020, fraction: 1 / 7 }, { t: 1020, fraction: 1 / 7 },
-      { t: 1040, fraction: 2 / 7 }, { t: 1300, fraction: 2 / 7 }, { t: 1320, fraction: 3 / 7 },
-      { t: 1400, fraction: 3 / 7 }, { t: 1420, fraction: 4 / 7 }, { t: 1900, fraction: 4 / 7 },
-      { t: 1920, fraction: 5 / 7 }, { t: 1920, fraction: 5 / 7 }, { t: 1940, fraction: 6 / 7 },
-      { t: 1980, fraction: 6 / 7 }, { t: 2000, fraction: 1 },
-    ] }];
-    const h = harness(1000); const r = rowOf(0, words);
+  it("keeps a held note brightening until it moves on", () => {
+    const h = harness(1000); const r = rowOf(0, [{ t: 1000, end: 3000, text: "오" }]);
     const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
-    h.frame(1800);
-    const l = r.letters[0].map(lit);
-    expect(l.slice(0, 4)).toEqual([1, 1, 1, 1]);
-    expect(l.slice(4)).toEqual([0, 0, 0]);
-    h.frame(2100);
+    const at = (t: number) => { h.frame(t); return lit(r.letters[0][0]); };
+    const early = at(1100); const mid = at(2000); const late = at(2900);
+    // Half up as it's sung, then the rest across the hold.
+    expect(early).toBeGreaterThan(0.45); expect(early).toBeLessThan(0.6);
+    expect(mid).toBeGreaterThan(early); expect(late).toBeGreaterThan(mid);
+    expect(late).toBeLessThan(1);
+    expect(at(3000)).toBe(1);
+    stop();
+  });
+  it("finishes a word as its sound ends and never brightens it after", () => {
+    const h = harness(1000); const r = rowOf(0, [{ t: 1000, end: 1400, text: "word" }, { t: 3000, end: 3300, text: "next" }]);
+    const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
+    h.frame(1400);
     expect(r.letters[0].every(s => lit(s) === 1)).toBe(true);
+    expect(r.letters[1].every(s => lit(s) === 0)).toBe(true);
     stop();
   });
 });
@@ -203,7 +204,7 @@ it("keeps row bounds across both voices regardless of printed order", () => {
   stop();
 });
 
-it("writes no sheen, halo or wipe: only the letters' rise", () => {
+it("writes no sheen, halo or wipe: only the letters' fill", () => {
   const h = harness(1010); const r = row(1, 1000, 1500);
   const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
   h.frame(1300); h.frame(1500); h.frame(1600);
@@ -213,16 +214,16 @@ it("writes no sheen, halo or wipe: only the letters' rise", () => {
   stop();
 });
 
-describe("held notes just rise", () => {
-  it("never moves a risen letter, even with a voice track", () => {
-    const n = 140;
-    const c = Array.from({ length: n }, (_, k) => Math.round(-600 + 70 * Math.sin(2 * Math.PI * 5.5 * k / 100)));
-    const held = { t: 1000, end: 1000 + n * 10, text: "오", voice: { c, l: new Array(n).fill(80) } };
-    const h = harness(1000); const r = rowOf(0, [held]);
-    const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
-    for (let t = 1500; t < 2100; t += 50) { h.frame(t); expect(r.letters[0][0].values.has("--bend")).toBe(false); }
-    stop();
-  });
+it("never moves a letter, even on a held note with a voice track", () => {
+  const n = 140;
+  const c = Array.from({ length: n }, (_, k) => Math.round(-600 + 70 * Math.sin(2 * Math.PI * 5.5 * k / 100)));
+  const held = { t: 1000, end: 1000 + n * 10, text: "오", voice: { c, l: new Array(n).fill(80) } };
+  const h = harness(1000); const r = rowOf(0, [held]);
+  const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
+  for (let t = 1500; t < 2100; t += 50) h.frame(t);
+  const written = new Set(r.letters.flat().flatMap(s => s.setProperty.mock.calls.map(c => c[0])));
+  expect([...written]).toEqual(["--lit"]);
+  stop();
 });
 
 describe("a line change hands the running driver the new line", () => {
@@ -264,48 +265,5 @@ describe("a line change hands the running driver the new line", () => {
     driver.setCurrentLine(1);
     expect(r.style.values.has("--word-bright")).toBe(false);
     driver();
-  });
-});
-
-describe("a row's letters move only while it sings or settles", () => {
-  it("marks a row settling when it stops singing, and on stop", () => {
-    const h = harness(1000);
-    const attrs = new Map<string, boolean>();
-    const el = { toggleAttribute: vi.fn((name: string, on?: boolean) => { attrs.set(name, !!on); return !!on; }) };
-    const stop = driveWordRows([{ ...row(0, 1000, 1200), el }], -1, 0, h.clock, h.frames);
-    expect(attrs.get("data-singing")).toBe(true);
-    expect(attrs.has("data-settling")).toBe(false);
-    h.frame(5000);
-    expect(attrs.get("data-singing")).toBe(false);
-    expect(attrs.get("data-settling")).toBe(true);
-    h.anchor(1100, false);
-    attrs.delete("data-settling");
-    stop();
-    expect(attrs.get("data-settling")).toBe(true);
-  });
-  it("lifts data-settling when the row's drop has eased out", () => {
-    const listeners = new Map<string, (e: Event) => void>();
-    const root = {
-      addEventListener: (type: string, cb: (e: Event) => void) => { listeners.set(type, cb); },
-      removeEventListener: (type: string) => { listeners.delete(type); },
-    } as unknown as HTMLElement;
-    let settling = true;
-    let running: { transitionProperty: string; playState: string }[] = [];
-    const rowEl = { removeAttribute: vi.fn(() => { settling = false; }) };
-    const ink = { closest: () => (settling ? rowEl : null), getAnimations: () => running };
-    const fire = (type: string, propertyName: string) =>
-      listeners.get(type)?.({ propertyName, target: ink } as unknown as Event);
-    const off = settleRows(root);
-    fire("transitionend", "transform");
-    expect(settling).toBe(true);
-    // The row sang again mid-ease: a fresh drop is still running.
-    running = [{ transitionProperty: "--drop", playState: "running" }];
-    fire("transitioncancel", "--drop");
-    expect(settling).toBe(true);
-    running = [];
-    fire("transitionend", "--drop");
-    expect(settling).toBe(false);
-    off();
-    expect(listeners.size).toBe(0);
   });
 });

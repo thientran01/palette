@@ -36,7 +36,40 @@ syncs and karaoke dumps (`/mnt/project-files/karaoke-motion/`, harness in
 
 Thien picked C.
 
-## Rise (`src/lib/letterRise.ts`, `src/lib/wordWipeDriver.ts`)
+## Fill (2026-11-10, `src/lib/letterFill.ts`, `src/lib/wordWipeDriver.ts`)
+
+Thien, after Rise and then English syllables: Rise "doesn't feel like it
+conveys the singer enough. It just feels flat ... On slower songs it
+doesn't have that slow impact or that drag on notes. On fast songs it
+struggles to keep up." Laufey "Haunted", slow with many held notes:
+"the words fill in so flat". A rise marks only the instant a sound
+starts and is over in a fraction of a second, so a held note sat finished
+while it was still being sung, and fast lines started rises faster than
+they could land. He also disliked the first Glide's word "flashing at
+the end".
+
+Now nothing moves; letters brighten as the singing passes through them.
+
+- The row cursor (`src/lib/lineCursor.ts`, below) gives every letter a
+  span: when the cursor reaches it and when it leaves. Each word's first
+  letter is reached exactly at its onset. Words sung out of order keep
+  their own fill.
+- A letter's brightness is half attack, half drag: a smoothstep from
+  60 ms before the cursor reaches it to 60 ms after (so a line's first
+  letter eases in rather than popping), plus a smoothstep across its
+  span. A quick letter is simply lit; a held vowel comes half up and keeps
+  brightening for the whole hold.
+- A letter is fully bright exactly as the cursor leaves it, so a word is
+  done as its sound ends, with no flash after.
+- The driver writes `--lit` (0–1) per letter; the color mixes from the
+  row's tone to `--word-bright`. Letters are plain inline spans with no
+  transform, so kerning and ClearType are kept and there's no per-letter
+  paint chunk.
+
+Mocked against Rise, a time-paced fill and a spatial edge
+(`/mnt/project-files/karaoke-motion/fill/`).
+
+## Rise (1.0.13, replaced by Fill)
 
 Every word is split into letters (graphemes, so a Hangul block or an
 accented letter is one) and each letter is its own inline-block span.
@@ -100,7 +133,7 @@ cursor keeps letters evenly spaced.
 Letters as inline-blocks lose kerning across letter pairs; the line's
 layout never changes while it is sung.
 
-## English rises by syllable (2026-11-10, `src/lib/syllables.ts`)
+## English rises by syllable (tried 2026-11-10, replaced by Fill)
 
 Thien: Korean and Japanese look right "because each of their characters
 make a specific sound", but English "feels like some parts get skipped or
@@ -173,7 +206,7 @@ On the whole of "Haunted" (69 held notes) the budget voiced 29 in 9
 passes; analysis took 0.4 s of CPU, so the separator is the whole cost.
 
 **Removed 2026-11-10.** Thien: "remove the singing effects and just have
-the rise". Held letters no longer sway; voiceMotion.ts keeps only
+the rise", before Fill replaced Rise. Held letters no longer sway; voiceMotion.ts keeps only
 `isHeld`. The worker still stores voice tracks (Rust unchanged), so the
 sway could come back without relearning; dropping the voice passes would
 save about 37 s of separator work per song.
