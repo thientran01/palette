@@ -60,7 +60,28 @@ function SyncingRow({job}:{job:ActiveSync}) {
     </div>
   </div>;
 }
-function Cover({thumbKey,url}:{thumbKey:string|null;url?:string|null}){const [src,setSrc]=useState<string|null>(null);useEffect(()=>{let live=true;setSrc(null);if(!url&&thumbKey)void commands.historyThumbUrl(thumbKey).then(s=>{if(live)setSrc(s);}).catch(()=>{});return ()=>{live=false;};},[thumbKey,url]);const shown=url??src;return <div className="art-edge grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded bg-fg/5 text-muted">{shown?<img src={shown} alt="" className="h-full w-full object-cover" onError={()=>setSrc(null)}/>:<Glyph kind="music"/>}</div>;}
+/* The list and its covers outlive the panel. Reopening shows the last list
+ * at once while a fresh read runs behind it, instead of "Loading" and one
+ * cover request per row on every open. Covers arrive in batches. */
+let lastRows:SavedSync[]|null=null;
+let rowsInFlight:Promise<SavedSync[]>|null=null;
+function readRows(){const p=savedSyncs().then(r=>{lastRows=r;requestThumbs(r.map(x=>x.thumb_key));return r;});rowsInFlight=p;void p.catch(()=>{}).finally(()=>{if(rowsInFlight===p)rowsInFlight=null;});return p;}
+/** Starts the first read before the panel opens (hover or focus on its
+ * button), so even the first open rarely waits. */
+export function prefetchSavedSyncs(){if(!lastRows&&!rowsInFlight)void readRows().catch(()=>{});}
+const THUMB_BATCH=200;
+const thumbs=new Map<string,string|null>(),thumbQueue=new Set<string>(),thumbListeners=new Set<()=>void>();
+let thumbPump=false;
+/** Queues covers not held yet; a miss (no thumb captured) is asked again
+ * next time, since the song may have played visibly since. */
+function requestThumbs(keys:(string|null)[]){for(const k of keys)if(k&&!thumbs.get(k))thumbQueue.add(k);void pumpThumbs();}
+async function pumpThumbs(){
+ if(thumbPump)return;thumbPump=true;
+ try{while(thumbQueue.size){const part=[...thumbQueue].slice(0,THUMB_BATCH);part.forEach(k=>thumbQueue.delete(k));const urls=await commands.historyThumbUrls(part).catch(()=>[] as (string|null)[]);part.forEach((k,i)=>thumbs.set(k,urls[i]??null));thumbListeners.forEach(f=>f());}}
+ finally{thumbPump=false;}
+}
+function useThumbs(){const [,bump]=useState(0);useEffect(()=>{const f=()=>bump(n=>n+1);thumbListeners.add(f);return ()=>{thumbListeners.delete(f);};},[]);}
+function Cover({thumbKey,url}:{thumbKey:string|null;url?:string|null}){const [broken,setBroken]=useState<string|null>(null);const shown=url??(thumbKey?thumbs.get(thumbKey)??null:null);return <div className="art-edge grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded bg-fg/5 text-muted">{shown&&shown!==broken?<img src={shown} alt="" decoding="async" className="h-full w-full object-cover" onError={()=>setBroken(shown)}/>:<Glyph kind="music"/>}</div>;}
 /** One tick per lyric line, the same strip in every state so the card never
  * changes shape: while a listen is captured the heard share fills in, and
  * once the check lands each line rises by how sure the review is (unsure
@@ -109,10 +130,13 @@ function CurrentSong({np,mine,job,lines,current,busy,onRelearn}:{np:NowPlaying;m
 }
 export function SavedSyncs({np,lines,onClose,current}:{np:NowPlaying;lines:number;onClose:(restoreFocus?:boolean)=>void;current:{title:string;detail:string;phase:SyncStatus["phase"]}}){
  const {jobs, unavailable}=useActiveSyncs();
- const [rows,setRows]=useState<SavedSync[]|null>(null),[error,setError]=useState(""),[busy,setBusy]=useState<string|null>(null),[notice,setNotice]=useState("");
+ const [rows,setRows]=useState<SavedSync[]|null>(lastRows),[error,setError]=useState(""),[busy,setBusy]=useState<string|null>(null),[notice,setNotice]=useState("");
  const [undo,setUndo]=useState<{key:string;revision:number}|null>(null),[sort,setSort]=useState<SyncSort>("recent"),[maxH,setMaxH]=useState<number|null>(null);const alive=useRef(true),serial=useRef(0),panel=useRef<HTMLDivElement>(null);
- const refresh=useCallback(async()=>{const n=++serial.current;try{const data=await savedSyncs();if(alive.current&&n===serial.current){setRows(data);setError("");}}catch{if(alive.current&&n===serial.current)setError("Couldn’t load saved syncs.");}},[]);
- useEffect(()=>{alive.current=true;void refresh();const a=onSyncLibraryChanged(()=>void refresh()),b=onKaraokeReady(()=>void refresh());return ()=>{alive.current=false;serial.current++;a();b();};},[refresh]);
+ useThumbs();
+ // Opening may join the read a hover already started; later refreshes
+ // (after an action or a new save) always read again.
+ const refresh=useCallback(async(join=false)=>{const n=++serial.current;try{const data=await (join&&rowsInFlight?rowsInFlight:readRows());if(alive.current&&n===serial.current){setRows(data);setError("");}}catch{if(alive.current&&n===serial.current)setError("Couldn’t load saved syncs.");}},[]);
+ useEffect(()=>{alive.current=true;void refresh(true);const a=onSyncLibraryChanged(()=>void refresh()),b=onKaraokeReady(()=>void refresh());return ()=>{alive.current=false;serial.current++;a();b();};},[refresh]);
  useEffect(()=>{panel.current?.focus();const outside=(e:PointerEvent)=>{if(!panel.current?.parentElement?.contains(e.target as Node))onClose(false);};const escape=(e:KeyboardEvent)=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();onClose();}};document.addEventListener("pointerdown",outside);document.addEventListener("keydown",escape,true);return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape,true);};},[onClose]);
  async function act(key:string,action:"refresh"|"delete"|"undo",revision?:number){if(busy)return;setBusy(key);setError("");try{const rev=await savedSyncAction(key,action,revision);if(!alive.current)return;if(action==="delete"){setUndo({key,revision:rev});setNotice("Timing deleted.");}else{setUndo(null);setNotice(action==="refresh"?"Will relearn on your next full listen. Current timing stays available.":"Timing restored.");}await refresh();}catch(e){if(alive.current)setError(typeof e==="string"?e:"Couldn’t update this sync.");}finally{if(alive.current)setBusy(null);}}
  // Reach down to the window's bottom edge, over the transport while open
@@ -156,7 +180,9 @@ function RowMap({lines}:{lines:string}){
 function SavedRow({song,busy,btn,act}:{song:SavedSync;busy:boolean;btn:string;act:(key:string,action:"refresh"|"delete")=>Promise<void>}){
  const when=song.relearns?song.check?"relearns next listen":"not checked yet":savedWhen(song.saved_at);
  const swap="transition-opacity duration-2 ease-out-tk motion-reduce:transition-none";
- return <div className="group/sync flex min-h-14 items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-fg/5">
+ // Rows off screen skip layout and paint until scrolled to (a long library
+ // is hundreds of rows, all mounted on open).
+ return <div className="group/sync flex min-h-14 items-center [contain-intrinsic-size:auto_56px] [content-visibility:auto] gap-2.5 rounded-lg px-2 py-1.5 hover:bg-fg/5">
   <Cover thumbKey={song.thumb_key}/>
   <div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{song.title}</div><div className="truncate text-xs text-muted">{song.refresh?"Relearns on your next full listen":`${song.artist} · ${when}`}</div></div>
   {song.check&&<RowMap lines={song.check.lines}/>}

@@ -2,7 +2,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    io::{BufRead, BufReader},
     path::Path,
     sync::{Mutex, MutexGuard},
 };
@@ -103,7 +102,7 @@ pub struct SavedSync {
 }
 
 /// How sure the review is of one saved sync (`Word::support`).
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq, Clone)]
 pub struct Check {
     /// Estimated share of words that land within 300ms of the singing.
     on_time: f32,
@@ -267,18 +266,112 @@ fn check(lines: &[crate::align::TimedLine], words: &[crate::align::Word]) -> Opt
         fixed,
     })
 }
-fn list(root: &Path) -> Result<Vec<SavedSync>, String> {
-    let _g = lock();
-    let policies = read(root)?;
-    let mut identities = BTreeMap::new();
-    if let Ok(file) = std::fs::File::open(root.join("history.jsonl")) {
-        for line in BufReader::new(file).lines().map_while(Result::ok) {
-            if let Ok(h) = serde_json::from_str::<crate::history::HistoryEntry>(&line) {
-                let key = crate::lyrics::key_for_ms(&h.artist, &h.title, &h.album, h.duration_ms);
-                identities.insert(key, (h.title, h.artist, h.key));
-            }
+/// A file's size and modified time: what tells a memo it went stale.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Stamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+impl Stamp {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
         }
     }
+    fn at(path: &Path) -> Option<Self> {
+        std::fs::metadata(path).ok().map(|m| Self::of(&m))
+    }
+}
+
+/// One saved file's row, kept while neither it nor its lyrics change.
+struct Summary {
+    saved: Stamp,
+    source: Option<Stamp>,
+    assets: bool,
+    /// None when the file isn't a usable sync (`read_saved` refused it).
+    row: Option<(Option<Check>, bool)>,
+}
+
+/// Identity (title, artist, thumb key) per lyrics key, read from the
+/// append-only history log. Only the bytes past `end` are read again.
+#[derive(Default)]
+struct Identities {
+    path: std::path::PathBuf,
+    /// The log's first bytes when last read. `clear_history` deletes the log
+    /// and new plays restart it, so a changed head means read it all again.
+    head: Vec<u8>,
+    /// Just past the last whole line read.
+    end: u64,
+    by_key: std::collections::HashMap<String, (String, String, String)>,
+}
+/// Past the first line's start time, which a cleared log never repeats.
+const HEAD_BYTES: usize = 512;
+impl Identities {
+    fn update(&mut self, path: &Path) {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut file) = std::fs::File::open(path) else {
+            *self = Self::default();
+            self.path = path.to_owned();
+            return;
+        };
+        let len = file.metadata().map_or(0, |m| m.len());
+        let mut head = Vec::with_capacity(HEAD_BYTES);
+        if (&mut file)
+            .take(HEAD_BYTES as u64)
+            .read_to_end(&mut head)
+            .is_err()
+        {
+            return;
+        }
+        if self.path != path || len < self.end || !head.starts_with(&self.head) {
+            *self = Self::default();
+            self.path = path.to_owned();
+        }
+        self.head = head;
+        let mut tail = Vec::new();
+        if file.seek(SeekFrom::Start(self.end)).is_err() || file.read_to_end(&mut tail).is_err() {
+            return;
+        }
+        // A line still being appended has no newline yet: leave it for later.
+        let Some(last) = tail.iter().rposition(|&b| b == b'\n') else {
+            return;
+        };
+        for line in tail[..=last].split(|&b| b == b'\n') {
+            if let Ok(h) = serde_json::from_slice::<crate::history::HistoryEntry>(line) {
+                let key = crate::lyrics::key_for_ms(&h.artist, &h.title, &h.album, h.duration_ms);
+                self.by_key.insert(key, (h.title, h.artist, h.key));
+            }
+        }
+        self.end += last as u64 + 1;
+    }
+}
+
+/// The panel lists every saved sync, and building a row means parsing its
+/// word file, its lyrics and the whole play history: tens of megabytes of
+/// JSON on a long library, which made every open of the panel wait. Rows are
+/// kept here between calls and rebuilt only for files that changed.
+#[derive(Default)]
+struct Memo {
+    files: std::collections::HashMap<std::path::PathBuf, Summary>,
+    identities: Identities,
+}
+static MEMO: std::sync::LazyLock<Mutex<Memo>> = std::sync::LazyLock::new(Default::default);
+
+fn list(root: &Path) -> Result<Vec<SavedSync>, String> {
+    // The gate guards the policy file only. A sync saved while this reads
+    // emits karaoke-ready, and the panel reads again.
+    let policies = {
+        let _g = lock();
+        read(root)?
+    };
+    let mut memo = MEMO
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let memo = &mut *memo;
+    memo.identities.update(&root.join("history.jsonl"));
+    let assets = crate::acoustic::assets().is_some();
+    let mut seen = std::collections::HashSet::new();
     // key -> (newest save, the newest file's check, relearns)
     let mut found: BTreeMap<String, (u64, Option<Check>, bool)> = BTreeMap::new();
     for dir in std::iter::once("karaoke")
@@ -296,35 +389,52 @@ fn list(root: &Path) -> Result<Vec<SavedSync>, String> {
             let Some(key) = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else {
                 continue;
             };
+            seen.insert(path.clone());
             if policies.get(&key).is_some_and(|p| p.deleted) {
                 continue;
             }
-            let source = std::fs::read(root.join("lyrics").join(format!("{key}.json")))
-                .ok()
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
-            let synced = source.as_ref().and_then(|v| v["synced"].as_str());
-            let Some(saved) = crate::karaoke::read_saved(&path, synced) else {
+            let Ok(meta) = f.metadata() else {
                 continue;
             };
-            let modified = f
-                .metadata()
+            let modified = meta
+                .modified()
                 .ok()
-                .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map_or(0, |t| t.as_secs());
             if found.get(&key).is_some_and(|(t, ..)| *t >= modified) {
                 continue;
             }
-            let lines = crate::align::parse_lrc(synced.unwrap_or_default());
-            found.insert(key, (modified, check(&lines, &saved.words), saved.relearns));
+            let source_path = root.join("lyrics").join(format!("{key}.json"));
+            let (saved, source) = (Stamp::of(&meta), Stamp::at(&source_path));
+            let fresh = memo
+                .files
+                .get(&path)
+                .is_some_and(|s| s.saved == saved && s.source == source && s.assets == assets);
+            if !fresh {
+                let row = summarize(&path, &source_path);
+                memo.files.insert(
+                    path.clone(),
+                    Summary {
+                        saved,
+                        source,
+                        assets,
+                        row,
+                    },
+                );
+            }
+            let Some((check, relearns)) = memo.files.get(&path).and_then(|s| s.row.clone()) else {
+                continue;
+            };
+            found.insert(key, (modified, check, relearns));
         }
     }
+    memo.files.retain(|path, _| seen.contains(path));
     let mut rows: Vec<_> = found
         .into_iter()
         .map(|(key, (saved_at, check, relearns))| {
-            let (title, artist, thumb_key) = identities.remove(&key).map_or(
+            let (title, artist, thumb_key) = memo.identities.by_key.get(&key).map_or(
                 ("Saved song".into(), "History unavailable".into(), None),
-                |(t, a, k)| (t, a, Some(k)),
+                |(t, a, k)| (t.clone(), a.clone(), Some(k.clone())),
             );
             let refresh = policies.get(&key).is_some_and(|p| p.refresh);
             SavedSync {
@@ -341,6 +451,31 @@ fn list(root: &Path) -> Result<Vec<SavedSync>, String> {
         .collect();
     rows.sort_by(|a, b| b.saved_at.cmp(&a.saved_at).then(a.key.cmp(&b.key)));
     Ok(rows)
+}
+
+/// A saved file's check and relearn flag, or None when it isn't usable.
+fn summarize(path: &Path, source_path: &Path) -> Option<(Option<Check>, bool)> {
+    let source = std::fs::read(source_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+    let synced = source.as_ref().and_then(|v| v["synced"].as_str());
+    let saved = crate::karaoke::read_saved(path, synced)?;
+    let lines = crate::align::parse_lrc(synced.unwrap_or_default());
+    Some((check(&lines, &saved.words), saved.relearns))
+}
+/// Seconds after launch to build the memo, clear of startup work.
+const WARM_AFTER_S: u64 = 20;
+/// Builds the memo in the background so the first open is quick as well.
+pub fn warm(app: &AppHandle) {
+    let Ok(root) = app.path().app_data_dir() else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("sync-library-warm".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(WARM_AFTER_S));
+            let _ = list(&root);
+        });
 }
 #[tauri::command]
 pub async fn saved_syncs(app: AppHandle) -> Result<Vec<SavedSync>, String> {
@@ -539,6 +674,46 @@ mod tests {
         std::fs::write(root.join("lyrics/abc.json"), br#"{"synced":"changed"}"#).unwrap();
         assert!(list(&root).unwrap().is_empty());
         assert_eq!(std::fs::read(dir.join("abc.json")).unwrap(), bytes);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn identities_read_only_new_lines_and_restart_after_a_clear() {
+        let root = std::env::temp_dir().join(format!("palette-identities-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("history.jsonl");
+        let line = |title: &str, started: i64| {
+            let mut v = serde_json::json!({"v":2,"key":format!("thumb-{title}"),"app_id":"a","player":"spotify","title":title,"artist":"Artist","album":"","started_at_ms":started,"ended_at_ms":0,"ms_listened":1,"duration_ms":180_000}).to_string();
+            v.push('\n');
+            v
+        };
+        let key = |title: &str| crate::lyrics::key_for_ms("Artist", title, "", 180_000);
+        let mut ids = Identities::default();
+        std::fs::write(&log, line("One", 1)).unwrap();
+        ids.update(&log);
+        assert_eq!(ids.by_key.len(), 1);
+        // A torn append waits for its newline.
+        let mut grown = line("One", 1) + &line("Two", 2);
+        grown.push_str(r#"{"v":2,"key":"half"#);
+        std::fs::write(&log, &grown).unwrap();
+        ids.update(&log);
+        assert_eq!(ids.by_key[&key("Two")].2, "thumb-Two");
+        let end = ids.end;
+        assert_eq!(end as usize, line("One", 1).len() + line("Two", 2).len());
+        // Unchanged log: nothing more is read.
+        ids.update(&log);
+        assert_eq!(ids.end, end);
+        // Cleared, then new plays grew it past the old end: read from the top.
+        std::fs::write(
+            &log,
+            line("Three", 9) + &line("Four", 10) + &line("Five", 11),
+        )
+        .unwrap();
+        ids.update(&log);
+        assert!(!ids.by_key.contains_key(&key("One")));
+        assert_eq!(ids.by_key.len(), 3);
+        std::fs::remove_file(&log).unwrap();
+        ids.update(&log);
+        assert!(ids.by_key.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

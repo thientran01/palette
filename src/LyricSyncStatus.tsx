@@ -5,7 +5,7 @@ import { DUR } from "./lib/tokens";
 import type { NowPlaying } from "./types";
 import { resolveSyncStatus, savedSyncStatus } from "./lib/lyricSyncState";
 import { isWindowShown, onWindowShown } from "./lib/windowShown";
-import { SavedSyncs } from "./SavedSyncs";
+import { SavedSyncs, prefetchSavedSyncs } from "./SavedSyncs";
 
 const titles = {waiting:"Waiting to learn",learning:"Learning timing",processing:"Finishing sync",saved:"Word sync saved",failed:"Couldn’t sync this track"};
 
@@ -67,6 +67,7 @@ export function LyricSyncStatus({np, saved, lines}: {np:NowPlaying; saved:boolea
   return <div className="relative shrink-0" onMouseDown={e => e.stopPropagation()}>
     <button ref={trigger} type="button" aria-label="Open lyric syncs" title="Lyric syncs" aria-haspopup="dialog" aria-expanded={library}
       className="grid h-7 w-7 place-items-center rounded-md text-fg transition-[background-color,scale] duration-2 ease-out-tk hover:bg-fg/10 aria-expanded:bg-fg/10 active:scale-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg/50"
+      onPointerEnter={prefetchSavedSyncs} onFocus={prefetchSavedSyncs}
       onClick={() => setLibrary(current => !current)}>
       <MorphIcon name="syncSaved" size={16} dur={DUR[5]} />
     </button>
