@@ -149,8 +149,13 @@ function useHistoryThumb(artId: string | null): void {
  * flyby. Native `title` waits about this long; this is the styled stand-in. */
 const TIP_DELAY_MS = 500;
 
-/** The album view's cover size, which is also its title column's width. */
+/** The album view's cover size. */
 const ALBUM_ART_PX = 190;
+/** The album view's title column: the cover plus 25px of air each side.
+ * Flush with the cover read as cramped at this size (~25 characters, so
+ * most titles panned, with the fades sitting right on the cover's corners);
+ * the full panel looked accidental. Thien, 2026-11-10. */
+const ALBUM_TITLE_PX = ALBUM_ART_PX + 2 * 25;
 
 /** Header text line: pans to show all of itself when it's too long (Marquee).
  * Under reduced motion it truncates instead and reveals its full value in a
@@ -1219,11 +1224,11 @@ function ExpandedView({
                     so a late "spotify-device" event couldn't nudge the hero;
                     the band is absolute, so that guarantee now holds for BOTH
                     occupants without spending a row the wave's seat needs. */}
-                {/* Capped at the cover's width (Thien, 2026-11-09): a long
-                    title spanning the whole panel looked accidental once it
-                    panned instead of truncating. Same rule as Focus, whose
-                    metadata column is the art's width. */}
-                <div className="mt-3 min-w-0 text-center" style={{ width: ALBUM_ART_PX }}>
+                {/* Capped just past the cover (ALBUM_TITLE_PX): a long title
+                    spanning the whole panel looked accidental once it panned
+                    instead of truncating (Thien, 2026-11-09). Focus can sit
+                    flush with its art because its cover is far larger. */}
+                <div className="mt-3 min-w-0 text-center" style={{ width: ALBUM_TITLE_PX }}>
                   <MarqueeGroup>
                     <Marquee className="text-sm font-medium text-fg">{np.title}</Marquee>
                     <Marquee className="text-xs text-muted">
