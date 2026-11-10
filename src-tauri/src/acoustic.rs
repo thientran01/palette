@@ -526,6 +526,10 @@ pub struct Knobs {
     /// Separator passes (`SecondEar::passes`) the second ear may spend on
     /// a song, least sure lines first. 0 = no limit.
     pub review_passes: usize,
+    /// A song whose lines start this long or more before their stamps
+    /// (`late_stamps`) is looked for again with every window moved to
+    /// where the singer is. 0 = off.
+    pub recentre_ms: i64,
 }
 
 impl Knobs {
@@ -546,6 +550,7 @@ impl Knobs {
         review_below: REVIEW_BELOW,
         review_blend: true,
         review_passes: REVIEW_PASSES,
+        recentre_ms: RECENTRE_MS,
     };
     pub const TRIAL: Knobs = Knobs::MIX;
     /// The decoder before 2026-10-31 (recipe mms-int8/1), for offline
@@ -561,6 +566,7 @@ impl Knobs {
         review_below: 0.0,
         review_blend: false,
         review_passes: 0,
+        recentre_ms: 0,
     };
 
     /// Where a line's window stops looking: the next stamp, or sooner when
@@ -598,6 +604,9 @@ fn japanese_letters(
 const REVIEW_RADIUS_MS: f64 = 150.0;
 /// A line with any word under this support goes to the second ear.
 pub(crate) const REVIEW_BELOW: f32 = 0.5;
+/// `Knobs::recentre_ms` as shipped. Half the window's 500 ms reach: a
+/// song this late already has lines at the edge.
+pub(crate) const RECENTRE_MS: i64 = 250;
 /// No limit: every doubted line gets its second listen. Until 2026-11-10
 /// this was 14 passes (about 90s on Thien's PC at 6.4s a pass), to keep a
 /// song's job inside the next song, which ALIGNING then skipped. That
@@ -932,29 +941,19 @@ impl AcousticAligner {
     }
 
     // Every public entry point is a thin preset over this one loop.
+    /// Every line decoded on the recording as captured, in its own window.
     #[allow(clippy::too_many_arguments)]
-    fn align_inner(
+    fn first_pass(
         &mut self,
         pcm: &[i16],
         lines: &[TimedLine],
         map: &TimeMap,
         margin_ms: f64,
-        mut diagnostics: Option<&mut Vec<serde_json::Value>>,
-        mode: EntryMode,
+        entries: bool,
         knobs: Knobs,
-        ear: Option<&mut dyn SecondEar>,
-    ) -> Result<Vec<Word>> {
-        let entries = mode != EntryMode::None;
-        if !margin_ms.is_finite() || !(0.0..=1500.0).contains(&margin_ms) {
-            return Err("probe margin must be 0..=1500ms".into());
-        }
-        if !map.slope_ms.is_finite() || map.slope_ms <= 0.0 || !map.intercept_ms.is_finite() {
-            return Err("invalid capture time map".into());
-        }
+        want: bool,
+    ) -> Result<Vec<LineWork>> {
         let to_time = |sample: f64| (map.intercept_ms + sample * map.slope_ms).round() as i64;
-        let want = diagnostics.is_some();
-        // Every line on the recording as captured, then the second look at
-        // the doubted ones, then the words in line order.
         let mut work: Vec<LineWork> = Vec::new();
         let numerals = Numerals::for_song(lines.iter().map(|l| l.text.as_str()));
         for (li, line) in lines.iter().enumerate() {
@@ -1046,6 +1045,60 @@ impl AcousticAligner {
                 reheard: false,
             });
         }
+        Ok(work)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn align_inner(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+        margin_ms: f64,
+        mut diagnostics: Option<&mut Vec<serde_json::Value>>,
+        mode: EntryMode,
+        knobs: Knobs,
+        ear: Option<&mut dyn SecondEar>,
+    ) -> Result<Vec<Word>> {
+        let entries = mode != EntryMode::None;
+        if !margin_ms.is_finite() || !(0.0..=1500.0).contains(&margin_ms) {
+            return Err("probe margin must be 0..=1500ms".into());
+        }
+        if !map.slope_ms.is_finite() || map.slope_ms <= 0.0 || !map.intercept_ms.is_finite() {
+            return Err("invalid capture time map".into());
+        }
+        let to_time = |sample: f64| (map.intercept_ms + sample * map.slope_ms).round() as i64;
+        let want = diagnostics.is_some();
+        // Every line on the recording as captured, then the second look at
+        // the doubted ones, then the words in line order.
+        let original = lines;
+        let mut moved: Vec<TimedLine>;
+        let mut lines = lines;
+        let mut work = self.first_pass(pcm, lines, map, margin_ms, entries, knobs, want)?;
+        // A song whose lines mostly start before their stamps (a late LRC)
+        // is looked for again with every window moved to where the singer
+        // is; the words still carry the stamps the lyrics came with.
+        let mut shift = 0;
+        for _ in 0..RECENTRE_ROUNDS {
+            let Some(by) = song_shift(&work, lines, map, knobs) else {
+                break;
+            };
+            shift += by;
+            log::info!(
+                "karaoke: lines start {}ms before their stamps; looking again {}ms earlier",
+                -by,
+                -shift
+            );
+            moved = original
+                .iter()
+                .map(|l| TimedLine {
+                    t: l.t + shift,
+                    text: l.text.clone(),
+                })
+                .collect();
+            lines = &moved;
+            work = self.first_pass(pcm, lines, map, margin_ms, entries, knobs, want)?;
+        }
         if let Some(ear) = ear {
             self.second_look(lines, map, knobs, &mut work, ear, want);
         }
@@ -1063,6 +1116,7 @@ impl AcousticAligner {
         } in work
         {
             let line = &lines[li];
+            let stamp = original[li].t;
             let LineDecode {
                 spans,
                 guided,
@@ -1078,7 +1132,7 @@ impl AcousticAligner {
             let mut supports = support.iter();
             if let Some(rows) = diagnostics.as_deref_mut() {
                 rows.push(serde_json::json!({
-                    "line_index": li, "line_t": line.t, "next_t": next,
+                    "line_index": li, "line_t": stamp, "looked_from": line.t, "next_t": next,
                     "source_guided": guided.is_some(), "support": support, "second_ear": second,
                     "original_entry": original_entry, "retry": retry,
                     "window_start": to_time(begin as f64), "window_end": to_time(end as f64),
@@ -1113,7 +1167,7 @@ impl AcousticAligner {
                     text,
                     t: to_time(begin as f64 + start as f64 * ratio),
                     end: Some(to_time(begin as f64 + end as f64 * ratio)),
-                    line_t: Some(line.t),
+                    line_t: Some(stamp),
                     points,
                     support,
                     reheard,
@@ -1408,6 +1462,49 @@ fn mix_ears(a: &[f32], b: &[f32]) -> Result<Vec<f32>> {
         out.extend(row.iter().map(|v| v - z));
     }
     Ok(out)
+}
+
+/// The song is looked for again at most this many times: a first move
+/// can only see as far as the old windows reached.
+const RECENTRE_ROUNDS: usize = 2;
+/// How many lines it takes to say a song's stamps run late.
+const RECENTRE_MIN_LINES: usize = 8;
+
+/// How far a song's lines start from their stamps: the median of
+/// `offsets` (each line's first word minus its stamp, for lines whose
+/// first word isn't doubted), when the lines start `late_ms` or more
+/// before their stamps. That is a late LRC, not a singer: on on-time
+/// stamps a line's first word sits 0.1 to 0.4 s after its stamp. A window
+/// reaches only 500 ms before its stamp, so on such a song first words
+/// pile up at the window's edge and the bad words double (9.6% to 19.5%
+/// more than 300 ms off with stamps 600 ms late, 14 JamendoLyrics songs).
+pub(crate) fn late_stamps(mut offsets: Vec<i64>, late_ms: i64) -> Option<i64> {
+    if late_ms <= 0 || offsets.len() < RECENTRE_MIN_LINES {
+        return None;
+    }
+    offsets.sort_unstable();
+    let median = offsets[offsets.len() / 2];
+    (median <= -late_ms).then_some(median)
+}
+
+/// How far to move every window (negative = earlier) when the first pass
+/// says the stamps run late (`late_stamps`).
+fn song_shift(work: &[LineWork], lines: &[TimedLine], map: &TimeMap, knobs: Knobs) -> Option<i64> {
+    let offsets = work
+        .iter()
+        .filter(|w| {
+            w.decode
+                .support
+                .first()
+                .is_none_or(|&p| p >= knobs.review_below)
+        })
+        .filter_map(|w| {
+            let first = w.plan.ranges.iter().flatten().next()?.start;
+            let sample = w.begin as f64 + w.decode.spans[first].start as f64 * w.decode.ratio;
+            Some((map.intercept_ms + sample * map.slope_ms).round() as i64 - lines[w.li].t)
+        })
+        .collect();
+    late_stamps(offsets, knobs.recentre_ms)
 }
 
 /// Which of `candidates` should replace `own`: the one the model is surest
@@ -2113,10 +2210,27 @@ mod tests {
             review_below: 0.5,
             review_blend: true,
             review_passes: 0,
+            // Not in the recipe either: it changes nothing for a song
+            // whose stamps are on time, and karaoke's detail_v 6 relearns
+            // the saves whose stamps run late.
+            recentre_ms: 250,
         };
         assert_eq!(Knobs::MIX, tuned);
         assert_eq!(Knobs::TRIAL, tuned);
         assert_eq!(RECIPE, "mms-int8/4");
+    }
+
+    #[test]
+    fn a_song_is_late_when_its_lines_mostly_start_before_their_stamps() {
+        // On-time stamps: lines start a little after them, one early.
+        let on_time = vec![140, 60, 380, -420, 150, 20, 260, 90, 110];
+        assert_eq!(late_stamps(on_time, 250), None);
+        // A late LRC: most first words sit at the window's edge.
+        let late = vec![-480, -480, -470, -300, -480, 120, -480, -460, -480];
+        assert_eq!(late_stamps(late, 250), Some(-480));
+        // Too few lines to say, and off.
+        assert_eq!(late_stamps(vec![-480; 7], 250), None);
+        assert_eq!(late_stamps(vec![-480; 9], 0), None);
     }
 
     fn decode(starts: &[usize], support: &[f32]) -> LineDecode {

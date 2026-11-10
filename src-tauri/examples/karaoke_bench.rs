@@ -24,8 +24,8 @@
 //! <out-dir> inside the repo.
 //!
 //! Each `--variant` overrides `Knobs` fields (guide, late, last, cap,
-//! capbase, vocable, connected, review in percent, blend, passes; booleans
-//! as 0/1) on top of what each pipeline ships (`Knobs::MIX` /
+//! capbase, vocable, connected, review in percent, blend, passes,
+//! recentre; booleans as 0/1) on top of what each pipeline ships (`Knobs::MIX` /
 //! `Knobs::TRIAL`), and writes
 //! songs-lead<n>-<name>/; with several, compare-lead<n>.md puts them
 //! side by side against the first. Model emissions are cached per window in
@@ -404,6 +404,7 @@ impl Variant {
                 "review" => k.review_below = int() as f32 / 100.0,
                 "blend" => k.review_blend = int() != 0,
                 "passes" => k.review_passes = int().max(0) as usize,
+                "recentre" => k.recentre_ms = int(),
                 _ => die(format!("variant {}: unknown knob {key}", self.name)),
             }
         }

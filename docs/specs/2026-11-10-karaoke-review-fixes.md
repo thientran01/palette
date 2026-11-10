@@ -52,6 +52,12 @@ hands, and a listen count as an improvement, on rounding alone. The floor
 is now 0.05 (`SUPPORT_FLOOR`) and the margin 0.2, about a fifth more
 support, which no single rounding step reaches.
 
+## Late stamps (the review's notes on fix 2)
+
+`2026-11-10-karaoke-late-stamps.md`. The review's version (an earlier
+window only for a line that is doubted and pinned at the window's edge)
+lost to doing nothing on the benchmark, and moving the whole song won.
+
 ## Checked and left
 
 - H2 (a line stamped before the recording starts is decoded on clipped

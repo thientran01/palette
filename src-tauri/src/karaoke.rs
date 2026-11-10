@@ -180,12 +180,15 @@ const STORE_V: u32 = 5;
 /// 2 digits spelled as said, 3 the review's support per word (the Lyric
 /// syncs panel's estimate), 4 that plus the singer's voice on held notes
 /// (voice.rs), 5 that plus a second listen on every doubted line (no pass
-/// cap, 2026-11-10). A file below what this install writes (`detail_v`)
-/// still displays, and the next full listen relearns it, except a 4 whose
-/// doubted lines were all re-heard anyway (`detail_settled`).
+/// cap, 2026-11-10), 6 that plus windows moved for a song whose stamps run
+/// late (`acoustic::late_stamps`). A file below what this install writes
+/// (`detail_v`) still displays, and the next full listen relearns it,
+/// except a 4 whose doubted lines were all re-heard anyway and a 4 or 5
+/// whose stamps don't run late (`detail_settled`).
 const SUPPORT_DETAIL_V: u32 = 3;
 const VOICE_DETAIL_V: u32 = 4;
 const FULL_EAR_DETAIL_V: u32 = 5;
+const RECENTRE_DETAIL_V: u32 = 6;
 fn recipe() -> &'static str {
     if acoustic::assets().is_some() {
         acoustic::RECIPE
@@ -706,6 +709,9 @@ fn mergeable(root: &Path, path: &Path, key: &str, synced: &str) -> Option<StoreF
     };
     (file.recipe == crate::vocal_preview::cache_recipe(path, recipe())
         && file.detail_v >= detail
+        // Its lines sit sure at the edge of windows that started too late:
+        // the new listen replaces it, or they would outvote the fix.
+        && !(acoustic::second_ear_installed() && stuck_late(file.detail_v, &file.words))
         && !crate::sync_library::deleted_locked(root, key))
     .then_some(file)
 }
@@ -717,7 +723,27 @@ fn detail_settled(detail_v: u32, words: &[Word], second_ear: bool) -> bool {
     if !second_ear {
         return detail_v >= SUPPORT_DETAIL_V;
     }
-    detail_v >= FULL_EAR_DETAIL_V || (detail_v >= VOICE_DETAIL_V && !unheard_doubt(words))
+    (detail_v >= FULL_EAR_DETAIL_V || (detail_v >= VOICE_DETAIL_V && !unheard_doubt(words)))
+        && !stuck_late(detail_v, words)
+}
+
+/// Saved before late stamps were handled, and its lines say the stamps
+/// run late: learned in windows that began after the singer did.
+fn stuck_late(detail_v: u32, words: &[Word]) -> bool {
+    if detail_v >= RECENTRE_DETAIL_V {
+        return false;
+    }
+    let mut seen = HashSet::new();
+    let offsets = words
+        .iter()
+        .filter_map(|w| {
+            let line_t = w.line_t?;
+            // The line's first word, when the review didn't doubt it.
+            (seen.insert(line_t) && w.support.is_none_or(|p| p >= acoustic::REVIEW_BELOW))
+                .then_some(w.t - line_t)
+        })
+        .collect();
+    acoustic::late_stamps(offsets, acoustic::RECENTRE_MS).is_some()
 }
 
 /// A line the review doubted (a word under `REVIEW_BELOW`) that the second
@@ -816,7 +842,7 @@ fn superseded(stored: &str, expected: &str) -> bool {
 /// a song saved without it says 3 and relearns once the separator arrives.
 fn detail_v() -> u32 {
     if acoustic::second_ear_installed() {
-        FULL_EAR_DETAIL_V
+        RECENTRE_DETAIL_V
     } else {
         SUPPORT_DETAIL_V
     }
@@ -2401,6 +2427,41 @@ mod tests {
         assert!(!detail_settled(SUPPORT_DETAIL_V, &sure, true));
         // Without the second ear nothing could have re-heard the line.
         assert!(detail_settled(SUPPORT_DETAIL_V, &starved, false));
+    }
+
+    #[test]
+    fn a_save_whose_stamps_run_late_relearns_once() {
+        // Ten lines, each first word sure and 480ms before its stamp (the
+        // edge of the old window), then a second word.
+        let late: Vec<Word> = (0..10)
+            .flat_map(|i| {
+                let line = 10_000 + i * 4_000;
+                [
+                    checked(line, line - 480, 0.95),
+                    checked(line, line + 300, 0.95),
+                ]
+            })
+            .collect();
+        assert!(stuck_late(FULL_EAR_DETAIL_V, &late));
+        assert!(!detail_settled(FULL_EAR_DETAIL_V, &late, true));
+        // Learned again with its windows moved, it is done.
+        assert!(detail_settled(RECENTRE_DETAIL_V, &late, true));
+        // Stamps on time: lines start a little after them.
+        let on_time: Vec<Word> = (0..10)
+            .map(|i| checked(10_000 + i * 4_000, 10_150 + i * 4_000, 0.95))
+            .collect();
+        assert!(detail_settled(FULL_EAR_DETAIL_V, &on_time, true));
+        // Doubted first words don't vote, and too few lines say nothing.
+        let doubted: Vec<Word> = late
+            .iter()
+            .cloned()
+            .map(|mut w| {
+                w.support = Some(0.2);
+                w
+            })
+            .collect();
+        assert!(!stuck_late(FULL_EAR_DETAIL_V, &doubted));
+        assert!(!stuck_late(FULL_EAR_DETAIL_V, &late[..12]));
     }
 
     fn checked(line_t: i64, t: i64, support: f32) -> Word {
