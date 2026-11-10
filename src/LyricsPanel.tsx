@@ -27,9 +27,9 @@ import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
 import { isProvisionalDuration, trackIdOf } from "./lib/trackId";
-import { driveWordRows, settleRows, type WordDriver, type WordRow } from "./lib/wordWipeDriver";
+import { driveWordRows, type WordDriver, type WordRow } from "./lib/wordWipeDriver";
 import { whileShown } from "./lib/windowShown";
-import { letterSegments } from "./lib/letterRise";
+import { letterSegments } from "./lib/letterFill";
 import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
@@ -152,10 +152,6 @@ function useWordWipe(
     };
   }, [list, lines, leadMs, enabled]);
   useLayoutEffect(() => driver.current?.setCurrentLine(currentLine), [currentLine]);
-  useEffect(() => {
-    const root = list.current;
-    return root ? settleRows(root) : undefined;
-  }, [list]);
 }
 
 export type LyricsState =
@@ -657,8 +653,8 @@ const LyricLineRow = memo(function LyricLineRow({
       <span className="lyric-ink">
       {timed
         ? words.map((w, wi) => (
-            // Each letter rises on its own (letterRise.ts). useWordWipe
-            // writes only its --lit / --bend, so a syllable is a style
+            // Each letter fills on its own (letterFill.ts). useWordWipe
+            // writes only its --lit, so a syllable is a style
             // write, not a re-render. The word stays one inline-block, so
             // it never breaks across rows between its letters.
             <span key={`${w.t}-${wi}`} data-word className="inline-block">

@@ -518,8 +518,7 @@ html[data-opaque] {
   transition:
     transform var(--transition-duration-4) var(--ease-in-out-tk),
     opacity var(--transition-duration-4) var(--ease-in-out-tk),
-    filter var(--transition-duration-4) var(--ease-in-out-tk),
-    --drop var(--transition-duration-4) var(--ease-in-out-tk);
+    filter var(--transition-duration-4) var(--ease-in-out-tk);
 }
 .lyric-row[data-current="true"] { --lyric-scale: 1; --lyric-filter: none; }
 /* Hovering a seekable row brings it into focus, so you can read what a
@@ -560,33 +559,13 @@ button.lyric-row:hover { --lyric-filter: none; }
   .lyric-row .lyric-ink { animation: none; }
 }
 
-/* Rise (src/lib/letterRise.ts): each letter brightens and floats up into
- * place as it's sung. --lit (0..1) is written per letter by the word
- * driver. While a row is being sung (data-singing) its unsung letters sit
- * --drop below their place; the drop eases in with the line's own scale-up
- * (same 220ms curve) so the line doesn't jump when it becomes current.
- * Plain colored text (no clipped gradient), so it keeps ClearType.
- * --bend is a held note riding the singer's pitch (voiceMotion.ts). */
-@property --drop {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 0px;
-}
-.lyric-row[data-singing] .lyric-ink { --drop: 1.75px; }
+/* Fill (src/lib/letterFill.ts): each letter brightens as the singing
+ * passes through it; nothing moves. --lit (0..1) is written per letter by
+ * the word driver. Letters are plain inline text, so they keep their
+ * kerning, and plain colored text (no clipped gradient), so they keep
+ * ClearType. */
 .lyric-row [data-letter] {
-  display: inline-block;
   color: color-mix(in srgb, var(--word-bright, currentColor) calc(var(--lit, 0) * 100%), currentColor);
-}
-/* Only rows that are singing, or easing their drop back out after
- * (data-settling, wordWipeDriver.ts settleRows), move their letters.
- * Everywhere else the transform would be translateY(0), and even an
- * identity transform costs a paint chunk per letter that the compositor
- * re-sorts on every karaoke frame. */
-.lyric-row:is([data-singing], [data-settling]) [data-letter] {
-  transform: translateY(calc(var(--drop) * (1 - var(--lit, 0)) + var(--bend, 0px)));
-}
-@media (prefers-reduced-motion: reduce) {
-  .lyric-row:is([data-singing], [data-settling]) [data-letter] { transform: none; }
 }
 /* The depth-of-field blur: a filtered row turns the sharp rows next to it
  * grayscale, so each blurred row gets its own layer. The

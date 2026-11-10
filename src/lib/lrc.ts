@@ -309,7 +309,7 @@ type WordFill = {
   | { kind: "points"; points: readonly WordPoint[] }
 );
 
-function validWordPoints(w: LyricWord, end: number): WordPoint[] | undefined {
+export function validWordPoints(w: LyricWord, end: number): WordPoint[] | undefined {
   const points = w.points;
   return w.timing !== "phrase" && points && points.length >= 2 &&
     points[0].t === w.t && points[0].fraction === 0 &&
