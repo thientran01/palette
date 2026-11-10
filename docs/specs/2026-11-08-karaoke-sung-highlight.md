@@ -100,6 +100,44 @@ cursor keeps letters evenly spaced.
 Letters as inline-blocks lose kerning across letter pairs; the line's
 layout never changes while it is sung.
 
+## English rises by syllable (2026-11-10, `src/lib/syllables.ts`)
+
+Thien: Korean and Japanese look right "because each of their characters
+make a specific sound", but English "feels like some parts get skipped or
+goes over too fast or goes too slowly". The aligner wasn't the problem:
+word onsets are accurate. The letter timing inside an English word was
+made up, three ways:
+
+- Letters split the word's time evenly, so silent letters and punctuation
+  took turns of their own ("away," rose a-w-a-y-comma while the singer
+  held "way").
+- Words held 450 ms or longer followed the aligner's letter spans
+  instead, where a glide or silent letter lands at the very end ("y,"
+  hung through the whole hold, then snapped).
+- A word before a 220 ms pause finished at its own sound end; one running
+  into the next word stretched to that onset.
+
+So the same word looked different on every repeat. In Kep1er "Happy
+Ending" the second letter of "away," rose anywhere from 85 to 241 ms in.
+
+Now a Latin-script word rises one written syllable at a time, the way a
+Hangul block does. A spelling heuristic cuts it (vowel groups; silent
+"e", "-es", "-ed" fold back; consonants split the usual way), and each
+syllable starts when the aligner heard its first letter (the start of
+that letter's CTC span), or, without letter spans, at an even share of
+the word's own sound. Its letters follow 16 ms apart (at most 40% of the
+syllable), and punctuation rises with the letter before it. Other scripts
+keep the row cursor.
+
+Steppiness (the jerk measure above, on summed rise per row): Korean rows,
+which Thien said look right, 0.18–0.22 on his five dumps; English rows
+0.10–0.13 before, 0.20–0.23 by syllable. Smoother wasn't what made Korean
+look right; one rise per sound was.
+
+Prototypes compared with Thien: A syllables (shipped), B whole words, C
+letters evenly over each word's own sound
+(`/mnt/project-files/karaoke-motion/english-rise/`).
+
 ## The voice (`src-tauri/src/voice.rs`, `src/lib/voiceMotion.ts`)
 
 Held words also carry a voice track, made by the karaoke worker right

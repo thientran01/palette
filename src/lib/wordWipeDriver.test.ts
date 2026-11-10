@@ -83,20 +83,23 @@ describe("letters rise from their own onsets", () => {
     expect(lit(r.letters[0][0])).toBeGreaterThan(0);
     stop();
   });
-  it("paces a held letter by the aligner's checkpoints", () => {
+  it("waits for a held syllable's next sound before rising it", () => {
+    // "hall·way": the aligner heard "w" at 1900, after a long "hall".
     const words = [{ t: 1000, end: 2000, text: "hallway", points: [
-      { t: 1000, fraction: 0 }, { t: 1050, fraction: 2 / 7 }, { t: 1900, fraction: 2 / 7 },
-      { t: 1950, fraction: 6 / 7 }, { t: 2000, fraction: 1 },
+      { t: 1000, fraction: 0 }, { t: 1020, fraction: 1 / 7 }, { t: 1020, fraction: 1 / 7 },
+      { t: 1040, fraction: 2 / 7 }, { t: 1300, fraction: 2 / 7 }, { t: 1320, fraction: 3 / 7 },
+      { t: 1400, fraction: 3 / 7 }, { t: 1420, fraction: 4 / 7 }, { t: 1900, fraction: 4 / 7 },
+      { t: 1920, fraction: 5 / 7 }, { t: 1920, fraction: 5 / 7 }, { t: 1940, fraction: 6 / 7 },
+      { t: 1980, fraction: 6 / 7 }, { t: 2000, fraction: 1 },
     ] }];
     const h = harness(1000); const r = rowOf(0, words);
     const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
     h.frame(1800);
     const l = r.letters[0].map(lit);
-    // The checkpoint's plateau is held (lrc.ts sampleFill's reading): "a"
-    // is partway through its long rise, later letters wait for 1900.
-    expect(l[0]).toBe(1);
-    expect(l[1]).toBeGreaterThan(0.1); expect(l[1]).toBeLessThan(1);
-    expect(l[2]).toBe(0);
+    expect(l.slice(0, 4)).toEqual([1, 1, 1, 1]);
+    expect(l.slice(4)).toEqual([0, 0, 0]);
+    h.frame(2100);
+    expect(r.letters[0].every(s => lit(s) === 1)).toBe(true);
     stop();
   });
 });
