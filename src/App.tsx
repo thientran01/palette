@@ -1111,7 +1111,7 @@ function ExpandedView({
                     state across this mount/unmount, so the album toggle doesn't
                     re-bloom the capsules from the dot. */}
                 {headerShown && (
-                  <span className="ml-1 flex shrink-0 items-center">
+                  <span className="wave-seat ml-1 flex shrink-0 items-center">
                     <Waveform size="md" trailing playing={np.status === "playing"} />
                   </span>
                 )}
@@ -2172,7 +2172,7 @@ function App() {
                   </TrackFadeSpan>
                   {/* Its own 16px line box, so align-middle seats the capsules
                       on the text's middle exactly as the inline flow did. */}
-                  <span className="shrink-0">
+                  <span className="wave-seat shrink-0 [--wave-pan-gap:8px]">
                     <Waveform trailing={!np.artist} playing={np.status === "playing"} />
                   </span>
                   <TrackFadeSpan
@@ -2272,7 +2272,7 @@ function App() {
                         <Marquee>{np.title}</Marquee>
                       </TrackFadeSpan>
                     </p>
-                    <span className="ml-1 flex shrink-0 items-center">
+                    <span className="wave-seat ml-1 flex shrink-0 items-center">
                       <Waveform size="md" trailing playing={np.status === "playing"} />
                     </span>
                   </div>
