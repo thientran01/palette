@@ -17,6 +17,8 @@ export function LyricSyncStatus({np, saved, lines}: {np:NowPlaying; saved:boolea
   const [library, setLibrary] = useState(false);
   const [snapshot, setSnapshot] = useState<{key:string; status:SyncStatus} | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const seat = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState<number>();
   const key = JSON.stringify([np.artist,np.title,np.album,np.duration_ms]);
   const close = useCallback((restoreFocus = true) => {
     setLibrary(false);
@@ -64,13 +66,19 @@ export function LyricSyncStatus({np, saved, lines}: {np:NowPlaying; saved:boolea
     : status.phase === "processing" ? preview ? "Isolating vocals and matching them to the lyrics. Your saved timing stays available." : "Your recording is being matched to the lyrics."
     : status.phase === "learning" ? np.status !== "playing" ? "Resume playback to continue this listen." : status.detail.replace(/^Learning timing…\s*/, "")
     : status.detail.replace(/^Couldn’t save word sync\.\s*/, "").replace("Couldn’t align this track’s vocals. Word sync was not saved.", "This recording did not produce usable word timing. Keeping line sync.");
-  return <div className="relative shrink-0" onMouseDown={e => e.stopPropagation()}>
+  return <div ref={seat} className="relative shrink-0" onMouseDown={e => e.stopPropagation()}>
     <button ref={trigger} type="button" aria-label="Open lyric syncs" title="Lyric syncs" aria-haspopup="dialog" aria-expanded={library}
       className="grid h-7 w-7 place-items-center rounded-md text-fg transition-[background-color,scale] duration-2 ease-out-tk hover:bg-fg/10 aria-expanded:bg-fg/10 active:scale-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg/50"
       onPointerEnter={prefetchSavedSyncs} onFocus={prefetchSavedSyncs}
-      onClick={() => setLibrary(current => !current)}>
+      onClick={() => {
+        // Read before this click renders anything: layout is still clean, so
+        // this costs nothing, where the open panel measuring itself would
+        // force a layout pass. mt-2 puts the panel 8px below the seat.
+        if (!library && seat.current) setTop(seat.current.getBoundingClientRect().bottom + 8);
+        setLibrary(current => !current);
+      }}>
       <MorphIcon name="syncSaved" size={16} dur={DUR[5]} />
     </button>
-    {library && <SavedSyncs np={np} lines={lines} onClose={close} current={{title,detail,phase:status.phase}}/>}
+    {library && <SavedSyncs np={np} lines={lines} onClose={close} current={{title,detail,phase:status.phase}} top={top}/>}
   </div>;
 }
