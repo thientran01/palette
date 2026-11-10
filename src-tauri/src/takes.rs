@@ -65,12 +65,17 @@ pub struct Take {
     pub samples: usize,
     pub map: TimeMap,
     pub windows: Vec<Window>,
+    /// A partial listen's: only lines it held whole were decoded
+    /// (`acoustic::EdgeCut`), and a re-decode leaves the rest the same way.
+    pub whole_windows: bool,
 }
 
 #[derive(Serialize, Deserialize)]
 struct TakeHeader {
     samples: usize,
     map: TimeMap,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    whole_windows: bool,
     windows: Vec<WindowHeader>,
 }
 
@@ -80,6 +85,7 @@ impl Take {
             samples,
             map,
             windows: Vec::new(),
+            whole_windows: false,
         }
     }
 
@@ -186,6 +192,7 @@ impl TakeFile {
                 .iter()
                 .map(|t| TakeHeader {
                     samples: t.samples,
+                    whole_windows: t.whole_windows,
                     map: t.map.clone(),
                     windows: t
                         .windows
@@ -249,6 +256,7 @@ impl TakeFile {
             }
             takes.push(Take {
                 samples: t.samples,
+                whole_windows: t.whole_windows,
                 map: t.map,
                 windows,
             });
@@ -316,7 +324,12 @@ mod tests {
             title: "t".into(),
             album: "".into(),
             duration_ms: 10_000,
-            takes: vec![take.clone(), Take::new(5, map())],
+            takes: vec![take.clone(), Take::new(5, map()), {
+                // A partial listen's take says so.
+                let mut partial = Take::new(7, map());
+                partial.whole_windows = true;
+                partial
+            }],
         };
         let back = TakeFile::from_bytes(&file.to_bytes().unwrap()).unwrap();
         assert_eq!(back, file);

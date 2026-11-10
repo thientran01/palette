@@ -61,6 +61,7 @@ pub async fn vocal_preview_enabled() -> bool {
 
 pub(crate) fn library_action_applied(key: &str) {
     lock_misses().retain(|(song, _)| song != key);
+    declined().take();
     sync_state(
         key,
         "waiting",
@@ -163,6 +164,9 @@ const MAX_SAMPLES: usize = 16_000 * 60 * 8;
 const ARM_NEAR_START_MS: i64 = 8_000;
 const PEAK_ABORT: f32 = 1e-3;
 const MIN_LINE_COVERAGE: u32 = 30;
+/// A partial listen's time map needs this many pairs (10 to 15s of
+/// Spotify's), so it is fitted, never projected from one origin.
+const PARTIAL_MIN_ANCHORS: usize = 3;
 /// A listen that never heard the vocals still decodes. With no voice in
 /// the emissions, CTC gives every letter its minimum one or two 20ms
 /// frames, so a whole line's highlight races past in well under a second
@@ -236,6 +240,22 @@ struct StoreFile {
     /// before listens added up, which counts as one.
     #[serde(default, skip_serializing_if = "is_zero")]
     listens: u32,
+    /// Stamps of lyric lines no listen has heard whole yet: a partial
+    /// listen's sync (late start, skip, seek, pause) until later listens
+    /// fill them in. Empty in every file a whole listen made.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unheard: Vec<i64>,
+}
+
+/// Unheard lines stamped before this don't keep a song learning: a play
+/// from the top starts recording up to 834ms in (95% of 392 plays on
+/// Thien's PC, 2026-11-10), so a line stamped in the first second may never
+/// be heard whole, and the song would relearn on every play.
+const REACHABLE_FROM_MS: i64 = 1_500;
+
+/// Lines no listen has heard, other than ones no play can reach.
+fn missing_lines(unheard: &[i64]) -> bool {
+    unheard.iter().any(|&t| t >= REACHABLE_FROM_MS)
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -324,6 +344,24 @@ impl Rec {
     fn can_finalize(&self) -> bool {
         let pcm_ms = self.samples.len() as i64 * 1000 / TARGET_HZ as i64;
         self.seek_strikes == 0 && listen_enough(pcm_ms, self.origin_ms, self.duration_ms)
+    }
+
+    /// Drop everything after the last pair that agreed with the fit: a seek
+    /// or a pause happened somewhere after it, and the audio past that
+    /// point no longer matches the time map. What is left is a partial
+    /// listen (`whole_listen`).
+    fn cut_at_last_anchor(&mut self) {
+        let keep = self
+            .anchors
+            .last()
+            .map_or(0, |&(idx, _)| idx)
+            .min(self.samples.len());
+        self.samples.truncate(keep);
+        if let Some(stereo) = self.stereo.as_mut() {
+            let frames = keep as u64 * self.rate_in as u64 / TARGET_HZ as u64;
+            stereo.truncate(frames as usize * 2);
+        }
+        self.seek_strikes = 0;
     }
 
     /// Turn a fresh pair into an anchor, or flag a seek. The pair's
@@ -518,7 +556,8 @@ pub(crate) fn read_saved(path: &Path, synced: Option<&str>) -> Option<SavedFile>
 
 /// Saved under the current recipe and detail: nothing left to relearn.
 fn settled(path: &Path, file: &StoreFile) -> bool {
-    file.recipe == crate::vocal_preview::cache_recipe(path, recipe())
+    !missing_lines(&file.unheard)
+        && file.recipe == crate::vocal_preview::cache_recipe(path, recipe())
         && (crate::acoustic::assets().is_none()
             || (detail_settled(file.detail_v, &file.words, acoustic::second_ear_installed())
                 && !wants_another_listen(file.listens, &file.words)))
@@ -703,6 +742,68 @@ fn combine_listens(saved: &[Word], new: &[Word]) -> Combined {
     }
 }
 
+/// A listen as it will be saved.
+struct Folded {
+    words: Vec<Word>,
+    listens: u32,
+    /// Lines no listen so far has held whole.
+    unheard: Vec<i64>,
+    /// (lines improved, offset) when it merged into a saved sync.
+    merged: Option<(usize, Option<(i64, usize)>)>,
+}
+
+/// Fold a new listen into the saved sync it merges into, if any. A whole
+/// listen heard every line except any sung before it started (the end of
+/// the song is as far as any listen gets); a partial one also misses lines
+/// past where it stopped. A line stays unheard until some listen hears it.
+/// A partial listen adds lines but judged only part of the song, so it
+/// neither counts as one of the extra listens (`MAX_LISTENS`) nor ends them.
+fn fold_listen(
+    saved: Option<&StoreFile>,
+    words: Vec<Word>,
+    partial: bool,
+    cut: &acoustic::EdgeCut,
+) -> Folded {
+    let mut unheard: Vec<i64> = if partial {
+        cut.start.iter().chain(&cut.end).copied().collect()
+    } else {
+        cut.start.clone()
+    };
+    if let Some(saved) = saved {
+        unheard.retain(|t| saved.unheard.contains(t));
+    }
+    unheard.sort_unstable();
+    unheard.dedup();
+    let Some(saved) = saved else {
+        return Folded {
+            words,
+            listens: 1,
+            unheard,
+            merged: None,
+        };
+    };
+    let Combined {
+        words,
+        improved,
+        offset,
+    } = combine_listens(&saved.words, &words);
+    let before = saved.listens.max(1);
+    let listens = if partial {
+        before
+    } else if improved == 0 {
+        // One that improves nothing ends the extra listens.
+        before.saturating_add(1).max(MAX_LISTENS)
+    } else {
+        before.saturating_add(1)
+    };
+    Folded {
+        words,
+        listens,
+        unheard,
+        merged: Some((improved, offset)),
+    }
+}
+
 /// The saved sync a new listen of the same lyrics merges into: decoded under
 /// the same recipe, with the review's support (and the voice, when the
 /// second ear is installed), and not deleted in the library.
@@ -812,6 +913,23 @@ fn read_store(path: &Path, synced: Option<&str>, prune: bool) -> Option<StoreFil
 /// spoken word: the aligner found no vocals and packed every word into its
 /// minimum frames.
 fn collapsed(words: &[Word]) -> bool {
+    let mut per_word = judged_lines(words);
+    if per_word.len() < COLLAPSE_MIN_LINES {
+        return false;
+    }
+    let mid = per_word.len() / 2;
+    *per_word.select_nth_unstable(mid).1 < COLLAPSED_MS_PER_WORD
+}
+
+/// Enough judged lines for `collapsed` to say anything. A partial listen
+/// must have them: a short one that heard no vocals would slip past it.
+fn collapse_judged(words: &[Word]) -> bool {
+    judged_lines(words).len() >= COLLAPSE_MIN_LINES
+}
+
+/// Per judged line (COLLAPSE_MIN_WORDS spoken words or more), its ms per
+/// spoken word.
+fn judged_lines(words: &[Word]) -> Vec<i64> {
     // line_t -> (first onset, last end, spoken words)
     let mut lines: HashMap<i64, (i64, i64, usize)> = HashMap::new();
     for w in words {
@@ -827,16 +945,11 @@ fn collapsed(words: &[Word]) -> bool {
         line.1 = line.1.max(end);
         line.2 += 1;
     }
-    let mut per_word: Vec<i64> = lines
+    lines
         .values()
         .filter(|(_, _, n)| *n >= COLLAPSE_MIN_WORDS)
         .map(|(first, last, n)| (last - first) / *n as i64)
-        .collect();
-    if per_word.len() < COLLAPSE_MIN_LINES {
-        return false;
-    }
-    let mid = per_word.len() / 2;
-    *per_word.select_nth_unstable(mid).1 < COLLAPSED_MS_PER_WORD
+        .collect()
 }
 
 /// A song saved under an acoustic recipe the current one replaced keeps its
@@ -859,7 +972,7 @@ fn detail_v() -> u32 {
 /// One listen's words, as tests write them.
 #[cfg(test)]
 fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::Result<()> {
-    write_listens(dir, key, synced, words, 1)
+    write_listens(dir, key, synced, words, 1, &[])
 }
 
 fn write_listens(
@@ -868,8 +981,9 @@ fn write_listens(
     synced: &str,
     words: &[Word],
     listens: u32,
+    unheard: &[i64],
 ) -> std::io::Result<()> {
-    write_store(dir, key, synced, words, listens, detail_v())
+    write_store(dir, key, synced, words, listens, unheard, detail_v())
 }
 
 /// `write_listens` with the detail its words carry: a re-decode keeps the
@@ -880,6 +994,7 @@ fn write_store(
     synced: &str,
     words: &[Word],
     listens: u32,
+    unheard: &[i64],
     detail_v: u32,
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
@@ -891,6 +1006,7 @@ fn write_store(
         synced: Some(synced.to_string()),
         words: words.to_vec(),
         listens,
+        unheard: unheard.to_vec(),
     })
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     write_atomic(&dir.join(format!("{key}.json")), &json)?;
@@ -940,6 +1056,83 @@ fn cache_complete(pcm_end_ms: i64, duration_ms: i64) -> bool {
     duration_ms > 0 && pcm_end_ms >= duration_ms.saturating_sub(END_GUARD_MS)
 }
 
+/// A listen that heard the song from its first seconds to its end. Anything
+/// else (a late start, a skip, a cut at a seek or a pause) is a partial
+/// listen: it saves only the lines it held whole (`acoustic::EdgeCut`).
+fn whole_listen(rec: &Rec, map: &TimeMap) -> bool {
+    rec.origin_ms < ARM_NEAR_START_MS
+        && cache_complete(map.pos_ms(rec.samples.len()), rec.duration_ms)
+}
+
+/// Lines a recording over `from_ms..to_ms` of the song would hold whole
+/// with `COLLAPSE_MIN_WORDS` spoken words or more: the lines
+/// `collapse_judged` counts, estimated from the lyrics before any audio is
+/// decoded (the aligner's own windows can differ by a line at each end).
+fn judgeable_lines(lines: &[align::TimedLine], from_ms: i64, to_ms: i64, song_end: i64) -> usize {
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(i, line)| {
+            let next = lines.get(i + 1).map_or(song_end, |l| l.t);
+            let end = (next + 500).min(line.t + 20_000);
+            line.t - 250 >= from_ms && end <= to_ms
+        })
+        .filter(|(_, line)| {
+            align::tokenize(&line.text)
+                .iter()
+                .filter(|t| t.chars().any(char::is_alphanumeric))
+                .count()
+                >= COLLAPSE_MIN_WORDS
+        })
+        .count()
+}
+
+/// Worth a sync job as a partial listen: the acoustic aligner is installed,
+/// the time map is fitted, and the recording holds enough whole lines to
+/// prove it heard vocals. Short partial listens end here, before any audio
+/// is decoded.
+fn partial_worth(rec: &Rec, map: &TimeMap, synced: Option<&str>) -> bool {
+    if acoustic::assets().is_none() || rec.anchors.len() < PARTIAL_MIN_ANCHORS {
+        return false;
+    }
+    let Some(synced) = synced else {
+        return false;
+    };
+    let lines = align::parse_lrc(synced);
+    let to_ms = map.pos_ms(rec.samples.len());
+    judgeable_lines(&lines, map.pos_ms(0), to_ms, rec.duration_ms) >= COLLAPSE_MIN_LINES
+}
+
+/// A song a mid-song play should record: no sync yet, or a sync a partial
+/// listen can add to (`mergeable`) that still misses lines, and not deleted
+/// or waiting on Relearn, which wants a whole listen. Takes the library's
+/// lock: never call it holding `sync_library::lock()`.
+fn wants_partial(root: &Path, dir: &Path, key: &str, synced: &str) -> bool {
+    let (deleted, refresh) = crate::sync_library::flags(root, key);
+    if deleted || refresh {
+        return false;
+    }
+    let path = dir.join(format!("{key}.json"));
+    match read_store(&path, Some(synced), false) {
+        None => true,
+        Some(file) => {
+            missing_lines(&file.unheard) && {
+                let _library = crate::sync_library::lock();
+                mergeable(root, &path, key, synced).is_some()
+            }
+        }
+    }
+}
+
+/// The track a mid-song play last found nothing to learn in, so later beats
+/// of the same play skip the disk reads.
+static DECLINED: Mutex<Option<String>> = Mutex::new(None);
+fn declined() -> std::sync::MutexGuard<'static, Option<String>> {
+    DECLINED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Wall time alone cannot tell delayed buffered delivery from lost audio.
 /// Reject either ambiguous case; never synthesize samples to cover a deficit.
 fn ambiguous_gap(expected_frames: u64, received_frames: u64, sample_rate: u32) -> bool {
@@ -982,21 +1175,34 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
     if !crate::history::music_source(&np.player, &np.media_kind) {
         RECORDING.store(false, Ordering::Relaxed);
         let discarded = discard_non_music(np, &mut lock_rec());
-        if let Some(rec) = discarded {
-            research::interrupted(
-                &rec,
-                "Playback switched away from the music app. Replay and record again.",
-            );
-            log::info!(
-                "karaoke: source changed to {} — discarding capture for {}",
-                np.player,
-                rec.title
-            );
-            sync_state(&rec.key, "waiting", "Playback switched away from the music app. Replay from the beginning to learn timing.");
+        if let Some(mut rec) = discarded {
+            if rec.research.is_some() {
+                research::interrupted(
+                    &rec,
+                    "Playback switched away from the music app. Replay and record again.",
+                );
+                log::info!(
+                    "karaoke: source changed to {} — discarding capture for {}",
+                    np.player,
+                    rec.title
+                );
+                sync_state(&rec.key, "waiting", "Playback switched away from the music app. Replay from the beginning to learn timing.");
+            } else {
+                log::info!(
+                    "karaoke: source changed to {} — keeping what {} heard before it",
+                    np.player,
+                    rec.title
+                );
+                rec.cut_at_last_anchor();
+                try_commit(app, rec);
+            }
         }
         return;
     }
     if np.status != "playing" {
+        if matches!(np.status.as_str(), "paused" | "stopped") {
+            paused(app, np);
+        }
         return;
     }
     if np.title.is_empty() && np.artist.is_empty() {
@@ -1022,8 +1228,10 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         if matches!(slot.as_ref(), Some(rec) if rec.key == key) {
             // Same track: this beat's pair is evidence for the time map —
             // unless it says the user seeked, which no single-origin or
-            // fitted map can absorb: drop the recording (NOT a miss; the
-            // next clean listen records it).
+            // fitted map can absorb. What was heard before the seek is kept
+            // as a partial listen (NOT a miss); the next beat may start
+            // recording again from where playback is now.
+            let mut seeked = None;
             if let Some(rec) = slot.as_mut() {
                 if rec.research.is_none() {
                     rec.research = research::begin(&rec.key);
@@ -1031,23 +1239,32 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
                 if let Anchor::Seek(residual, n, pos) = rec.anchor(np) {
                     RECORDING.store(false, Ordering::Relaxed);
                     log::info!(
-                        "karaoke: seek during {} — dropping this recording (pair says {}ms, fit predicted {:+.0}ms off it, {} anchors)",
+                        "karaoke: seek during {} — keeping what was heard before it (pair says {}ms, fit predicted {:+.0}ms off it, {} anchors)",
                         rec.title,
                         pos,
                         residual,
                         n
                     );
-                    sync_state(
-                        &rec.key,
-                        "waiting",
-                        "Seeking interrupted learning. Play from the beginning to try again.",
-                    );
-                    research::interrupted(
-                        rec,
-                        "Seeking interrupted the recording. Replay and record again.",
-                    );
-                    *slot = None;
+                    if rec.research.is_some() {
+                        sync_state(
+                            &rec.key,
+                            "waiting",
+                            "Seeking interrupted learning. Play from the beginning to try again.",
+                        );
+                        research::interrupted(
+                            rec,
+                            "Seeking interrupted the recording. Replay and record again.",
+                        );
+                        *slot = None;
+                    } else {
+                        seeked = slot.take();
+                    }
                 }
+            }
+            drop(slot);
+            if let Some(mut rec) = seeked {
+                rec.cut_at_last_anchor();
+                try_commit(app, rec);
             }
             return;
         }
@@ -1074,10 +1291,17 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         0
     };
     let origin_ms = (np.position_ms + stale).max(0);
-    if origin_ms >= ARM_NEAR_START_MS {
+    // Past the first seconds, only a song still missing lines records (a
+    // partial listen), and only with the acoustic aligner to decode it.
+    let late = origin_ms >= ARM_NEAR_START_MS;
+    if late
+        && (requested
+            || acoustic::assets().is_none()
+            || declined().as_deref() == Some(key.as_str()))
+    {
         return;
     }
-    // Only eligible near-start listens need lyrics/cache disk reads.
+    // Only eligible listens need lyrics/cache disk reads.
     let Some(dir) = karaoke_dir(app) else {
         return;
     };
@@ -1095,7 +1319,18 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         &np.album,
         np.duration_ms,
     );
-    if !requested && has_file(&dir, &key, synced.as_deref()) {
+    if late {
+        let root = dir.parent().unwrap_or(&dir);
+        let worth = synced.as_deref().is_some_and(|synced| {
+            let lines = align::parse_lrc(synced);
+            judgeable_lines(&lines, origin_ms, np.duration_ms, np.duration_ms) >= COLLAPSE_MIN_LINES
+                && wants_partial(root, &dir, &key, synced)
+        });
+        if !worth {
+            *declined() = Some(key);
+            return;
+        }
+    } else if !requested && has_file(&dir, &key, synced.as_deref()) {
         return;
     }
     log::info!(
@@ -1143,6 +1378,36 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         *slot = Some(rec);
         RECORDING.store(true, Ordering::Relaxed);
     }
+}
+
+/// Playback paused or stopped: the player's own process sends no audio
+/// until it resumes, and the capture's gap check would then drop the whole
+/// recording. End it here instead, keeping what was heard (a partial
+/// listen), unless it already reached the song's end. Resuming may start a
+/// new recording from where playback is.
+fn paused(app: &AppHandle, np: &NowPlaying) {
+    let key = (np.duration_ms > 0 && !(np.title.is_empty() && np.artist.is_empty()))
+        .then(|| lyrics::key_for_ms(&np.artist, &np.title, &np.album, np.duration_ms));
+    let rec = {
+        let mut slot = lock_rec();
+        let ours = slot.as_ref().is_some_and(|rec| {
+            rec.research.is_none() && key.as_ref().is_none_or(|k| *k == rec.key)
+        });
+        if !ours {
+            return;
+        }
+        RECORDING.store(false, Ordering::Relaxed);
+        slot.take()
+    };
+    let Some(mut rec) = rec else {
+        return;
+    };
+    let map = TimeMap::fit(&rec.anchors, TARGET_HZ, rec.origin_ms);
+    if !whole_listen(&rec, &map) {
+        rec.cut_at_last_anchor();
+    }
+    log::info!("karaoke: playback {} during {}", np.status, rec.title);
+    try_commit(app, rec);
 }
 
 pub fn on_capture_stop(app: &AppHandle) {
@@ -1320,16 +1585,33 @@ fn show_job(rec: &Rec) {
     });
 }
 
-fn try_commit(app: &AppHandle, rec: Rec) {
+fn try_commit(app: &AppHandle, mut rec: Rec) {
     if rec.research.is_some() {
         research::save(app, rec);
         return;
     }
-    if !rec.can_finalize() {
+    // A lone pair off the fit at the end may be the start of a seek: keep
+    // only what came before it.
+    if rec.seek_strikes > 0 {
+        rec.cut_at_last_anchor();
+    }
+    let map = TimeMap::fit(&rec.anchors, TARGET_HZ, rec.origin_ms);
+    let whole = whole_listen(&rec, &map);
+    let worth = whole || {
+        let synced = lyrics::cached_synced(
+            &lyrics_dir(app),
+            &rec.artist,
+            &rec.title,
+            &rec.album,
+            rec.duration_ms,
+        );
+        partial_worth(&rec, &map, synced.as_deref())
+    };
+    if !worth {
         sync_state(
             &rec.key,
             "waiting",
-            "Listen interrupted. Play from the beginning to try again.",
+            "Listen interrupted before enough lines played. Keep listening to learn timing.",
         );
         // Opt-in diagnostics must survive a short replay or a suspect final
         // position pair. These are explicitly untrusted audio, never cached
@@ -1359,8 +1641,17 @@ fn try_commit(app: &AppHandle, rec: Rec) {
         }
         return;
     }
-    let map = TimeMap::fit(&rec.anchors, TARGET_HZ, rec.origin_ms);
-    if rec.peak < PEAK_ABORT && cache_complete(map.pos_ms(rec.samples.len()), rec.duration_ms) {
+    if rec.peak < PEAK_ABORT && !whole {
+        // Too little to call the song silent; a later listen may hear it.
+        sync_state(
+            &rec.key,
+            "waiting",
+            "No usable local audio was captured. Play on this computer to learn timing.",
+        );
+        log::info!("karaoke: silence on part of {} — not kept", rec.title);
+        return;
+    }
+    if rec.peak < PEAK_ABORT {
         sync_state(
             &rec.key,
             "failed",
@@ -1512,6 +1803,7 @@ fn write_dump(
         synced: Some(lrc.to_string()),
         words: words.to_vec(),
         listens: 1,
+        unheard: Vec::new(),
     })
     .map_err(to_io)?;
     write_atomic(&dir.join("words.json"), &words_json)?;
@@ -1652,7 +1944,25 @@ fn commit_recording(
         );
         return;
     }
-    let (words, take) = if let Some(dir) = acoustic::assets() {
+    let root = karaoke_dir.parent().unwrap_or(karaoke_dir);
+    // A partial listen only fills lines a sync is missing (or starts one),
+    // and only the acoustic aligner can leave the lines it didn't hold.
+    let partial = !whole_listen(&rec, &map);
+    if partial
+        && (acoustic::assets().is_none() || !wants_partial(root, karaoke_dir, &rec.key, &synced))
+    {
+        finish_sync_state(
+            &rec.key,
+            "waiting",
+            "This listen didn’t play the whole song. A full listen learns its timing.",
+        );
+        log::info!(
+            "karaoke: partial listen of {} has nothing to add — not aligned",
+            rec.title
+        );
+        return;
+    }
+    let (words, take, cut) = if let Some(dir) = acoustic::assets() {
         // Identical quantization to write_dump: replay and production share
         // the same PCM representation, including clipping and scale.
         let pcm: Vec<i16> = rec
@@ -1670,6 +1980,7 @@ fn commit_recording(
             stereo,
             lines.clone(),
             map.clone(),
+            partial,
             dir.to_path_buf(),
         );
         match result {
@@ -1680,7 +1991,7 @@ fn commit_recording(
                     rec.title,
                     started.elapsed().as_secs_f64()
                 );
-                (aligned.words, aligned.take)
+                (aligned.words, aligned.take, aligned.cut)
             }
             Err(e) => {
                 // Never cache guessed timings under the acoustic recipe.
@@ -1704,7 +2015,11 @@ fn commit_recording(
             }
         }
     } else {
-        (align::align(&rec.samples, TARGET_HZ, &lines, &map), None)
+        (
+            align::align(&rec.samples, TARGET_HZ, &lines, &map),
+            None,
+            acoustic::EdgeCut::default(),
+        )
     };
     // Evidence first: a coverage miss below still leaves something to score.
     if let Some(dir) = dump_dir {
@@ -1713,19 +2028,30 @@ fn commit_recording(
             Err(e) => log::warn!("karaoke: dump failed ({e})"),
         }
     }
-    if !cache_complete(map.pos_ms(rec.samples.len()), rec.duration_ms) {
+    // Coverage counts the lines this listen held whole, so a partial listen
+    // is judged on what it heard.
+    let left: HashSet<i64> = cut.start.iter().chain(&cut.end).copied().collect();
+    let heard: Vec<align::TimedLine> = lines
+        .iter()
+        .filter(|l| !left.contains(&l.t))
+        .cloned()
+        .collect();
+    if partial && (line_coverage(&heard, &words) < MIN_LINE_COVERAGE || !collapse_judged(&words)) {
+        // Not a miss: too little was heard to judge the song.
         finish_sync_state(
             &rec.key,
             "waiting",
-            "The recording ended early. Listen from the beginning through the end.",
+            "Too few lines matched in this part of the song. Word sync was not saved.",
         );
         log::info!(
-            "karaoke: incomplete {} — dump only, retry next listen",
-            rec.title
+            "karaoke: partial listen of {} matched too little ({} of {} lines heard) — not saved",
+            rec.title,
+            heard.len(),
+            lines.len()
         );
         return;
     }
-    if line_coverage(&lines, &words) < MIN_LINE_COVERAGE {
+    if line_coverage(&heard, &words) < MIN_LINE_COVERAGE {
         sync_state(
             &rec.key,
             "failed",
@@ -1749,7 +2075,6 @@ fn commit_recording(
         );
         return;
     }
-    let root = karaoke_dir.parent().unwrap_or(karaoke_dir);
     let _library_guard = crate::sync_library::lock();
     if !crate::sync_library::current_locked(root, &rec.key, rec.library_revision) {
         sync_state(
@@ -1763,37 +2088,49 @@ fn commit_recording(
     // surer of. One that improves nothing ends the extra listens.
     let path = karaoke_dir.join(format!("{}.json", rec.key));
     let saved = mergeable(root, &path, &rec.key, &synced);
+    if partial && saved.is_none() && read_store(&path, Some(&synced), false).is_some() {
+        // A sync it can't merge into (an older recipe) would lose every line
+        // this listen didn't hear.
+        finish_sync_state(
+            &rec.key,
+            "waiting",
+            "This listen didn’t play the whole song. A full listen learns its timing.",
+        );
+        return;
+    }
     let saved_listens = saved.as_ref().map(|f| f.listens.max(1));
-    let (words, listens) = match saved {
-        Some(saved) => {
-            let Combined {
-                words: merged,
-                improved,
-                offset,
-            } = combine_listens(&saved.words, &words);
-            let listen = saved.listens.max(1).saturating_add(1);
-            match offset {
-                Some((by, n)) => log::info!(
-                    "karaoke: listen {listen} of {} improved {improved} lines; it sat {by:+}ms from the saved sync ({n} sure words)",
-                    rec.title
-                ),
-                None => log::info!(
-                    "karaoke: listen {listen} of {} improved {improved} lines; too few sure words in common to line the listens up",
-                    rec.title
-                ),
-            }
-            (
-                merged,
-                if improved == 0 {
-                    listen.max(MAX_LISTENS)
-                } else {
-                    listen
-                },
-            )
-        }
-        None => (words, 1),
+    let Folded {
+        words,
+        listens,
+        unheard,
+        merged,
+    } = fold_listen(saved.as_ref(), words, partial, &cut);
+    let kind = match saved_listens {
+        _ if partial => "partial listen".to_string(),
+        Some(before) => format!("listen {}", before + 1),
+        None => "listen 1".to_string(),
     };
-    if let Err(e) = write_listens(karaoke_dir, &rec.key, &synced, &words, listens)
+    match merged {
+        Some((improved, Some((by, n)))) => log::info!(
+            "karaoke: {kind} of {} improved {improved} lines; it sat {by:+}ms from the saved sync ({n} sure words); {} lines unheard",
+            rec.title,
+            unheard.len()
+        ),
+        Some((improved, None)) => log::info!(
+            "karaoke: {kind} of {} improved {improved} lines; too few sure words in common to line the listens up; {} lines unheard",
+            rec.title,
+            unheard.len()
+        ),
+        None if partial => log::info!(
+            "karaoke: partial listen of {} saved {} of {} lines; {} lines unheard",
+            rec.title,
+            heard.len(),
+            lines.len(),
+            unheard.len()
+        ),
+        None => {}
+    }
+    if let Err(e) = write_listens(karaoke_dir, &rec.key, &synced, &words, listens, &unheard)
         .map_err(|e| e.to_string())
         .and_then(|()| crate::sync_library::complete_locked(root, &rec.key))
     {
@@ -1814,7 +2151,16 @@ fn commit_recording(
         listens,
         karaoke_dir == root.join(KARAOKE_DIR),
     );
-    sync_state(&rec.key, "saved", "Word sync saved on this device.");
+    declined().take();
+    sync_state(
+        &rec.key,
+        "saved",
+        if missing_lines(&unheard) {
+            "Saved the lines this listen heard. The rest learn on a later listen."
+        } else {
+            "Word sync saved on this device."
+        },
+    );
     publish(KaraokeReady {
         artist: rec.artist,
         title: rec.title,
@@ -2644,7 +2990,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let source = "[00:01.00]one";
         let words = [checked(1_000, 900, 0.9)];
-        write_listens(&dir, "a", source, &words, 2).unwrap();
+        write_listens(&dir, "a", source, &words, 2, &[]).unwrap();
         let raw = std::fs::read_to_string(dir.join("a.json")).unwrap();
         let file: StoreFile = serde_json::from_str(&raw).unwrap();
         assert_eq!(file.listens, 2);
@@ -2653,6 +2999,182 @@ mod tests {
         let file: StoreFile = serde_json::from_value(old).unwrap();
         assert_eq!(file.listens, 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sync_with_unheard_lines_keeps_learning() {
+        let dir =
+            std::env::temp_dir().join(format!("pulse-karaoke-unheard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let source = "[00:01.00]one\n[00:20.00]two";
+        let words = [checked(1_000, 900, 0.95)];
+        let path = dir.join("a.json");
+        // A partial listen's: line two unheard.
+        write_listens(&dir, "a", source, &words, 1, &[20_000]).unwrap();
+        let file = read_store(&path, Some(source), false).unwrap();
+        assert_eq!(file.unheard, [20_000]);
+        assert!(!settled(&path, &file));
+        // A line in the first second no play may ever reach doesn't count.
+        write_listens(&dir, "a", source, &words, 1, &[1_000]).unwrap();
+        let file = read_store(&path, Some(source), false).unwrap();
+        assert!(settled(&path, &file));
+        // A whole listen's file leaves the field out, and files saved
+        // before it read as complete.
+        write_listens(&dir, "a", source, &words, 1, &[]).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("unheard"));
+        assert!(read_store(&path, Some(source), false)
+            .unwrap()
+            .unheard
+            .is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn store(words: Vec<Word>, listens: u32, unheard: Vec<i64>) -> StoreFile {
+        StoreFile {
+            v: STORE_V,
+            recipe: String::new(),
+            synced: None,
+            words,
+            detail_v: 0,
+            listens,
+            unheard,
+        }
+    }
+
+    #[test]
+    fn a_partial_listen_adds_lines_without_spending_listens() {
+        let cut = acoustic::EdgeCut {
+            start: vec![1_000],
+            end: vec![30_000, 40_000],
+        };
+        // First listen of the song, partial: it starts the sync with what
+        // it heard, and the lines it missed wait.
+        let first = fold_listen(None, vec![checked(20_000, 20_100, 0.4)], true, &cut);
+        assert_eq!(
+            (first.listens, first.unheard.clone()),
+            (1, vec![1_000, 30_000, 40_000])
+        );
+        assert!(first.merged.is_none());
+        // A later partial listen hears line 30 but not 40 (and not 10,
+        // stamped too early): an unsure saved line it is surer of, and the
+        // new line, both come in; the listen count stays.
+        let saved = store(first.words, 1, first.unheard);
+        let cut = acoustic::EdgeCut {
+            start: vec![1_000, 10_000],
+            end: vec![40_000],
+        };
+        let new = vec![checked(20_000, 20_300, 0.95), checked(30_000, 30_100, 0.9)];
+        let second = fold_listen(Some(&saved), new, true, &cut);
+        assert_eq!(second.listens, 1);
+        assert_eq!(second.unheard, [1_000, 40_000]);
+        assert_eq!(second.merged.map(|m| m.0), Some(2));
+        assert_eq!(
+            second.words.iter().map(|w| w.t).collect::<Vec<_>>(),
+            [20_300, 30_100]
+        );
+        // A partial listen that improves nothing doesn't end the extra
+        // listens for lines it never heard.
+        let saved = store(second.words, 1, second.unheard);
+        let nothing = fold_listen(Some(&saved), Vec::new(), true, &cut);
+        assert_eq!((nothing.listens, nothing.merged.map(|m| m.0)), (1, Some(0)));
+        // A whole listen reaches the song's end: only a line sung before it
+        // started can stay unheard, and it counts as a listen.
+        let whole_cut = acoustic::EdgeCut {
+            start: vec![1_000],
+            end: vec![40_000],
+        };
+        let whole = fold_listen(
+            Some(&saved),
+            vec![checked(40_000, 40_100, 0.3)],
+            false,
+            &whole_cut,
+        );
+        assert_eq!(whole.unheard, [1_000]);
+        assert_eq!(whole.listens, 2);
+        // Nothing improved by a whole listen ends the extra listens, as before.
+        let saved = store(whole.words, 2, whole.unheard);
+        let again = fold_listen(Some(&saved), Vec::new(), false, &whole_cut);
+        assert_eq!(again.listens, MAX_LISTENS);
+    }
+
+    #[test]
+    fn a_seek_or_pause_keeps_the_audio_before_the_last_agreeing_pair() {
+        let mut rec = rec_with(vec![(16_000, 1_000), (96_000, 6_000)], 180_000);
+        rec.samples = vec![0.1; 160_000];
+        rec.stereo = Some(vec![1; 480_000 * 2]);
+        rec.seek_strikes = 1;
+        rec.cut_at_last_anchor();
+        assert_eq!(rec.samples.len(), 96_000);
+        // 48 kHz stereo frames for 6s.
+        assert_eq!(rec.stereo.as_ref().map(Vec::len), Some(288_000 * 2));
+        assert_eq!(rec.seek_strikes, 0);
+        // With no pair to trust, nothing is kept.
+        let mut bare = rec_with(Vec::new(), 180_000);
+        bare.samples = vec![0.1; 16_000];
+        bare.cut_at_last_anchor();
+        assert!(bare.samples.is_empty());
+    }
+
+    #[test]
+    fn only_a_listen_from_the_top_to_the_end_is_whole() {
+        let mut rec = rec_with(Vec::new(), 180_000);
+        rec.samples = vec![0.0; 180 * 16_000];
+        let map = TimeMap::from_origin(rec.origin_ms, TARGET_HZ);
+        assert!(whole_listen(&rec, &map));
+        // Started late.
+        rec.origin_ms = ARM_NEAR_START_MS;
+        let late = TimeMap::from_origin(rec.origin_ms, TARGET_HZ);
+        assert!(!whole_listen(&rec, &late));
+        // Skipped (or cut) before the end.
+        rec.origin_ms = 0;
+        rec.samples.truncate(170 * 16_000);
+        assert!(!whole_listen(&rec, &map));
+    }
+
+    #[test]
+    fn a_partial_listen_needs_enough_lines_to_judge() {
+        // A line every 4s from 0:10, four words each.
+        let lrc: String = (0..30)
+            .map(|i| {
+                format!(
+                    "[{:02}:{:02}.00]one two three four\n",
+                    (10 + i * 4) / 60,
+                    (10 + i * 4) % 60
+                )
+            })
+            .collect();
+        let lines = align::parse_lrc(&lrc);
+        assert_eq!(judgeable_lines(&lines, 0, 180_000, 180_000), 30);
+        // From 1:00 to 1:30: lines 1:02 to 1:22 end inside it (the next
+        // stamp plus the margin), the 1:26 line runs past it.
+        assert_eq!(judgeable_lines(&lines, 60_000, 90_000, 180_000), 6);
+        // Short lines don't count: collapse needs three words to judge.
+        let short = align::parse_lrc("[00:10.00]oh oh\n[00:14.00]yeah\n");
+        assert_eq!(judgeable_lines(&short, 0, 180_000, 180_000), 0);
+    }
+
+    #[test]
+    fn a_short_partial_listen_cannot_prove_it_heard_vocals() {
+        let line = |t: i64, ms_per_word: i64| -> Vec<Word> {
+            (0..4)
+                .map(|i| Word {
+                    t: t + i * ms_per_word,
+                    end: Some(t + (i + 1) * ms_per_word),
+                    text: "word".into(),
+                    line_t: Some(t),
+                    ..Default::default()
+                })
+                .collect()
+        };
+        let few: Vec<Word> = (0..COLLAPSE_MIN_LINES as i64 - 1)
+            .flat_map(|i| line(i * 5_000, 300))
+            .collect();
+        assert!(!collapse_judged(&few));
+        let enough: Vec<Word> = (0..COLLAPSE_MIN_LINES as i64)
+            .flat_map(|i| line(i * 5_000, 300))
+            .collect();
+        assert!(collapse_judged(&enough) && !collapsed(&enough));
     }
 
     #[test]

@@ -40,8 +40,9 @@ would show as hundreds), so this closes a hole rather than fixing a known
 bad sync. `karaoke::seek_band`: once a recording has four pairs and its fit
 is within 50 ms rms with nothing dropped, the band is 500 ms. Spotify
 always qualifies; the worst single pair in five dumps sat 41 ms off.
-Otherwise the band stays 2.5 s. The two-strike rule and what a seek does
-(drop the recording, learn on the next play) are unchanged.
+Otherwise the band stays 2.5 s. The two-strike rule is unchanged. What a seek does
+changed in `2026-11-10-karaoke-partial-listens.md`: the audio before it is
+kept as a partial listen.
 
 ## A merge margin smaller than rounding (M7)
 
@@ -62,8 +63,8 @@ lost to doing nothing on the benchmark, and moving the whole song won.
 
 - H2 (a line stamped before the recording starts is decoded on clipped
   audio): real. 90% of recordings start within 0.5 s of the song's start,
-  so it needs a first line stamped earlier than that. It belongs with the
-  partial-listens edge rule.
+  so it needs a first line stamped earlier than that. Fixed with the
+  partial-listens edge rule (`2026-11-10-karaoke-partial-listens.md`).
 - Offset plus slope when lining listens up: the fits above are tight enough
   that drift between two listens is a few milliseconds. A constant offset
   stays.

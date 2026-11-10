@@ -761,6 +761,62 @@ pub struct AcousticAligner {
     /// while `replay`, the saved ones it decodes instead of the model's.
     take: Option<Take>,
     replay: bool,
+    /// Only lines whose whole window was recorded are decoded, at the end
+    /// of the recording as well as its start (`EdgeCut`): a partial listen,
+    /// which stopped or was cut before the song's end.
+    whole_windows: bool,
+    /// Stamps of the lines the last align left for lack of audio, at the
+    /// recording's start and at its end.
+    cut: EdgeCut,
+    /// The last `first_pass`'s cut lines, by index.
+    cut_lines: Vec<(usize, Edge)>,
+}
+
+/// Lines an align left because the recording didn't hold them whole, by the
+/// stamps the lyrics carry.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EdgeCut {
+    /// Sung before the recording began, or too close to its first sample
+    /// to find the line's start (`START_SLACK_MS`).
+    pub start: Vec<i64>,
+    /// Past the recording's end, or, for a partial listen, still sounding
+    /// when it ended.
+    pub end: Vec<i64>,
+}
+
+/// A line is decoded only if the recording began at least this long before
+/// its stamp. The window reaches 500ms before the stamp; losing some of
+/// that is harmless, but a recording that starts at the stamp (a listen
+/// armed at 0:05 for a line stamped 0:04) would squeeze the whole line into
+/// whatever is left of it. Plays from the top start recording 8 to 834ms
+/// in (95% of 392 on Thien's PC, 2026-11-10), so lines stamped from about
+/// a second on are heard on such a play.
+const START_SLACK_MS: f64 = 250.0;
+
+/// Why a line's window can't be decoded on this recording, if it can't.
+fn edge_cut(
+    pcm_len: usize,
+    map: &TimeMap,
+    line_t: i64,
+    next_t: i64,
+    margin_ms: f64,
+    whole: bool,
+) -> Option<Edge> {
+    let audio_end = map.intercept_ms + pcm_len as f64 * map.slope_ms;
+    if line_t as f64 >= audio_end {
+        return Some(Edge::End);
+    }
+    if map.intercept_ms > line_t as f64 - START_SLACK_MS {
+        return Some(Edge::Start);
+    }
+    let end = (next_t as f64 + margin_ms).min(line_t as f64 + 20_000.0);
+    (whole && end > audio_end).then_some(Edge::End)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Edge {
+    Start,
+    End,
 }
 
 /// A window the saved take doesn't hold (`AcousticAligner::redecode`).
@@ -825,7 +881,21 @@ impl AcousticAligner {
             japanese: None,
             take: None,
             replay: false,
+            whole_windows: false,
+            cut: EdgeCut::default(),
+            cut_lines: Vec::new(),
         }
+    }
+
+    /// Decode only lines the recording holds whole at both ends, for a
+    /// partial listen (`EdgeCut`). Stays set until changed; a take records it.
+    pub fn set_whole_windows(&mut self, whole: bool) {
+        self.whole_windows = whole;
+    }
+
+    /// The lines the last align left at the recording's edges.
+    pub fn take_cut(&mut self) -> EdgeCut {
+        std::mem::take(&mut self.cut)
     }
 
     /// The decoder alone, for `redecode`: no model or runtime loads, so it
@@ -839,7 +909,9 @@ impl AcousticAligner {
     /// `finish_take`. `pcm_len` and `map` are that align's.
     pub fn record_take(&mut self, pcm_len: usize, map: &TimeMap) {
         self.replay = false;
-        self.take = Some(Take::new(pcm_len, map.clone()));
+        let mut take = Take::new(pcm_len, map.clone());
+        take.whole_windows = self.whole_windows;
+        self.take = Some(take);
     }
 
     /// What the align since `record_take` decoded.
@@ -858,6 +930,7 @@ impl AcousticAligner {
         // emissions come from the take. calloc'd, so this costs no memory.
         let pcm = vec![0i16; take.samples];
         let map = take.map.clone();
+        let whole = std::mem::replace(&mut self.whole_windows, take.whole_windows);
         self.take = Some(take);
         self.replay = true;
         let mut ear = SavedEar;
@@ -873,6 +946,8 @@ impl AcousticAligner {
         );
         self.take = None;
         self.replay = false;
+        self.whole_windows = whole;
+        self.cut = EdgeCut::default();
         words
     }
 
@@ -1049,6 +1124,7 @@ impl AcousticAligner {
     ) -> Result<Vec<LineWork>> {
         let to_time = |sample: f64| (map.intercept_ms + sample * map.slope_ms).round() as i64;
         let mut work: Vec<LineWork> = Vec::new();
+        let mut cut: Vec<(usize, Edge)> = Vec::new();
         let numerals = Numerals::for_song(lines.iter().map(|l| l.text.as_str()));
         for (li, line) in lines.iter().enumerate() {
             let tokens = tokenize(&line.text);
@@ -1072,11 +1148,20 @@ impl AcousticAligner {
                     sung_syllables(&tokens, &self.romanizer, &spelled),
                 )
             };
-            let Some(window) = recorded_window_margin(pcm.len(), map, line.t, capped, margin_ms)
-            else {
-                // A partial listen can end before later lyric rows. Keep the
-                // captured prefix for diagnostics; cache_complete in the
-                // worker still rejects an incomplete song for persistence.
+            // A line the recording doesn't hold whole is left to a listen
+            // that does: decoded on part of its audio, its words would be
+            // squeezed into what is left.
+            let edge = edge_cut(
+                pcm.len(),
+                map,
+                line.t,
+                capped,
+                margin_ms,
+                self.whole_windows,
+            );
+            let window = recorded_window_margin(pcm.len(), map, line.t, capped, margin_ms);
+            let (None, Some(window)) = (edge, window) else {
+                cut.push((li, edge.unwrap_or(Edge::End)));
                 continue;
             };
             let la_entry = entries && entry_timing::repeated_la(&tokens);
@@ -1140,6 +1225,7 @@ impl AcousticAligner {
                 reheard: false,
             });
         }
+        self.cut_lines = cut;
         Ok(work)
     }
 
@@ -1194,6 +1280,14 @@ impl AcousticAligner {
             lines = &moved;
             work = self.first_pass(pcm, lines, map, margin_ms, entries, knobs, want)?;
         }
+        let mut cut = EdgeCut::default();
+        for (li, edge) in std::mem::take(&mut self.cut_lines) {
+            match edge {
+                Edge::Start => cut.start.push(original[li].t),
+                Edge::End => cut.end.push(original[li].t),
+            }
+        }
+        self.cut = cut;
         if let Some(ear) = ear {
             self.second_look(lines, map, knobs, &mut work, ear, want);
         }
@@ -2121,6 +2215,43 @@ mod tests {
         assert!(recorded_window(count, &map, 160_000, 165_000).is_none());
         let last = recorded_window(count, &map, 122_000, 125_000).unwrap();
         assert_eq!(last.end, count);
+    }
+    #[test]
+    fn a_line_the_recording_did_not_hold_whole_is_left() {
+        // Armed at 0:05 on a 60s recording.
+        let map = TimeMap::from_origin(5_000, 16_000);
+        let len = 60 * 16_000;
+        // Stamped before the recording began, or too close after it to find
+        // where the line starts.
+        assert_eq!(
+            edge_cut(len, &map, 4_000, 8_000, 500.0, false),
+            Some(Edge::Start)
+        );
+        assert_eq!(
+            edge_cut(len, &map, 5_200, 8_000, 500.0, false),
+            Some(Edge::Start)
+        );
+        assert_eq!(edge_cut(len, &map, 5_250, 8_000, 500.0, false), None);
+        // Past the recording's end, whole listen or not.
+        assert_eq!(
+            edge_cut(len, &map, 65_000, 70_000, 500.0, false),
+            Some(Edge::End)
+        );
+        // Still sounding when the recording ended: decoded on a whole
+        // listen (that is the song's end), left on a partial one.
+        assert_eq!(edge_cut(len, &map, 62_000, 66_000, 500.0, false), None);
+        assert_eq!(
+            edge_cut(len, &map, 62_000, 66_000, 500.0, true),
+            Some(Edge::End)
+        );
+        // The window must end inside, margin included...
+        assert_eq!(edge_cut(len, &map, 60_000, 64_500, 500.0, true), None);
+        assert_eq!(
+            edge_cut(len, &map, 60_000, 64_600, 500.0, true),
+            Some(Edge::End)
+        );
+        // ...but never reaches further than 20s past the stamp.
+        assert_eq!(edge_cut(len, &map, 40_000, 90_000, 500.0, true), None);
     }
     #[test]
     fn wide_probe_long_gap_respects_input_bound() {

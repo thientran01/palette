@@ -1,7 +1,7 @@
 //! One bounded acoustic worker, with an idle-expiring model. Requests already
 //! run behind karaoke's ALIGNING guard; no inference touches the media thread.
 use crate::{
-    acoustic::{AcousticAligner, Knobs},
+    acoustic::{AcousticAligner, EdgeCut, Knobs},
     align::{TimeMap, TimedLine, Word},
     separation::{Stereo, VocalEar, VocalSeparator},
     takes::Take,
@@ -30,6 +30,8 @@ struct Request {
     stereo: Option<Stereo>,
     lines: Vec<TimedLine>,
     map: TimeMap,
+    /// A partial listen: decode only lines it holds whole.
+    whole_windows: bool,
     dir: PathBuf,
     reply: mpsc::SyncSender<Result<Aligned>>,
 }
@@ -40,6 +42,8 @@ struct Request {
 pub struct Aligned {
     pub words: Vec<Word>,
     pub take: Option<Take>,
+    /// Lines left because the recording didn't hold them whole.
+    pub cut: EdgeCut,
 }
 struct Connection<T> {
     generation: u64,
@@ -79,6 +83,7 @@ pub fn align(
     stereo: Option<Stereo>,
     lines: Vec<TimedLine>,
     map: TimeMap,
+    whole_windows: bool,
     dir: PathBuf,
 ) -> Result<Aligned> {
     let (generation, sender) = connection().connect(|| {
@@ -96,6 +101,7 @@ pub fn align(
             stereo,
             lines,
             map,
+            whole_windows,
             dir,
             reply,
         })
@@ -216,6 +222,7 @@ fn run(rx: mpsc::Receiver<Request>) {
                     Some(aligning + EAR_DEADLINE),
                 )
             });
+            model.set_whole_windows(request.whole_windows);
             if vocals.is_none() {
                 model.record_take(request.pcm.len(), &request.map);
             }
@@ -234,6 +241,7 @@ fn run(rx: mpsc::Receiver<Request>) {
                 model.align(&request.pcm, &request.lines, &request.map)
             };
             let take = model.finish_take();
+            let cut = model.take_cut();
             let aligned = aligning.elapsed();
             let (heard, passes) = ear.as_ref().map_or((0, 0), |e| (e.heard, e.passes));
             // The singer's voice on held notes, with the same separator.
@@ -272,7 +280,7 @@ fn run(rx: mpsc::Receiver<Request>) {
                 },
                 take.as_ref().map_or(0, |t| t.bytes() / 1024),
             );
-            result.map(|words| Aligned { words, take })
+            result.map(|words| Aligned { words, take, cut })
         }))
         .unwrap_or_else(|_| Err("acoustic worker panicked".into()));
         // Never reuse a failed or possibly poisoned runtime session.
@@ -356,12 +364,19 @@ fn local_worker_preserves_cold_and_warm_results() {
         serde_json::from_slice(&std::fs::read(baseline).unwrap()).unwrap();
     let expected: Vec<Word> = serde_json::from_value(expected["words"].clone()).unwrap();
     let start = Instant::now();
-    let first = align(pcm.clone(), None, lines.clone(), map.clone(), dir.clone())
-        .unwrap()
-        .words;
+    let first = align(
+        pcm.clone(),
+        None,
+        lines.clone(),
+        map.clone(),
+        false,
+        dir.clone(),
+    )
+    .unwrap()
+    .words;
     let cold = start.elapsed();
     let start = Instant::now();
-    let second = align(pcm, None, lines, map, dir).unwrap().words;
+    let second = align(pcm, None, lines, map, false, dir).unwrap().words;
     assert_eq!(first.len(), expected.len());
     for (i, (a, b)) in first.iter().zip(&expected).enumerate() {
         assert_eq!(
