@@ -1,6 +1,7 @@
 //! Local MMS_FA acoustic alignment. No labels, network, or UI clock access.
 //! The caller supplies a 16 kHz recording and its capture-to-song time map.
 use crate::align::{tokenize, TimeMap, TimedLine, Word, WordPoint};
+use crate::takes::{Ear, Take};
 use ort::{session::Session, value::Tensor};
 use sha2::{Digest, Sha256};
 use std::{
@@ -32,19 +33,29 @@ use spoken::Numerals;
 /// 2: Knobs::MIX's tuned decoder (2026-10-31). 3: the review and its
 /// second ear (2026-11-08). 4: Japanese lines spelled as sung (`japanese`:
 /// kanji readings from naist-jdic when it is installed, っ, small kana and
-/// particles), 2026-11-08. Bumping it relearns every saved sync on the
-/// song's next full listen.
+/// particles), 2026-11-08. Bumping it re-decodes every saved sync that
+/// kept its takes (karaoke/redecode.rs) in the background, when EMISSIONS
+/// is unchanged and the new decoder looks at the same windows; the rest
+/// relearn on the song's next full listen. Add the old value to
+/// EARLIER_RECIPES.
 ///
-/// Korean lines spelled as sung (`korean`, 2026-11-10) kept /4 on purpose:
-/// a bump would throw away every song's merged listens in every language
-/// for a change that only touches Korean. Korean syncs with doubted lines
-/// still get their extra listens, which use the new spelling and merge in
-/// line by line where they're surer.
+/// Korean lines spelled as sung (`korean`, 2026-11-10) kept /4: takes only
+/// exist for listens since they were added that day, so a bump now would
+/// still send nearly every saved sync, in every language, back to
+/// relearning from one listen. Korean syncs with doubted lines get their
+/// extra listens with the new spelling, merged line by line. The spelling
+/// keeps every line's window, so a later bump re-decodes Korean takes too.
 pub const RECIPE: &str = "mms-int8/4";
 /// Recipes RECIPE replaced. Words saved under them keep showing, and are
 /// never deleted on mismatch, until the next full listen relearns the song.
 pub const EARLIER_RECIPES: [&str; 3] = ["mms-int8/1", "mms-int8/2", "mms-int8/3"];
 pub const MODEL_SHA256: &str = "50128ba8db1150101b9e7d3610cdfda5c8fd2637b918d151ff6aa6fde2b9c2de";
+/// What a saved take's emissions (takes.rs) came from: this model and
+/// separator on 16 kHz input scaled by 1/32768. RECIPE pins the decoder;
+/// this pins only the model's input and weights, so a decoder change can
+/// re-decode saved takes and a change here cannot. Bump it with either
+/// model, the input scaling, or the separator's settings.
+pub const EMISSIONS: &str = "mms-int8+kim2/1";
 pub const RUNTIME_SHA256: &str = "c7151fd9844ad7c7d18525f1177e9ef62d91e4a6ac3583d0be700554a2b2b1d6";
 static ASSETS: OnceLock<Option<PathBuf>> = OnceLock::new();
 
@@ -730,13 +741,21 @@ struct LineWork {
 }
 
 pub struct AcousticAligner {
-    session: Session,
+    /// None for a decoder that only re-decodes saved takes.
+    session: Option<Session>,
     romanizer: uroman::Uroman,
     emissions: Option<EmissionCache>,
     /// naist-jdic beside the model, until the first Japanese song loads it.
     japanese_dir: Option<PathBuf>,
     japanese: Option<japanese::Reader>,
+    /// Every window's emissions this align decoded (`record_take`), or,
+    /// while `replay`, the saved ones it decodes instead of the model's.
+    take: Option<Take>,
+    replay: bool,
 }
+
+/// A window the saved take doesn't hold (`AcousticAligner::redecode`).
+const NOT_SAVED: &str = "window not in the saved take";
 
 impl AcousticAligner {
     /// Runtime must be an explicitly provisioned ONNX Runtime 1.22 DLL.
@@ -783,16 +802,69 @@ impl AcousticAligner {
             .map_err(|e| e.to_string())?
             .commit_from_file(model)
             .map_err(|e| e.to_string())?;
-        Ok(Self {
+        Ok(Self::with_session(Some(session), model.parent()))
+    }
+
+    fn with_session(session: Option<Session>, model_dir: Option<&Path>) -> Self {
+        Self {
             session,
             romanizer: uroman::Uroman::new(),
             emissions: None,
-            japanese_dir: model
-                .parent()
+            japanese_dir: model_dir
                 .map(|dir| dir.join(japanese::DICTIONARY_DIR))
                 .filter(|dir| dir.is_dir()),
             japanese: None,
-        })
+            take: None,
+            replay: false,
+        }
+    }
+
+    /// The decoder alone, for `redecode`: no model or runtime loads, so it
+    /// costs no memory beyond the Japanese dictionary when a song needs it.
+    /// `model_dir` is where that dictionary sits (the karaoke-model folder).
+    pub fn decoder_only(model_dir: &Path) -> Self {
+        Self::with_session(None, Some(model_dir))
+    }
+
+    /// Keep every window's emissions the next align decodes, for
+    /// `finish_take`. `pcm_len` and `map` are that align's.
+    pub fn record_take(&mut self, pcm_len: usize, map: &TimeMap) {
+        self.replay = false;
+        self.take = Some(Take::new(pcm_len, map.clone()));
+    }
+
+    /// What the align since `record_take` decoded.
+    pub fn finish_take(&mut self) -> Option<Take> {
+        self.take.take().filter(|_| !self.replay)
+    }
+
+    /// The listen `take` holds, decoded again by today's decoder: the same
+    /// path as `align_reviewed`, or `align` when the take has no vocals,
+    /// with the saved emissions in place of the model's. A doubted line
+    /// whose vocals weren't saved keeps the mix's decode, as if the second
+    /// ear ran out of time. Fails when a mix window is missing (the decoder
+    /// moved a window), so the song relearns by listening instead.
+    pub fn redecode(&mut self, take: Take, lines: &[TimedLine]) -> Result<Vec<Word>> {
+        // Zeros only stand in for the recording's length: every window's
+        // emissions come from the take. calloc'd, so this costs no memory.
+        let pcm = vec![0i16; take.samples];
+        let map = take.map.clone();
+        self.take = Some(take);
+        self.replay = true;
+        let mut ear = SavedEar;
+        let words = self.align_inner(
+            &pcm,
+            lines,
+            &map,
+            500.0,
+            None,
+            EntryMode::None,
+            Knobs::MIX,
+            Some(&mut ear),
+        );
+        self.take = None;
+        self.replay = false;
+        words
     }
 
     /// Letters for a Japanese line's tokens (`japanese::spell`), reading
@@ -1049,6 +1121,7 @@ impl AcousticAligner {
             let decode = self.decode_line(
                 &pcm[begin..end],
                 begin,
+                Ear::Mix,
                 &plan,
                 line,
                 guide_next,
@@ -1203,6 +1276,7 @@ impl AcousticAligner {
                 let heard = self.decode_line(
                     window,
                     w.begin,
+                    Ear::Vocals,
                     &w.plan,
                     line,
                     w.guide_next,
@@ -1212,6 +1286,9 @@ impl AcousticAligner {
                 );
                 let mut candidates = match heard {
                     Ok(vocal) => vec![vocal],
+                    // The listen being re-decoded never heard this line
+                    // again: it keeps the mix's decode.
+                    Err(e) if e == NOT_SAVED => continue,
                     Err(e) => {
                         log::warn!("karaoke: second ear skipped a line ({e})");
                         continue;
@@ -1264,6 +1341,7 @@ impl AcousticAligner {
         &mut self,
         window: &[i16],
         begin: usize,
+        ear: Ear,
         plan: &TokenPlan,
         line: &TimedLine,
         guide_next: Option<i64>,
@@ -1271,7 +1349,7 @@ impl AcousticAligner {
         knobs: Knobs,
         diagnostics: bool,
     ) -> Result<LineDecode> {
-        let logp = self.emissions_for(window)?;
+        let logp = self.emissions_for(window, begin, ear)?;
         decode_emissions(
             logp,
             window.len(),
@@ -1285,20 +1363,40 @@ impl AcousticAligner {
         )
     }
 
-    /// Model log-probabilities for one window, through the offline cache
-    /// when one is installed.
-    fn emissions_for(&mut self, input: &[i16]) -> Result<Vec<f32>> {
+    /// Model log-probabilities for one window (`ear`'s audio from recording
+    /// sample `begin`): from the saved take while re-decoding, else through
+    /// the offline cache when one is installed, else the model. Recorded
+    /// into the take when one is being kept.
+    fn emissions_for(&mut self, input: &[i16], begin: usize, ear: Ear) -> Result<Vec<f32>> {
+        if self.replay {
+            return self
+                .take
+                .as_ref()
+                .and_then(|take| take.emissions(ear, begin, input.len()))
+                .ok_or_else(|| NOT_SAVED.to_string());
+        }
+        let logp = self.model_emissions(input)?;
+        if let Some(take) = self.take.as_mut() {
+            take.record(ear, begin, input.len(), &logp);
+        }
+        Ok(logp)
+    }
+
+    fn model_emissions(&mut self, input: &[i16]) -> Result<Vec<f32>> {
         let key = self.emissions.as_ref().map(|_| fingerprint(input));
         if let (Some(cache), Some(key)) = (&self.emissions, key) {
             if let Some(hit) = cache.get(&key) {
                 return Ok(hit.clone());
             }
         }
+        let session = self
+            .session
+            .as_mut()
+            .ok_or("no acoustic model loaded (decoder only)")?;
         let samples: Vec<f32> = input.iter().map(|&s| s as f32 / 32768.0).collect();
         let tensor =
             Tensor::from_array(([1usize, samples.len()], samples)).map_err(|e| e.to_string())?;
-        let output = self
-            .session
+        let output = session
             .run(ort::inputs!["waveform" => tensor])
             .map_err(|e| e.to_string())?;
         let (shape, logp) = output
@@ -1315,6 +1413,21 @@ impl AcousticAligner {
             cache.insert(key, logp.clone());
         }
         Ok(logp)
+    }
+}
+
+/// The second ear while re-decoding a saved take: its "vocals" are never
+/// read, since every window's emissions come from the take (or are missing
+/// from it, `NOT_SAVED`).
+struct SavedEar;
+
+impl SecondEar for SavedEar {
+    fn hear(&mut self, range: Range<usize>) -> Result<Vec<i16>> {
+        Ok(vec![0; range.len()])
+    }
+
+    fn passes(&self, _: Range<usize>) -> usize {
+        0
     }
 }
 
@@ -2372,5 +2485,113 @@ mod digit_tests {
         // English in a K-pop line keeps its own spelling; 11 is still said.
         assert_eq!(said("Baby 같이"), ["baby", "ga", "ci"]);
         assert_eq!(said("11년째"), ["sibil", "nyeon", "jjae"]);
+    }
+}
+
+#[cfg(test)]
+mod take_tests {
+    use super::*;
+
+    const HZ: usize = 16_000;
+
+    /// Log-probabilities for `frames` frames: blank everywhere except each
+    /// (letter, from, to) run, each frame 99% sure of its class.
+    fn rows(frames: usize, marks: &[(u8, usize, usize)]) -> Vec<f32> {
+        let sure = 0.99f32.ln();
+        let rest = (0.01f32 / (CLASSES - 1) as f32).ln();
+        let mut out = Vec::with_capacity(frames * CLASSES);
+        for t in 0..frames {
+            let class = marks
+                .iter()
+                .find(|&&(_, a, b)| (a..b).contains(&t))
+                .map_or(0, |&(c, _, _)| LABELS.iter().position(|&l| l == c).unwrap());
+            out.extend((0..CLASSES).map(|k| if k == class { sure } else { rest }));
+        }
+        out
+    }
+
+    fn song() -> (Vec<TimedLine>, TimeMap, usize) {
+        let lines = vec![
+            TimedLine {
+                t: 1_000,
+                text: "go now".into(),
+            },
+            TimedLine {
+                t: 4_000,
+                text: "stop".into(),
+            },
+        ];
+        (lines, TimeMap::from_origin(0, HZ as u32), 6 * HZ)
+    }
+
+    /// What the live align would have kept: each line's window (500 ms
+    /// either side of its stamps), one 20 ms frame per 320 samples.
+    fn take(skip_second: bool, shift_second: usize) -> Take {
+        let (_, map, len) = song();
+        let first = recorded_window(len, &map, 1_000, 4_000).unwrap();
+        let second = recorded_window(len, &map, 4_000, 6_000).unwrap();
+        assert_eq!(
+            (first.clone(), second.clone()),
+            (8_000..72_000, 56_000..96_000)
+        );
+        let mut take = Take::new(len, map);
+        let go_now = [
+            (b'g', 40, 42),
+            (b'o', 42, 46),
+            (b'n', 60, 62),
+            (b'o', 62, 66),
+            (b'w', 66, 69),
+        ];
+        take.record(
+            Ear::Mix,
+            first.start,
+            first.len(),
+            &rows(first.len() / 320, &go_now),
+        );
+        if !skip_second {
+            let stop = [
+                (b's', 20, 22),
+                (b't', 22, 24),
+                (b'o', 24, 28),
+                (b'p', 28, 30),
+            ];
+            take.record(
+                Ear::Mix,
+                second.start + shift_second,
+                second.len() - shift_second,
+                &rows(second.len() / 320, &stop),
+            );
+        }
+        take
+    }
+
+    #[test]
+    fn a_saved_take_decodes_without_the_model() {
+        let (lines, _, _) = song();
+        let mut decoder = AcousticAligner::decoder_only(Path::new("no-such-dir"));
+        let words = decoder.redecode(take(false, 0), &lines).unwrap();
+        let onsets: Vec<(&str, i64)> = words.iter().map(|w| (w.text.trim(), w.t)).collect();
+        // Frame f of a window from sample b is at (b + 320 f) / 16 ms.
+        assert_eq!(onsets, [("go", 1_300), ("now", 1_700), ("stop", 3_900)]);
+        assert!(words.iter().all(|w| w.support.is_some_and(|p| p > 0.9)));
+        assert!(words.iter().all(|w| !w.reheard));
+        // Decoding saved emissions is not a listen: nothing to keep.
+        assert!(decoder.finish_take().is_none());
+        // And with no model, nothing but a take can be decoded.
+        let (lines, map, len) = song();
+        assert!(decoder.align(&vec![0; len], &lines, &map).is_err());
+    }
+
+    #[test]
+    fn a_window_the_take_lacks_fails_the_redecode() {
+        let (lines, _, _) = song();
+        let mut decoder = AcousticAligner::decoder_only(Path::new("no-such-dir"));
+        let missing = decoder.redecode(take(true, 0), &lines).unwrap_err();
+        assert_eq!(missing, NOT_SAVED);
+        // A window that starts one sample elsewhere is a different window.
+        let moved = decoder.redecode(take(false, 1), &lines).unwrap_err();
+        assert_eq!(moved, NOT_SAVED);
+        // The decoder recovers for the next song.
+        assert!(decoder.redecode(take(false, 0), &lines).is_ok());
     }
 }

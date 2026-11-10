@@ -551,6 +551,7 @@ fn capture_loop(
                             &mono,
                             keep_stereo.then_some(stereo.as_slice()),
                             SAMPLE_RATE,
+                            false,
                         );
                         frames.fetch_add(1, Ordering::Relaxed);
                         // "Data" means REAL audio, not a mere delivered packet:

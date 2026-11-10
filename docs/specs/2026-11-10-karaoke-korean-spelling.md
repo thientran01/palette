@@ -95,8 +95,12 @@ is no labelled K-pop to show it.
 
 ## Recipe
 
-`RECIPE` stays `mms-int8/4`. A bump relearns every saved sync in every
-language from scratch on its next full listen, which would throw away the
-merged listens (PR #249) for a change that only touches Korean. Korean
-songs with doubted lines still get their extra listens, which use the new
-spelling and merge in line by line where they are surer.
+`RECIPE` stays `mms-int8/4`. Since PR #251 a bump re-decodes saved syncs
+from their takes instead of relearning them, but takes only exist for
+listens since that PR. Bumped now, nearly every saved sync in every
+language would still go back to relearning from one listen and lose its
+merged listens. Korean songs with doubted lines still get their extra
+listens, which use the new spelling and merge in line by line where they
+are surer. The new spelling keeps every line's window (vowel groups per
+syllable don't change), so the next decoder bump, once takes have built
+up, re-decodes Korean songs with it too.
