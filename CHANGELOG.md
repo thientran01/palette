@@ -10,7 +10,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Fixed
 
-- The Lyric syncs panel's "words on time" no longer reads high on hard songs. On a song where the check doubts many lines, even the words it's sure of are right less often, and a line that starts seconds after its timestamp is usually off however sure the check is. The estimate now counts both. Against 79 hand-timed songs, the ones it scores under 93% used to average 88% estimated and 86% measured and now match (87% and 87%), the hardest song went from 82% to 75% against a measured 71%, and 71 of the 79 songs show the same percent as before or one point different. Scores update on their own; nothing needs relearning.
+- The Lyric syncs panel's "words on time" no longer reads high on hard songs. On a song where the check doubts many lines, even the words it's sure of are right less often, and a line that starts well after its timestamp is off more often. The estimate now counts both. Against 79 hand-timed songs, the ones it scores under 93% used to average 88% estimated against 86% measured and now average 85%, the hardest song went from 81% to 72% against a measured 72%, and 70 of the 79 songs show the same percent as before or one point different. Scores update on their own; nothing needs relearning.
 
 ## [1.0.13] - 2026-11-09
 
