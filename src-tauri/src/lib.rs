@@ -1704,6 +1704,8 @@ pub fn run() {
             // Play-history: resolve the log dir now, build the line index on a
             // background thread (off the launch path — history_page waits on it).
             history::init(app.handle());
+            // Lyric syncs panel: read the saved syncs once in the background.
+            sync_library::warm(app.handle());
             // Managed up-next: restore the persisted list + fed marker.
             upnext::init(app.handle());
             // Docking: seed the persisted corner (the decoder ring for the
