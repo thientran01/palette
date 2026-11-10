@@ -100,7 +100,7 @@ cursor keeps letters evenly spaced.
 Letters as inline-blocks lose kerning across letter pairs; the line's
 layout never changes while it is sung.
 
-## English rises by syllable (2026-11-10, `src/lib/syllables.ts`)
+## English letters rise evenly (2026-11-10)
 
 Thien: Korean and Japanese look right "because each of their characters
 make a specific sound", but English "feels like some parts get skipped or
@@ -120,23 +120,17 @@ made up, three ways:
 So the same word looked different on every repeat. In Kep1er "Happy
 Ending" the second letter of "away," rose anywhere from 85 to 241 ms in.
 
-Now a Latin-script word rises one written syllable at a time, the way a
-Hangul block does. A spelling heuristic cuts it (vowel groups; silent
-"e", "-es", "-ed" fold back; consonants split the usual way), and each
-syllable starts when the aligner heard its first letter (the start of
-that letter's CTC span), or, without letter spans, at an even share of
-the word's own sound. Its letters follow 16 ms apart (at most 40% of the
-syllable), and punctuation rises with the letter before it. Other scripts
-keep the row cursor.
+Now a Latin-script word leaves the row cursor: its letters are spaced
+evenly from its onset across its own sound (never the gap after it), at
+most 65 ms apart so a held word finishes rising early in its hold, and
+punctuation rises with the letter before it. Every repeat of a word looks
+the same. Other scripts keep the row cursor.
 
-Steppiness (the jerk measure above, on summed rise per row): Korean rows,
-which Thien said look right, 0.18–0.22 on his five dumps; English rows
-0.10–0.13 before, 0.20–0.23 by syllable. Smoother wasn't what made Korean
-look right; one rise per sound was.
-
-Prototypes compared with Thien: A syllables (shipped), B whole words, C
-letters evenly over each word's own sound
-(`/mnt/project-files/karaoke-motion/english-rise/`).
+Prototypes compared with Thien (`/mnt/project-files/karaoke-motion/english-rise/`):
+A syllables (a rise per written syllable at the aligner's letter spans),
+B whole words, C even letters. Thien wasn't sure about A and asked to try C.
+Steppiness (the jerk measure above): Korean rows 0.18–0.22, English rows
+0.10–0.13 before, 0.12–0.17 with C, 0.20–0.23 with A.
 
 ## The voice (`src-tauri/src/voice.rs`, `src/lib/voiceMotion.ts`)
 
