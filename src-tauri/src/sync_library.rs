@@ -45,6 +45,10 @@ pub(crate) fn flags(root: &Path, key: &str) -> (bool, bool) {
         Err(_) => (true, true),
     }
 }
+/// Deleted in the library (soft deletion keeps the file). Hold `lock()`.
+pub(crate) fn deleted_locked(root: &Path, key: &str) -> bool {
+    read(root).map_or(true, |p| p.get(key).is_some_and(|p| p.deleted))
+}
 pub(crate) fn current_locked(root: &Path, key: &str, generation: u64) -> bool {
     read(root).is_ok_and(|p| p.get(key).map_or(0, |p| p.revision) == generation)
 }
@@ -94,8 +98,9 @@ pub struct SavedSync {
     thumb_key: Option<String>,
     saved_at: u64,
     refresh: bool,
-    /// The next full listen relearns it (saved under an earlier recipe or
-    /// before the review's support was kept). Its timing still shows.
+    /// The next full listen relearns it (saved under an earlier recipe,
+    /// before the review's support was kept, or with an unsure line and
+    /// listens to spare). Its timing still shows.
     relearns: bool,
     /// What the review found, for syncs saved with its support.
     check: Option<Check>,
