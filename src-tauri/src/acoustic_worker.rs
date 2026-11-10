@@ -4,6 +4,7 @@ use crate::{
     acoustic::{AcousticAligner, Knobs},
     align::{TimeMap, TimedLine, Word},
     separation::{Stereo, VocalEar, VocalSeparator},
+    takes::Take,
 };
 use std::{
     path::PathBuf,
@@ -30,7 +31,15 @@ struct Request {
     lines: Vec<TimedLine>,
     map: TimeMap,
     dir: PathBuf,
-    reply: mpsc::SyncSender<Result<Vec<Word>>>,
+    reply: mpsc::SyncSender<Result<Aligned>>,
+}
+
+/// One listen's words, and the take (takes.rs) a decoder change can
+/// re-decode them from. No take on the vocal trial, whose emissions came
+/// from whole-song separated vocals.
+pub struct Aligned {
+    pub words: Vec<Word>,
+    pub take: Option<Take>,
 }
 struct Connection<T> {
     generation: u64,
@@ -71,7 +80,7 @@ pub fn align(
     lines: Vec<TimedLine>,
     map: TimeMap,
     dir: PathBuf,
-) -> Result<Vec<Word>> {
+) -> Result<Aligned> {
     let (generation, sender) = connection().connect(|| {
         let (tx, rx) = mpsc::sync_channel(1);
         std::thread::Builder::new()
@@ -207,6 +216,9 @@ fn run(rx: mpsc::Receiver<Request>) {
                     Some(aligning + EAR_DEADLINE),
                 )
             });
+            if vocals.is_none() {
+                model.record_take(request.pcm.len(), &request.map);
+            }
             let mut result = if let Some(vocals) = vocals.as_deref() {
                 model.align_guided_entries(vocals, &request.lines, &request.map, None)
             } else if let Some(ear) = ear.as_mut() {
@@ -221,6 +233,7 @@ fn run(rx: mpsc::Receiver<Request>) {
             } else {
                 model.align(&request.pcm, &request.lines, &request.map)
             };
+            let take = model.finish_take();
             let aligned = aligning.elapsed();
             let (heard, passes) = ear.as_ref().map_or((0, 0), |e| (e.heard, e.passes));
             // The singer's voice on held notes, with the same separator.
@@ -245,7 +258,7 @@ fn run(rx: mpsc::Receiver<Request>) {
                 );
             }
             log::info!(
-                "karaoke: model reused={}, load {:.2}s, align {:.2}s, second ear on {:.1}s of {:.1}s ({} passes, {})",
+                "karaoke: model reused={}, load {:.2}s, align {:.2}s, second ear on {:.1}s of {:.1}s ({} passes, {}), take {} KB",
                 reused,
                 loaded.as_secs_f64(),
                 aligned.as_secs_f64(),
@@ -257,8 +270,9 @@ fn run(rx: mpsc::Receiver<Request>) {
                 } else {
                     "mono"
                 },
+                take.as_ref().map_or(0, |t| t.bytes() / 1024),
             );
-            result
+            result.map(|words| Aligned { words, take })
         }))
         .unwrap_or_else(|_| Err("acoustic worker panicked".into()));
         // Never reuse a failed or possibly poisoned runtime session.
@@ -342,10 +356,12 @@ fn local_worker_preserves_cold_and_warm_results() {
         serde_json::from_slice(&std::fs::read(baseline).unwrap()).unwrap();
     let expected: Vec<Word> = serde_json::from_value(expected["words"].clone()).unwrap();
     let start = Instant::now();
-    let first = align(pcm.clone(), None, lines.clone(), map.clone(), dir.clone()).unwrap();
+    let first = align(pcm.clone(), None, lines.clone(), map.clone(), dir.clone())
+        .unwrap()
+        .words;
     let cold = start.elapsed();
     let start = Instant::now();
-    let second = align(pcm, None, lines, map, dir).unwrap();
+    let second = align(pcm, None, lines, map, dir).unwrap().words;
     assert_eq!(first.len(), expected.len());
     for (i, (a, b)) in first.iter().zip(&expected).enumerate() {
         assert_eq!(

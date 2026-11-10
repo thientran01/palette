@@ -1,5 +1,6 @@
 //! Local word-karaoke store, capture, and align.
 
+mod redecode;
 pub(crate) mod research;
 
 use crate::acoustic;
@@ -155,6 +156,8 @@ pub async fn active_syncs() -> Vec<ActiveSync> {
 }
 
 const CACHE_MAX_FILES: usize = 500;
+/// Word syncs, beside the app's other data (the vocal trial keeps its own).
+const KARAOKE_DIR: &str = "karaoke";
 pub(crate) const TARGET_HZ: u32 = 16_000;
 const MAX_SAMPLES: usize = 16_000 * 60 * 8;
 const ARM_NEAR_START_MS: i64 = 8_000;
@@ -302,6 +305,9 @@ struct Rec {
     last_anchor_at: i64,
     /// Consecutive pairs that disagreed with the fit (see SEEK_CONFIRM).
     seek_strikes: u8,
+    /// Some of it came from the whole device's mix (audio.rs), which can
+    /// hold voice chat or notifications: its take is not kept (redecode.rs).
+    device_mix: bool,
 }
 
 enum Anchor {
@@ -429,7 +435,7 @@ fn karaoke_dir(app: &AppHandle) -> Option<PathBuf> {
         d.join(if crate::vocal_preview::enabled() {
             crate::vocal_preview::CACHE_DIR
         } else {
-            "karaoke"
+            KARAOKE_DIR
         })
     })
 }
@@ -785,6 +791,7 @@ fn read_store(path: &Path, synced: Option<&str>, prune: bool) -> Option<StoreFil
     {
         if prune {
             let _ = std::fs::remove_file(path);
+            redecode::forget(path);
         }
         return None;
     }
@@ -793,6 +800,7 @@ fn read_store(path: &Path, synced: Option<&str>, prune: bool) -> Option<StoreFil
     if collapsed(&file.words) {
         if prune {
             let _ = std::fs::remove_file(path);
+            redecode::forget(path);
         }
         return None;
     }
@@ -861,10 +869,23 @@ fn write_listens(
     words: &[Word],
     listens: u32,
 ) -> std::io::Result<()> {
+    write_store(dir, key, synced, words, listens, detail_v())
+}
+
+/// `write_listens` with the detail its words carry: a re-decode keeps the
+/// detail its listens were heard with.
+fn write_store(
+    dir: &Path,
+    key: &str,
+    synced: &str,
+    words: &[Word],
+    listens: u32,
+    detail_v: u32,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
-        detail_v: detail_v(),
+        detail_v,
         recipe: crate::vocal_preview::cache_recipe(&dir.join(format!("{key}.json")), recipe())
             .to_string(),
         synced: Some(synced.to_string()),
@@ -1108,6 +1129,7 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         anchors: Vec::new(),
         last_anchor_at: np.position_at_ms,
         seek_strikes: 0,
+        device_mix: false,
     };
     let mut slot = lock_rec();
     // A cancel/stop command may have landed during the cache reads above.
@@ -1135,7 +1157,9 @@ pub fn on_capture_stop(app: &AppHandle) {
 /// thread; one lock per block (a packet is ~10–20ms of audio), never per
 /// sample — the per-sample version took the mutex 48k times a second on the
 /// realtime thread.
-pub fn push_frames(frames: &[f32], stereo: Option<&[f32]>, sample_rate: u32) {
+/// `device_mix`: the block is the whole output device's mix, not the
+/// player's own process.
+pub fn push_frames(frames: &[f32], stereo: Option<&[f32]>, sample_rate: u32, device_mix: bool) {
     if frames.is_empty() || sample_rate == 0 || !RECORDING.load(Ordering::Relaxed) {
         return;
     }
@@ -1189,6 +1213,7 @@ pub fn push_frames(frames: &[f32], stereo: Option<&[f32]>, sample_rate: u32) {
     }
     push_stereo(&mut rec.stereo, stereo, frames.len());
     rec.received += frames.len() as u64;
+    rec.device_mix |= device_mix;
 }
 
 /// Keep the trial's stereo frame-for-frame with the mono recording; a block
@@ -1263,6 +1288,26 @@ fn next_queued(guard: &mut AlignGuard) -> Option<Rec> {
         guard.armed = false;
     }
     next
+}
+
+/// Re-decode, in the background, saved syncs whose decoder changed
+/// (redecode.rs). Once per launch.
+pub fn redecode_saved(app: &AppHandle) {
+    redecode::start(app);
+}
+
+/// Align the listens that queued behind a job, in order, then release
+/// ALIGNING.
+fn run_queue(app: &AppHandle, mut guard: AlignGuard) {
+    while let Some(rec) = next_queued(&mut guard) {
+        sync_state(
+            &rec.key,
+            "processing",
+            "Finishing sync… Your listen is captured; word timing is being aligned.",
+        );
+        show_job(&rec);
+        commit_sync(app, rec);
+    }
 }
 
 fn show_job(rec: &Rec) {
@@ -1369,21 +1414,8 @@ fn try_commit(app: &AppHandle, rec: Rec) {
     let result = std::thread::Builder::new()
         .name("karaoke-align".into())
         .spawn(move || {
-            let mut guard = guard;
-            let mut rec = rec;
-            loop {
-                commit_sync(&handle, rec);
-                let Some(next) = next_queued(&mut guard) else {
-                    break;
-                };
-                rec = next;
-                sync_state(
-                    &rec.key,
-                    "processing",
-                    "Finishing sync… Your listen is captured; word timing is being aligned.",
-                );
-                show_job(&rec);
-            }
+            commit_sync(&handle, rec);
+            run_queue(&handle, guard);
         });
     if let Err(e) = result {
         sync_state(
@@ -1620,7 +1652,7 @@ fn commit_recording(
         );
         return;
     }
-    let words = if let Some(dir) = acoustic::assets() {
+    let (words, take) = if let Some(dir) = acoustic::assets() {
         // Identical quantization to write_dump: replay and production share
         // the same PCM representation, including clipping and scale.
         let pcm: Vec<i16> = rec
@@ -1641,14 +1673,14 @@ fn commit_recording(
             dir.to_path_buf(),
         );
         match result {
-            Ok(words) => {
+            Ok(aligned) => {
                 log::info!(
                     "karaoke: acoustic aligned {} words for {} in {:.2}s",
-                    words.len(),
+                    aligned.words.len(),
                     rec.title,
                     started.elapsed().as_secs_f64()
                 );
-                words
+                (aligned.words, aligned.take)
             }
             Err(e) => {
                 // Never cache guessed timings under the acoustic recipe.
@@ -1672,7 +1704,7 @@ fn commit_recording(
             }
         }
     } else {
-        align::align(&rec.samples, TARGET_HZ, &lines, &map)
+        (align::align(&rec.samples, TARGET_HZ, &lines, &map), None)
     };
     // Evidence first: a coverage miss below still leaves something to score.
     if let Some(dir) = dump_dir {
@@ -1730,7 +1762,9 @@ fn commit_recording(
     // Listens add up: the saved sync keeps every line this listen isn't
     // surer of. One that improves nothing ends the extra listens.
     let path = karaoke_dir.join(format!("{}.json", rec.key));
-    let (words, listens) = match mergeable(root, &path, &rec.key, &synced) {
+    let saved = mergeable(root, &path, &rec.key, &synced);
+    let saved_listens = saved.as_ref().map(|f| f.listens.max(1));
+    let (words, listens) = match saved {
         Some(saved) => {
             let Combined {
                 words: merged,
@@ -1771,6 +1805,15 @@ fn commit_recording(
         log::warn!("karaoke: persist failed ({e})");
         return;
     }
+    redecode::keep(
+        root,
+        &rec,
+        &synced,
+        take,
+        saved_listens,
+        listens,
+        karaoke_dir == root.join(KARAOKE_DIR),
+    );
     sync_state(&rec.key, "saved", "Word sync saved on this device.");
     publish(KaraokeReady {
         artist: rec.artist,
@@ -1903,6 +1946,7 @@ mod tests {
             anchors: serde_json::from_value(meta["anchors"].clone()).unwrap(),
             last_anchor_at: 0,
             seek_strikes: 0,
+            device_mix: false,
         };
         assert!(rec.can_finalize());
         let map = TimeMap::fit(&rec.anchors, TARGET_HZ, rec.origin_ms);
@@ -2755,6 +2799,7 @@ mod tests {
             anchors,
             last_anchor_at: 0,
             seek_strikes: 0,
+            device_mix: false,
         }
     }
 
