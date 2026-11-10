@@ -29,6 +29,27 @@ to what the song already has.
   Lyric syncs panel shows these songs as "relearns next listen".
 - Relearn still forces one more listen at any count, and merges too.
 
+## Lining listens up first (same day, follow-up)
+
+Each listen has its own time map, fitted to that play's position reports,
+so two listens of one track can sit a constant apart even where both decodes
+are right. Taking line 4 from one and line 5 from the other would put that
+constant inside the song. `combine_listens` is now the one way in:
+
+- `listen_offset`: the median onset difference (new − saved) over words
+  both listens are sure of (support 0.9 or more in both; same line, same
+  place in it, same text). It needs 12 such words; with fewer, the listen
+  merges unshifted. The new listen is moved onto the saved timeline
+  (`shifted`), never the other way, so a song keeps one timeline however
+  many listens it has. pulse.log: `listen N of <title> improved K lines; it
+  sat +Xms from the saved sync (M sure words)`.
+- A saved line whose checked words are all sure (0.9 or more) is never
+  traded. The first night's logs showed second listens "improving" 8 to 32
+  lines a song, most of them a 0.95 line swapped for a 0.97 one: churn, and
+  before registration, a clock mix.
+- A new line is taken only where line starts stay in order with the line
+  before it and with the next line in either listen.
+
 ## What it can and can't fix
 
 The same track decodes nearly the same way on every listen. What differs is

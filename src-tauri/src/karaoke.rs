@@ -246,6 +246,12 @@ const MAX_LISTENS: u32 = 3;
 /// How much surer, in mean log support, a new listen's line must be to
 /// replace the saved one. Keeps an identical decode from churning.
 const MERGE_MARGIN: f32 = 0.01;
+/// Words this sure in both listens (under 1% of them are more than 300ms
+/// off) measure how far apart the two listens' timelines sit, and a saved
+/// line whose words are all this sure is never traded for another listen's...
+const REGISTER_SURE: f32 = 0.9;
+/// ...and it takes this many to trust the median.
+const REGISTER_MIN_WORDS: usize = 12;
 
 #[derive(Serialize, Clone)]
 pub struct KaraokeReady {
@@ -522,42 +528,163 @@ fn line_score(words: &[&Word]) -> Option<f32> {
     (!logs.is_empty()).then(|| logs.iter().sum::<f32>() / logs.len() as f32)
 }
 
-/// Two listens of the same lyrics, line by line: the saved line stays unless
-/// the new listen is surer of it by MERGE_MARGIN, a line only one listen
-/// placed comes from that one, and an unchecked line yields to a checked
-/// one. Returns the words and how many lines the new listen improved.
-fn merge_listens(saved: &[Word], new: &[Word]) -> (Vec<Word>, usize) {
-    fn group(words: &[Word]) -> BTreeMap<i64, Vec<&Word>> {
-        let mut lines: BTreeMap<i64, Vec<&Word>> = BTreeMap::new();
-        for w in words {
-            if let Some(line_t) = w.line_t {
-                lines.entry(line_t).or_default().push(w);
-            }
+/// Every checked word of the line is sure: nothing a new listen could add
+/// is worth moving it for.
+fn settled_line(words: &[&Word]) -> bool {
+    words
+        .iter()
+        .filter_map(|w| w.support)
+        .all(|p| p >= REGISTER_SURE)
+}
+
+/// Words by the stamp of their line, in the order saved.
+fn by_line(words: &[Word]) -> BTreeMap<i64, Vec<&Word>> {
+    let mut lines: BTreeMap<i64, Vec<&Word>> = BTreeMap::new();
+    for w in words {
+        if let Some(line_t) = w.line_t {
+            lines.entry(line_t).or_default().push(w);
         }
-        lines
     }
-    let (old_lines, new_lines) = (group(saved), group(new));
-    let keys: BTreeSet<i64> = old_lines.keys().chain(new_lines.keys()).copied().collect();
+    lines
+}
+
+/// How far a new listen's timeline sits from the saved sync's, in ms
+/// (new − saved), and the words it was measured on. Each listen has its own
+/// time map, fitted to that play's position reports, so two listens can
+/// disagree by a constant even where both decodes are right. The median
+/// onset difference over words both listens are sure of (same line, same
+/// place in it, same text) is that constant. None with too few to tell.
+fn listen_offset(saved: &[Word], new: &[Word]) -> Option<(i64, usize)> {
+    let (old_lines, new_lines) = (by_line(saved), by_line(new));
+    let sure = |w: &Word| w.support.is_some_and(|p| p >= REGISTER_SURE);
+    let mut diffs: Vec<i64> = Vec::new();
+    for (key, old) in &old_lines {
+        let Some(fresh) = new_lines.get(key) else {
+            continue;
+        };
+        if old.len() != fresh.len() {
+            continue;
+        }
+        diffs.extend(
+            old.iter()
+                .zip(fresh)
+                .filter(|(o, n)| o.text == n.text && sure(o) && sure(n))
+                .map(|(o, n)| n.t - o.t),
+        );
+    }
+    if diffs.len() < REGISTER_MIN_WORDS {
+        return None;
+    }
+    let n = diffs.len();
+    let mid = n / 2;
+    Some((*diffs.select_nth_unstable(mid).1, n))
+}
+
+/// `words` moved by `by` ms. A voice track counts from its word's onset,
+/// so it moves with it.
+fn shifted(words: &[Word], by: i64) -> Vec<Word> {
+    words
+        .iter()
+        .map(|w| {
+            let mut w = w.clone();
+            w.t += by;
+            w.end = w.end.map(|end| end + by);
+            for point in &mut w.points {
+                point.t += by;
+            }
+            w
+        })
+        .collect()
+}
+
+/// Two listens of the same lyrics, line by line: the saved line stays unless
+/// it has a word short of sure (`settled_line`) and the new listen is surer
+/// of the line by MERGE_MARGIN, a line only one listen
+/// placed comes from that one, and an unchecked line yields to a checked
+/// one. A new line is only taken where line starts stay in order, whichever
+/// listen its neighbours come from. Returns the words and how many lines the
+/// new listen improved. `new` must already be on `saved`'s timeline: call
+/// `combine_listens`, not this.
+fn merge_listens(saved: &[Word], new: &[Word]) -> (Vec<Word>, usize) {
+    let (old_lines, new_lines) = (by_line(saved), by_line(new));
+    let start = |line: &[&Word]| line.iter().map(|w| w.t).min();
+    let keys: Vec<i64> = old_lines
+        .keys()
+        .chain(new_lines.keys())
+        .copied()
+        .collect::<BTreeSet<i64>>()
+        .into_iter()
+        .collect();
     let mut out = Vec::with_capacity(new.len());
     let mut improved = 0;
-    for key in keys {
+    let mut last_start: Option<i64> = None;
+    for (i, key) in keys.iter().enumerate() {
         // (take the new listen's line, and it is an improvement)
-        let (take_new, better) = match (old_lines.get(&key), new_lines.get(&key)) {
+        let (mut take_new, mut better) = match (old_lines.get(key), new_lines.get(key)) {
             (Some(old), Some(fresh)) => match (line_score(old), line_score(fresh)) {
-                (Some(o), Some(n)) => (n > o + MERGE_MARGIN, n > o + MERGE_MARGIN),
+                (Some(o), Some(n)) => {
+                    let surer = !settled_line(old) && n > o + MERGE_MARGIN;
+                    (surer, surer)
+                }
                 (None, n) => (true, n.is_some()),
                 (Some(_), None) => (false, false),
             },
             (None, _) => (true, true),
             (Some(_), None) => (false, false),
         };
+        if take_new && old_lines.contains_key(key) {
+            // The next line's start in either listen: whichever is kept
+            // there, this line still starts before it.
+            let next = keys.get(i + 1).and_then(|next| {
+                [old_lines.get(next), new_lines.get(next)]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|line| start(line))
+                    .min()
+            });
+            let begins = start(&new_lines[key]);
+            let in_order = begins.is_some_and(|t| {
+                last_start.is_none_or(|prev| t > prev) && next.is_none_or(|next| t < next)
+            });
+            if !in_order {
+                (take_new, better) = (false, false);
+            }
+        }
         improved += usize::from(better);
         let side = if take_new { &new_lines } else { &old_lines };
-        out.extend(side[&key].iter().map(|w| (*w).clone()));
+        let line = &side[key];
+        last_start = start(line).or(last_start);
+        out.extend(line.iter().map(|w| (*w).clone()));
     }
     // A word without a line has nothing to compare; the new listen's stand.
     out.extend(new.iter().filter(|w| w.line_t.is_none()).cloned());
     (out, improved)
+}
+
+/// A new listen folded into the saved sync.
+struct Combined {
+    words: Vec<Word>,
+    /// Lines the new listen improved.
+    improved: usize,
+    /// (new − saved in ms, sure words it was measured on) where the two
+    /// could be lined up.
+    offset: Option<(i64, usize)>,
+}
+
+/// The one way a listen joins a saved sync: onto the saved timeline first
+/// (`listen_offset`), so a line taken from the new listen sits where the
+/// lines kept beside it expect, then merged line by line (`merge_listens`).
+fn combine_listens(saved: &[Word], new: &[Word]) -> Combined {
+    let offset = listen_offset(saved, new);
+    let (words, improved) = match offset {
+        Some((by, _)) if by != 0 => merge_listens(saved, &shifted(new, -by)),
+        _ => merge_listens(saved, new),
+    };
+    Combined {
+        words,
+        improved,
+        offset,
+    }
 }
 
 /// The saved sync a new listen of the same lyrics merges into: decoded under
@@ -1545,12 +1672,22 @@ fn commit_recording(
     let path = karaoke_dir.join(format!("{}.json", rec.key));
     let (words, listens) = match mergeable(root, &path, &rec.key, &synced) {
         Some(saved) => {
-            let (merged, improved) = merge_listens(&saved.words, &words);
+            let Combined {
+                words: merged,
+                improved,
+                offset,
+            } = combine_listens(&saved.words, &words);
             let listen = saved.listens.max(1).saturating_add(1);
-            log::info!(
-                "karaoke: listen {listen} of {} improved {improved} lines",
-                rec.title
-            );
+            match offset {
+                Some((by, n)) => log::info!(
+                    "karaoke: listen {listen} of {} improved {improved} lines; it sat {by:+}ms from the saved sync ({n} sure words)",
+                    rec.title
+                ),
+                None => log::info!(
+                    "karaoke: listen {listen} of {} improved {improved} lines; too few sure words in common to line the listens up",
+                    rec.title
+                ),
+            }
             (
                 merged,
                 if improved == 0 {
@@ -2267,6 +2404,69 @@ mod tests {
         let (again, improved) = merge_listens(&merged, &merged);
         assert_eq!(again, merged);
         assert_eq!(improved, 0);
+    }
+
+    #[test]
+    fn a_new_listen_is_lined_up_on_words_both_are_sure_of() {
+        // Twelve sure words 40ms later in the new listen, one unsure word
+        // far off, and one sure word a single listen misplaced.
+        let mut saved = Vec::new();
+        let mut new = Vec::new();
+        for i in 0..12 {
+            saved.push(checked(i * 4_000, i * 4_000 + 300, 0.95));
+            new.push(checked(i * 4_000, i * 4_000 + 340, 0.99));
+        }
+        saved.push(checked(60_000, 60_200, 0.2));
+        new.push(checked(60_000, 61_900, 0.95));
+        saved.push(checked(64_000, 64_100, 0.95));
+        new.push(checked(64_000, 66_000, 0.95));
+        assert_eq!(listen_offset(&saved, &new), Some((40, 13)));
+        // Too few sure words in common says nothing.
+        assert_eq!(listen_offset(&saved[..8], &new[..8]), None);
+        // A line whose words don't pair up is left out.
+        let mut other = new.clone();
+        other.push(checked(0, 500, 0.99));
+        assert_eq!(listen_offset(&saved, &other), Some((40, 12)));
+
+        // The line the new listen is surer of lands on the saved timeline.
+        let combined = combine_listens(&saved[..13], &new[..13]);
+        assert_eq!(combined.offset, Some((40, 12)));
+        assert_eq!(combined.improved, 1);
+        assert_eq!(combined.words[12].t, 61_860);
+        assert_eq!(combined.words[..12], saved[..12]);
+
+        let mut held = checked(1_000, 1_340, 0.9);
+        held.end = Some(2_340);
+        held.points = vec![align::WordPoint {
+            t: 1_500,
+            fraction: 0.5,
+        }];
+        let moved = shifted(&[held], -40);
+        assert_eq!((moved[0].t, moved[0].end), (1_300, Some(2_300)));
+        assert_eq!(moved[0].points[0].t, 1_460);
+    }
+
+    #[test]
+    fn a_merged_line_never_starts_out_of_order() {
+        let saved = vec![
+            checked(1_000, 1_100, 0.9),
+            checked(5_000, 5_200, 0.2),
+            checked(9_000, 9_100, 0.9),
+        ];
+        // Surer, but before the line above it...
+        let early = vec![checked(5_000, 900, 0.99)];
+        // ...or after the line below it, in the listen that has it later.
+        let late = vec![checked(5_000, 9_300, 0.99), checked(9_000, 9_500, 0.5)];
+        for new in [&early, &late] {
+            let (merged, improved) = merge_listens(&saved, new);
+            assert_eq!(merged, saved);
+            assert_eq!(improved, 0);
+        }
+        let fits = vec![checked(5_000, 5_400, 0.99)];
+        assert_eq!(merge_listens(&saved, &fits).0[1].t, 5_400);
+        // A line already sure stays, however sure the new listen is.
+        let surer = vec![checked(1_000, 1_300, 0.99)];
+        assert_eq!(merge_listens(&saved, &surer), (saved.clone(), 0));
     }
 
     #[test]
