@@ -106,7 +106,7 @@ function heardLetters(w: LyricWord, letters: readonly string[]): (number | undef
  * word without letter checkpoints, at an even share of the word's own
  * sound (never of the gap after it, so a repeated word looks the same each
  * time). Its letters follow SYLLABLE_LAG_MS apart; punctuation rises with
- * the letter before it.
+ * the letter before it. They rise on letterSnap, not letterLit.
  */
 export function syllableLetterOnsets(w: LyricWord, nextT?: number): number[] {
   const letters = letterSegments(w.text).filter(s => s.letter).map(s => s.text);
@@ -145,7 +145,7 @@ export function rowLetterOnsets(words: readonly LyricWord[]): number[][] {
   const cursor = lineCursor(words, counts);
   return words.map((w, i) => {
     const n = counts[i];
-    if (w.timing !== "phrase" && isLatinWord(w.text)) return syllableLetterOnsets(w, words[i + 1]?.t);
+    if (risesBySyllable(w)) return syllableLetterOnsets(w, words[i + 1]?.t);
     if (cursor.owns[i]) {
       const end = Math.max(cursor.end, w.t);
       return Array.from({ length: n }, (_, k) =>
@@ -164,4 +164,31 @@ export function rowLetterOnsets(words: readonly LyricWord[]): number[][] {
 export function letterLit(onset: number, clock: number): number {
   const u = Math.min(1, Math.max(0, (clock - onset + RISE_EARLY_MS) / RISE_MS));
   return u * u * (3 - 2 * u);
+}
+
+/** Latin-script words sung in order rise by syllable, on letterSnap. */
+export function risesBySyllable(w: LyricWord): boolean {
+  return w.timing !== "phrase" && isLatinWord(w.text);
+}
+
+/** The rise curve for a word's letters. */
+export function riseCurve(w: LyricWord): (onset: number, clock: number) => number {
+  return risesBySyllable(w) ? letterSnap : letterLit;
+}
+
+/** A syllable's snap: quicker than a letter's rise, and fast first. */
+export const SNAP_MS = 130;
+export const SNAP_EARLY_MS = 20;
+
+/**
+ * How far a Latin letter has risen. Syllables are fewer and further apart
+ * than letters, so the soft letter rise read as slow on them; Thien
+ * (2026-11-10): syllables "feels right, but it doesn't feel fast enough or
+ * punchy enough". Ease-out cubic: most of the move lands as the syllable
+ * is sung (half up 15ms after its onset, fully up 110ms after), then
+ * settles softly. Same 1.75px drop, so the punch is timing, not distance.
+ */
+export function letterSnap(onset: number, clock: number): number {
+  const u = Math.min(1, Math.max(0, (clock - onset + SNAP_EARLY_MS) / SNAP_MS));
+  return 1 - (1 - u) ** 3;
 }

@@ -1,5 +1,5 @@
 import type { LyricWord } from "./lrc";
-import { letterLit, rowLetterOnsets, RISE_EARLY_MS, RISE_MS } from "./letterRise";
+import { riseCurve, rowLetterOnsets, RISE_EARLY_MS, RISE_MS } from "./letterRise";
 import { heldBend } from "./voiceMotion";
 
 /** How long a row stays sung after its last letter lands: long enough for a
@@ -36,6 +36,8 @@ interface Letter {
   /** Index within its word, for the held note's slight wave. */
   k: number;
   onset: number;
+  /** letterLit, or letterSnap for a word that rises by syllable. */
+  rise: (onset: number, clock: number) => number;
   lit: string;
   bend: string;
 }
@@ -69,12 +71,13 @@ export function driveWordRows(
     .map(row => {
       const letters: Letter[] = [];
       const rowOnsets = cachedOnsets(row.words);
-      row.words.forEach((_, wi) => {
+      row.words.forEach((w, wi) => {
         const onsets = rowOnsets[wi];
+        const rise = riseCurve(w);
         const spans = row.letters[wi];
         if (spans.length !== onsets.length) return;
         spans.forEach((style, k) => letters.push({ style, word: wi, k, onset: onsets[k],
-          lit: "", bend: "" }));
+          rise, lit: "", bend: "" }));
       });
       return { row, letters, active: false,
         start: Math.min(...row.words.map(w => w.t)) - RISE_EARLY_MS,
@@ -116,7 +119,7 @@ export function driveWordRows(
       for (const letter of track.letters) {
         // Compare the values CSS receives, not unrounded progress: only
         // redundant writes vanish.
-        const e = letterLit(letter.onset, p);
+        const e = letter.rise(letter.onset, p);
         const lit = e.toFixed(3);
         if (lit !== letter.lit) {
           letter.lit = lit;

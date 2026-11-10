@@ -129,6 +129,16 @@ the word's own sound. Its letters follow 16 ms apart (at most 40% of the
 syllable), and punctuation rises with the letter before it. Other scripts
 keep the row cursor.
 
+Thien on syllables: "feels right, but it doesn't feel fast enough or
+punchy enough". Syllables come less often than letters, so the soft
+letter rise (200 ms smoothstep from 80 ms early) read as slow on them.
+English letters now use their own curve, `letterSnap`: 130 ms ease-out
+cubic from 20 ms early (half up 15 ms after the onset, fully up 110 ms
+after), with the same 1.75 px drop, so the punch comes from timing, not
+distance. Mocked against a quicker smoothstep (130 ms from 40 ms early)
+and the snap with a syllable's letters rising together
+(`*-syllable-snap*.mp4`).
+
 Steppiness (the jerk measure above, on summed rise per row): Korean rows,
 which Thien said look right, 0.18–0.22 on his five dumps; English rows
 0.10–0.13 before, 0.20–0.23 by syllable. Smoother wasn't what made Korean
