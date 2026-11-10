@@ -12,6 +12,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 - Word karaoke gives every line it doubts a second listen. With the vocal separator installed, it used to re-hear at most 14 short stretches a song, so songs that doubt many lines (often K-pop, where it doubts about 44% of lines) kept some of them unchecked. Now it re-hears all of them. A song that finishes while another is still syncing waits its turn instead of needing another listen. Saved songs the old limit left short relearn once on their next full listen; the rest stay as they are.
 - Listens add up. When a song is learned again, by Relearn or on its own, Palette keeps each line from whichever listen it was surer of, so a bad listen no longer replaces a good one. A song with a line it's still unsure of learns again on its next full listens, up to three in all, and stops as soon as a listen improves nothing.
+- Word karaoke keeps what the model heard on each listen (about 0.8 MB a song, in its own folder beside the saved syncs). When an update only changes how Palette reads that, your saved songs are re-synced in the background a minute or two after launch, in a fraction of a second each, instead of each one waiting for its next full listen. Songs saved before this update, or captured from the whole device's sound instead of the player, still relearn by listening.
 
 ### Fixed
 
