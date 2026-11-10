@@ -658,7 +658,7 @@ const LyricLineRow = memo(function LyricLineRow({
       {timed
         ? words.map((w, wi) => (
             // Each letter rises on its own (letterRise.ts). useWordWipe
-            // writes only its --lit / --bend, so a syllable is a style
+            // writes only its --lit, so a syllable is a style
             // write, not a re-render. The word stays one inline-block, so
             // it never breaks across rows between its letters.
             <span key={`${w.t}-${wi}`} data-word className="inline-block">

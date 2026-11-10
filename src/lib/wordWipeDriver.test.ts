@@ -213,25 +213,14 @@ it("writes no sheen, halo or wipe: only the letters' rise", () => {
   stop();
 });
 
-describe("a held note's letters ride the singer's pitch", () => {
-  const n = 140;
-  const c = Array.from({ length: n }, (_, k) => k < 30 ? -600 : Math.round(-600 + 70 * Math.sin(2 * Math.PI * 5.5 * (k - 30) / 100)));
-  const held = { t: 1000, end: 1000 + n * 10, text: "oh", voice: { c, l: new Array(n).fill(80) } };
-  it("sways risen letters with vibrato and settles after", () => {
+describe("held notes just rise", () => {
+  it("never moves a risen letter, even with a voice track", () => {
+    const n = 140;
+    const c = Array.from({ length: n }, (_, k) => Math.round(-600 + 70 * Math.sin(2 * Math.PI * 5.5 * k / 100)));
+    const held = { t: 1000, end: 1000 + n * 10, text: "오", voice: { c, l: new Array(n).fill(80) } };
     const h = harness(1000); const r = rowOf(0, [held]);
     const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
-    const bends: number[] = [];
-    for (let t = 1500; t < 2100; t += 10) { h.frame(t); bends.push(parseFloat(r.letters[0][0].values.get("--bend") ?? "0")); }
-    expect(Math.max(...bends) - Math.min(...bends)).toBeGreaterThan(1.4);
-    h.frame(2400 + 120 + 300);
-    expect(r.letters[0][0].values.has("--bend")).toBe(false);
-    stop();
-  });
-  it("never bends a short syllable, even with a voice track", () => {
-    const h = harness(1000);
-    const r = rowOf(0, [{ t: 1000, end: 1100, text: "가", voice: { c: [-600, 600, -600, 600, -600], l: [90, 90, 90, 90, 90] } }]);
-    const stop = driveWordRows([r], 0, 0, h.clock, h.frames);
-    for (const t of [1020, 1040, 1060]) { h.frame(t); expect(r.letters[0][0].values.has("--bend")).toBe(false); }
+    for (let t = 1500; t < 2100; t += 50) { h.frame(t); expect(r.letters[0][0].values.has("--bend")).toBe(false); }
     stop();
   });
 });

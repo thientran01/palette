@@ -132,12 +132,13 @@ keep the row cursor.
 Thien on syllables: "feels right, but it doesn't feel fast enough or
 punchy enough". Syllables come less often than letters, so the soft
 letter rise (200 ms smoothstep from 80 ms early) read as slow on them.
-English letters now use their own curve, `letterSnap`: 130 ms ease-out
-cubic from 20 ms early (half up 15 ms after the onset, fully up 110 ms
-after), with the same 1.75 px drop, so the punch comes from timing, not
-distance. Mocked against a quicker smoothstep (130 ms from 40 ms early)
-and the snap with a syllable's letters rising together
-(`*-syllable-snap*.mp4`).
+English letters now use their own curve, `syllableLit`: the same
+smoothstep, 130 ms from 40 ms early (half up 25 ms after the onset, fully
+up 90 ms after), with the same 1.75 px drop, so the punch comes from
+timing, not distance. Mocked against an ease-out snap (130 ms from 20 ms
+early) and the snap with a syllable's letters rising together
+(`*-syllable-snap*.mp4`); Thien tried the snap on his PC, then picked
+the quicker smoothstep.
 
 Steppiness (the jerk measure above, on summed rise per row): Korean rows,
 which Thien said look right, 0.18–0.22 on his five dumps; English rows
@@ -171,7 +172,13 @@ after the alignment and the second ear:
 On the whole of "Haunted" (69 held notes) the budget voiced 29 in 9
 passes; analysis took 0.4 s of CPU, so the separator is the whole cost.
 
-On screen, a held note's risen letters move 1 px per 75 cents away from
+**Removed 2026-11-10.** Thien: "remove the singing effects and just have
+the rise". Held letters no longer sway; voiceMotion.ts keeps only
+`isHeld`. The worker still stores voice tracks (Rust unchanged), so the
+sway could come back without relearning; dropping the voice passes would
+save about 37 s of separator work per song.
+
+Before that, on screen, a held note's risen letters moved 1 px per 75 cents away from
 the pitch 80 ms into the note (clamped to ±1.5 px, and eased in for notes
 under about a second): vibrato is a gentle sway and a slide or a dragged
 note a drift. Each later letter reads the pitch 9 ms earlier, a slight

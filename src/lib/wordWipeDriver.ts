@@ -1,9 +1,8 @@
 import type { LyricWord } from "./lrc";
 import { riseCurve, rowLetterOnsets, RISE_EARLY_MS, RISE_MS } from "./letterRise";
-import { heldBend } from "./voiceMotion";
 
-/** How long a row stays sung after its last letter lands: long enough for a
- * held note's sway to settle (voiceMotion.ts release + settle). */
+/** How long a row stays sung after its last letter lands, so its drop
+ * doesn't ease out the instant the last letter is up. */
 const TAIL_MS = 400;
 
 type Style = Pick<CSSStyleDeclaration, "setProperty" | "removeProperty">;
@@ -32,14 +31,10 @@ const ROW_PROPS = ["--word-bright", "--lyric-scale", "--lyric-opacity", "--lyric
 
 interface Letter {
   style: Style;
-  word: number;
-  /** Index within its word, for the held note's slight wave. */
-  k: number;
   onset: number;
-  /** letterLit, or letterSnap for a word that rises by syllable. */
+  /** letterLit, or syllableLit for a word that rises by syllable. */
   rise: (onset: number, clock: number) => number;
   lit: string;
-  bend: string;
 }
 
 /** A running driver: call it to stop. `setCurrentLine` hands it the next
@@ -76,8 +71,8 @@ export function driveWordRows(
         const rise = riseCurve(w);
         const spans = row.letters[wi];
         if (spans.length !== onsets.length) return;
-        spans.forEach((style, k) => letters.push({ style, word: wi, k, onset: onsets[k],
-          rise, lit: "", bend: "" }));
+        spans.forEach((style, k) => letters.push({ style, onset: onsets[k],
+          rise, lit: "" }));
       });
       return { row, letters, active: false,
         start: Math.min(...row.words.map(w => w.t)) - RISE_EARLY_MS,
@@ -91,9 +86,7 @@ export function driveWordRows(
   let current = currentLine;
   const clear = (letter: Letter) => {
     if (letter.lit) letter.style.removeProperty("--lit");
-    if (letter.bend) letter.style.removeProperty("--bend");
     letter.lit = "";
-    letter.bend = "";
   };
   const write = () => {
     const pos = clock.now();
@@ -124,15 +117,6 @@ export function driveWordRows(
         if (lit !== letter.lit) {
           letter.lit = lit;
           letter.style.setProperty("--lit", lit);
-        }
-        // A held note's letters ride the pitch once they've risen.
-        const word = row.words[letter.word];
-        const px = e * heldBend(word, row.words[letter.word + 1]?.t, p, letter.k);
-        const bend = px === 0 ? "" : `${(-px).toFixed(2)}px`;
-        if (bend !== letter.bend) {
-          if (bend) letter.style.setProperty("--bend", bend);
-          else letter.style.removeProperty("--bend");
-          letter.bend = bend;
         }
       }
     }

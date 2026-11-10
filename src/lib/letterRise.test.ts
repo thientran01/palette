@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { letterLit, letterSegments, letterSnap, riseCurve, RISE_EARLY_MS, RISE_MS, rowLetterOnsets, SNAP_EARLY_MS, SNAP_MS, SYLLABLE_LAG_MS } from "./letterRise";
+import { letterLit, letterSegments, riseCurve, RISE_EARLY_MS, RISE_MS, rowLetterOnsets, syllableLit, SYLLABLE_EARLY_MS, SYLLABLE_LAG_MS, SYLLABLE_RISE_MS } from "./letterRise";
 
 const w = (t: number, end: number, text: string, extra = {}) => ({ t, end, text, ...extra });
 
@@ -92,16 +92,15 @@ describe("each rise is quick and eases in and out", () => {
   });
 });
 
-describe("a syllable snaps up", () => {
-  it("moves fast first and lands sooner than a letter's rise", () => {
-    expect(letterSnap(1000, 1000 - SNAP_EARLY_MS)).toBe(0);
-    expect(letterSnap(1000, 1000)).toBeGreaterThan(letterLit(1000, 1000));
-    expect(letterSnap(1000, 1015)).toBeGreaterThan(0.5);
-    expect(letterSnap(1000, 1000 - SNAP_EARLY_MS + SNAP_MS)).toBe(1);
-    expect(SNAP_MS - SNAP_EARLY_MS).toBeLessThan(RISE_MS - RISE_EARLY_MS);
+describe("a syllable rises quicker than a letter", () => {
+  it("starts later, lands sooner, on the same easing", () => {
+    expect(syllableLit(1000, 1000 - SYLLABLE_EARLY_MS)).toBe(0);
+    expect(syllableLit(1000, 1000 - SYLLABLE_EARLY_MS + SYLLABLE_RISE_MS / 2)).toBeCloseTo(0.5, 6);
+    expect(syllableLit(1000, 1000 - SYLLABLE_EARLY_MS + SYLLABLE_RISE_MS)).toBe(1);
+    expect(SYLLABLE_RISE_MS - SYLLABLE_EARLY_MS).toBeLessThan(RISE_MS - RISE_EARLY_MS);
   });
   it("is used for Latin words only", () => {
-    expect(riseCurve(w(0, 100, "love"))).toBe(letterSnap);
+    expect(riseCurve(w(0, 100, "love"))).toBe(syllableLit);
     expect(riseCurve(w(0, 100, "사랑"))).toBe(letterLit);
     expect(riseCurve(w(0, 100, "(oh)", { timing: "phrase" }))).toBe(letterLit);
   });

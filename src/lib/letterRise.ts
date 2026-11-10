@@ -106,7 +106,7 @@ function heardLetters(w: LyricWord, letters: readonly string[]): (number | undef
  * word without letter checkpoints, at an even share of the word's own
  * sound (never of the gap after it, so a repeated word looks the same each
  * time). Its letters follow SYLLABLE_LAG_MS apart; punctuation rises with
- * the letter before it. They rise on letterSnap, not letterLit.
+ * the letter before it. They rise on syllableLit, not letterLit.
  */
 export function syllableLetterOnsets(w: LyricWord, nextT?: number): number[] {
   const letters = letterSegments(w.text).filter(s => s.letter).map(s => s.text);
@@ -166,29 +166,31 @@ export function letterLit(onset: number, clock: number): number {
   return u * u * (3 - 2 * u);
 }
 
-/** Latin-script words sung in order rise by syllable, on letterSnap. */
+/** Latin-script words sung in order rise by syllable, on syllableLit. */
 export function risesBySyllable(w: LyricWord): boolean {
   return w.timing !== "phrase" && isLatinWord(w.text);
 }
 
 /** The rise curve for a word's letters. */
 export function riseCurve(w: LyricWord): (onset: number, clock: number) => number {
-  return risesBySyllable(w) ? letterSnap : letterLit;
+  return risesBySyllable(w) ? syllableLit : letterLit;
 }
 
-/** A syllable's snap: quicker than a letter's rise, and fast first. */
-export const SNAP_MS = 130;
-export const SNAP_EARLY_MS = 20;
+/** A syllable's rise: the letter rise's curve, quicker. */
+export const SYLLABLE_RISE_MS = 130;
+export const SYLLABLE_EARLY_MS = 40;
 
 /**
  * How far a Latin letter has risen. Syllables are fewer and further apart
- * than letters, so the soft letter rise read as slow on them; Thien
+ * than letters, so the 200ms letter rise read as slow on them; Thien
  * (2026-11-10): syllables "feels right, but it doesn't feel fast enough or
- * punchy enough". Ease-out cubic: most of the move lands as the syllable
- * is sung (half up 15ms after its onset, fully up 110ms after), then
- * settles softly. Same 1.75px drop, so the punch is timing, not distance.
+ * punchy enough". Same smoothstep, 130ms from 40ms early: half up 25ms
+ * after the syllable's onset, fully up 90ms after (a letter: 20 and 120).
+ * Same 1.75px drop, so the punch is timing, not distance. Thien picked
+ * this over an ease-out snap and a snap with a syllable's letters rising
+ * together.
  */
-export function letterSnap(onset: number, clock: number): number {
-  const u = Math.min(1, Math.max(0, (clock - onset + SNAP_EARLY_MS) / SNAP_MS));
-  return 1 - (1 - u) ** 3;
+export function syllableLit(onset: number, clock: number): number {
+  const u = Math.min(1, Math.max(0, (clock - onset + SYLLABLE_EARLY_MS) / SYLLABLE_RISE_MS));
+  return u * u * (3 - 2 * u);
 }

@@ -565,8 +565,7 @@ button.lyric-row:hover { --lyric-filter: none; }
  * driver. While a row is being sung (data-singing) its unsung letters sit
  * --drop below their place; the drop eases in with the line's own scale-up
  * (same 220ms curve) so the line doesn't jump when it becomes current.
- * Plain colored text (no clipped gradient), so it keeps ClearType.
- * --bend is a held note riding the singer's pitch (voiceMotion.ts). */
+ * Plain colored text (no clipped gradient), so it keeps ClearType. */
 @property --drop {
   syntax: "<length>";
   inherits: true;
@@ -583,7 +582,7 @@ button.lyric-row:hover { --lyric-filter: none; }
  * identity transform costs a paint chunk per letter that the compositor
  * re-sorts on every karaoke frame. */
 .lyric-row:is([data-singing], [data-settling]) [data-letter] {
-  transform: translateY(calc(var(--drop) * (1 - var(--lit, 0)) + var(--bend, 0px)));
+  transform: translateY(calc(var(--drop) * (1 - var(--lit, 0))));
 }
 @media (prefers-reduced-motion: reduce) {
   .lyric-row:is([data-singing], [data-settling]) [data-letter] { transform: none; }
