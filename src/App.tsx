@@ -55,6 +55,7 @@ import {
 } from "./Queue";
 import { DeviceTag } from "./DeviceTag";
 import { SeparatorDot, Waveform } from "./Waveform";
+import { Marquee, MarqueeGroup } from "./Marquee";
 import {
   IN_TAURI,
   type NowPlaying,
@@ -148,9 +149,18 @@ function useHistoryThumb(artId: string | null): void {
  * flyby. Native `title` waits about this long; this is the styled stand-in. */
 const TIP_DELAY_MS = 500;
 
-/** Truncating text line that reveals its full value in a mini tooltip after
- * a hover hold — only when the text is actually clipped, measured at hover
- * time so mode resizes can't leave a stale flag. The full string is already
+/** The album view's cover size. */
+const ALBUM_ART_PX = 190;
+/** The album view's title column: the cover plus 25px of air each side.
+ * Flush with the cover read as cramped at this size (~25 characters, so
+ * most titles panned, with the fades sitting right on the cover's corners);
+ * the full panel looked accidental. Thien, 2026-11-10. */
+const ALBUM_TITLE_PX = ALBUM_ART_PX + 2 * 25;
+
+/** Header text line: pans to show all of itself when it's too long (Marquee).
+ * Under reduced motion it truncates instead and reveals its full value in a
+ * mini tooltip after a hover hold — only when the text is actually clipped,
+ * measured at hover time so mode resizes can't leave a stale flag. The full string is already
  * in the accessibility tree (truncate is a visual clip), so the tooltip is
  * aria-hidden decoration, not the AT path. Chrome rules apply: raised
  * neutral surface, no accent. */
@@ -179,9 +189,13 @@ function TruncateTip({ text, className }: { text: string; className: string }) {
   return (
     <span className="relative block min-w-0">
       <span
-        className={`block truncate ${className}`}
+        className="block min-w-0"
         onMouseEnter={(e) => {
-          const el = e.currentTarget;
+          // Panning already shows the whole line; the tooltip is the
+          // reduced-motion stand-in.
+          if (!reducedMotion) return;
+          const el = e.currentTarget.firstElementChild as HTMLElement | null;
+          if (!el) return;
           clear();
           // +1 forgives subpixel rounding: a line clipped by half a pixel
           // isn't hiding anything worth a tooltip.
@@ -192,7 +206,7 @@ function TruncateTip({ text, className }: { text: string; className: string }) {
           setOpen(false);
         }}
       >
-        {text}
+        <Marquee className={className}>{text}</Marquee>
       </span>
       <AnimatePresence>
         {open && (
@@ -1069,51 +1083,53 @@ function ExpandedView({
           className={`absolute inset-x-0 top-0 z-10 flex items-center gap-2.5 pr-8 ${layer(headerShown)}`}
         >
           <Art url={artUrl} size={44} radiusPx={6} />
-          <div className="min-w-0 flex-1">
-            {/* The living instance rides the TITLE, matching the card and the
-                pill — the capsules are a now-playing pulse and belong to the
-                song (Thien, 2026-07-10). Flex row, not inline flow: a long
-                title truncates in its own box while the waveform keeps its
-                seat right after the clipped text. ml-1 over the waveform's
-                mx-1.5 = the same 10px gap as the card. */}
-            <div className="flex min-w-0 items-center">
-              {/* Keyed track slide (one grammar with the pill/card): the text
-                  drifts in from the skip's direction; the waveform beside it
-                  holds its seat — the living instance never slides. */}
+          <MarqueeGroup>
+            <div className="min-w-0 flex-1">
+              {/* The living instance rides the TITLE, matching the card and the
+                  pill — the capsules are a now-playing pulse and belong to the
+                  song (Thien, 2026-07-10). Flex row, not inline flow: a long
+                  title truncates in its own box while the waveform keeps its
+                  seat right after the clipped text. ml-1 over the waveform's
+                  mx-1.5 = the same 10px gap as the card. */}
+              <div className="flex min-w-0 items-center">
+                {/* Keyed track slide (one grammar with the pill/card): the text
+                    drifts in from the skip's direction; the waveform beside it
+                    holds its seat — the living instance never slides. */}
+                <TrackFadeSpan
+                  key={`xt:${slideEpoch}`}
+                  k={songKey}
+                  suppress={slideSuppressed}
+                  dx={headerDx}
+                  className="block min-w-0"
+                >
+                  <TruncateTip text={np.title} className="text-[15px] font-medium text-fg" />
+                </TrackFadeSpan>
+                {/* Mounted only while the header shows — one living Waveform per
+                    state (doctrine: one reactive surface per view). In the album
+                    view the lg hero is that surface; leaving both always-mounted
+                    ran two rAF/bands loops at once. lastAlive carries the bloom
+                    state across this mount/unmount, so the album toggle doesn't
+                    re-bloom the capsules from the dot. */}
+                {headerShown && (
+                  <span className="wave-seat ml-1 flex shrink-0 items-center">
+                    <Waveform size="md" trailing playing={np.status === "playing"} />
+                  </span>
+                )}
+              </div>
+              {/* text-xs leading-4 = the card's metadata rung exactly, so the
+                  artist line holds size through the card⇄expanded morph (the
+                  15px title above already does; 13px here visibly stepped). */}
               <TrackFadeSpan
-                key={`xt:${slideEpoch}`}
+                key={`xa:${slideEpoch}`}
                 k={songKey}
                 suppress={slideSuppressed}
                 dx={headerDx}
                 className="block min-w-0"
               >
-                <TruncateTip text={np.title} className="text-[15px] font-medium text-fg" />
+                <TruncateTip text={np.artist} className="text-xs leading-4 text-muted" />
               </TrackFadeSpan>
-              {/* Mounted only while the header shows — one living Waveform per
-                  state (doctrine: one reactive surface per view). In the album
-                  view the lg hero is that surface; leaving both always-mounted
-                  ran two rAF/bands loops at once. lastAlive carries the bloom
-                  state across this mount/unmount, so the album toggle doesn't
-                  re-bloom the capsules from the dot. */}
-              {headerShown && (
-                <span className="ml-1 flex shrink-0 items-center">
-                  <Waveform size="md" trailing playing={np.status === "playing"} />
-                </span>
-              )}
             </div>
-            {/* text-xs leading-4 = the card's metadata rung exactly, so the
-                artist line holds size through the card⇄expanded morph (the
-                15px title above already does; 13px here visibly stepped). */}
-            <TrackFadeSpan
-              key={`xa:${slideEpoch}`}
-              k={songKey}
-              suppress={slideSuppressed}
-              dx={headerDx}
-              className="block min-w-0"
-            >
-              <TruncateTip text={np.artist} className="text-xs leading-4 text-muted" />
-            </TrackFadeSpan>
-          </div>
+          </MarqueeGroup>
         </div>
 
         {/* Lyrics view — the top-[52px] body box clears the fixed header.
@@ -1201,20 +1217,26 @@ function ExpandedView({
                 transition={slideIn}
                 className="flex w-full flex-col items-center"
               >
-                <Art url={artUrl} size={190} radiusPx={12} />
+                <Art url={artUrl} size={ALBUM_ART_PX} radiusPx={12} />
                 {/* Metadata: title + artist·album, and nothing else — the
                     device tag moved OUT to the shared status band below
                     (2026-07-24). Its height-reserved slot used to live here
                     so a late "spotify-device" event couldn't nudge the hero;
                     the band is absolute, so that guarantee now holds for BOTH
                     occupants without spending a row the wave's seat needs. */}
-                <div className="mt-3 min-w-0 self-stretch text-center">
-                  <p className="truncate text-sm font-medium text-fg">{np.title}</p>
-                  <p className="truncate text-xs text-muted">
-                    {np.artist}
-                    {np.album && <SeparatorDot />}
-                    {np.album}
-                  </p>
+                {/* Capped just past the cover (ALBUM_TITLE_PX): a long title
+                    spanning the whole panel looked accidental once it panned
+                    instead of truncating (Thien, 2026-11-09). Focus can sit
+                    flush with its art because its cover is far larger. */}
+                <div className="mt-3 min-w-0 text-center" style={{ width: ALBUM_TITLE_PX }}>
+                  <MarqueeGroup>
+                    <Marquee className="text-sm font-medium text-fg">{np.title}</Marquee>
+                    <Marquee className="text-xs text-muted">
+                      {np.artist}
+                      {np.album && <SeparatorDot />}
+                      {np.album}
+                    </Marquee>
+                  </MarqueeGroup>
                 </div>
               </motion.div>
             </AnimatePresence>
@@ -2137,31 +2159,33 @@ function App() {
                   an ellipsis on a title that fits (a weighted shrink-[999]
                   did). Flex items are blockified, so the slide's translate
                   still applies. */}
-              <p className="flex min-w-0 flex-1 items-center text-xs font-medium text-fg">
-                <TrackFadeSpan
-                  key={`t:${slideEpoch}`}
-                  k={trackIdOf(np)}
-                  suppress={announceSuppressed}
-                  dx={trackDir * SLIDE_PX.pill}
-                  className="min-w-0 truncate"
-                >
-                  {np.title}
-                </TrackFadeSpan>
-                {/* Its own 16px line box, so align-middle seats the capsules
-                    on the text's middle exactly as the inline flow did. */}
-                <span className="shrink-0">
-                  <Waveform trailing={!np.artist} playing={np.status === "playing"} />
-                </span>
-                <TrackFadeSpan
-                  key={`a:${slideEpoch}`}
-                  k={trackIdOf(np)}
-                  suppress={announceSuppressed}
-                  dx={trackDir * SLIDE_PX.pill}
-                  className="min-w-0 flex-1 truncate font-normal text-muted"
-                >
-                  {np.artist}
-                </TrackFadeSpan>
-              </p>
+              <MarqueeGroup>
+                <p className="flex min-w-0 flex-1 items-center text-xs font-medium text-fg">
+                  <TrackFadeSpan
+                    key={`t:${slideEpoch}`}
+                    k={trackIdOf(np)}
+                    suppress={announceSuppressed}
+                    dx={trackDir * SLIDE_PX.pill}
+                    className="min-w-0"
+                  >
+                    <Marquee>{np.title}</Marquee>
+                  </TrackFadeSpan>
+                  {/* Its own 16px line box, so align-middle seats the capsules
+                      on the text's middle exactly as the inline flow did. */}
+                  <span className="wave-seat shrink-0 [--wave-pan-gap:8px]">
+                    <Waveform trailing={!np.artist} playing={np.status === "playing"} />
+                  </span>
+                  <TrackFadeSpan
+                    key={`a:${slideEpoch}`}
+                    k={trackIdOf(np)}
+                    suppress={announceSuppressed}
+                    dx={trackDir * SLIDE_PX.pill}
+                    className="min-w-0 flex-1 font-normal text-muted"
+                  >
+                    <Marquee>{np.artist}</Marquee>
+                  </TrackFadeSpan>
+                </p>
+              </MarqueeGroup>
               <PillTime np={np} />
             </div>
             {/* Scrim + [queue][play/pause], revealed on hover. Absolute over
@@ -2218,60 +2242,64 @@ function App() {
           <div className="flex h-full flex-col gap-1.5 px-3 pb-1 pt-3">
             <div className="flex min-h-0 flex-1 items-center gap-3">
               <Art url={shownArt} size={52} radiusPx={8} />
-              <div className="min-w-0 flex-1">
-                {/* The living separator rides the TITLE here, trailing (rest =
-                    nothing, bars only while playing): at md — the size rung
-                    steps with the container (pill sm → card md → expanded md
-                    header / lg hero) — it overpowered the 12px artist·album
-                    line as a separator, so that line keeps a static dot and
-                    the waveform sits where the card has presence to spare
-                    (Thien, 2026-07-10). One living instance per view.
-                    FLEX row, not inline flow, same as the lyrics header: the
-                    title truncates in its own box, and items-center seats the
-                    capsules on the line box's center — inline align-middle
-                    hangs an md box ~5px under the baseline, visibly low
-                    against a cap-height bold title. ml-1 over the waveform's
-                    own mx-1.5 = the 10px gap. */}
-                <div className="flex min-w-0 items-center">
-                  {/* One track-change grammar (2026-07-23): the card's titles
-                      join the directional slide — the waveform beside them
-                      never moves (its announcement is the pill's beat). */}
-                  <p className="min-w-0 truncate text-[15px] font-medium text-fg">
-                    <TrackFadeSpan
-                      key={`ct:${slideEpoch}`}
-                      k={trackIdOf(np)}
-                      suppress={announceSuppressed}
-                      dx={trackDir * SLIDE_PX.card}
-                      className="inline-block max-w-full truncate align-top"
-                    >
-                      {np.title}
-                    </TrackFadeSpan>
-                  </p>
-                  <span className="ml-1 flex shrink-0 items-center">
-                    <Waveform size="md" trailing playing={np.status === "playing"} />
-                  </span>
+              <MarqueeGroup>
+                <div className="min-w-0 flex-1">
+                  {/* The living separator rides the TITLE here, trailing (rest =
+                      nothing, bars only while playing): at md — the size rung
+                      steps with the container (pill sm → card md → expanded md
+                      header / lg hero) — it overpowered the 12px artist·album
+                      line as a separator, so that line keeps a static dot and
+                      the waveform sits where the card has presence to spare
+                      (Thien, 2026-07-10). One living instance per view.
+                      FLEX row, not inline flow, same as the lyrics header: the
+                      title truncates in its own box, and items-center seats the
+                      capsules on the line box's center — inline align-middle
+                      hangs an md box ~5px under the baseline, visibly low
+                      against a cap-height bold title. ml-1 over the waveform's
+                      own mx-1.5 = the 10px gap. */}
+                  <div className="flex min-w-0 items-center">
+                    {/* One track-change grammar (2026-07-23): the card's titles
+                        join the directional slide — the waveform beside them
+                        never moves (its announcement is the pill's beat). */}
+                    <p className="min-w-0 text-[15px] font-medium text-fg">
+                      <TrackFadeSpan
+                        key={`ct:${slideEpoch}`}
+                        k={trackIdOf(np)}
+                        suppress={announceSuppressed}
+                        dx={trackDir * SLIDE_PX.card}
+                        className="block min-w-0"
+                      >
+                        <Marquee>{np.title}</Marquee>
+                      </TrackFadeSpan>
+                    </p>
+                    <span className="wave-seat ml-1 flex shrink-0 items-center">
+                      <Waveform size="md" trailing playing={np.status === "playing"} />
+                    </span>
+                  </div>
+                  {/* The device tag rides the metadata line, icon-only (name in
+                      the tooltip) — the fixed card has no room for a third line.
+                      Only when the audio is on a non-PC device (remoteDevice),
+                      so it explains the waveform sitting on its resting dot. */}
+                  <div className="flex min-w-0 items-center gap-1">
+                    <p className="min-w-0 flex-1 text-xs leading-4 text-muted">
+                      <TrackFadeSpan
+                        key={`ca:${slideEpoch}`}
+                        k={trackIdOf(np)}
+                        suppress={announceSuppressed}
+                        dx={trackDir * SLIDE_PX.card}
+                        className="block min-w-0"
+                      >
+                        <Marquee>
+                          {np.artist}
+                          {np.album && <SeparatorDot />}
+                          {np.album}
+                        </Marquee>
+                      </TrackFadeSpan>
+                    </p>
+                    {remoteDevice && <DeviceTag device={remoteDevice} playing={playing} />}
+                  </div>
                 </div>
-                {/* The device tag rides the metadata line, icon-only (name in
-                    the tooltip) — the fixed card has no room for a third line.
-                    Only when the audio is on a non-PC device (remoteDevice),
-                    so it explains the waveform sitting on its resting dot. */}
-                <div className="flex min-w-0 items-center gap-1">
-                  <p className="min-w-0 flex-1 truncate text-xs leading-4 text-muted">
-                    <TrackFadeSpan
-                      key={`ca:${slideEpoch}`}
-                      k={trackIdOf(np)}
-                      suppress={announceSuppressed}
-                      dx={trackDir * SLIDE_PX.card}
-                      className="inline-block max-w-full truncate align-top"
-                    >
-                      {np.artist}
-                      {np.album && <SeparatorDot />}
-                      {np.album}
-                    </TrackFadeSpan>
-                  </p>
-                  {remoteDevice && <DeviceTag device={remoteDevice} playing={playing} />}
-                </div>
-              </div>
+              </MarqueeGroup>
             </div>
             <ProgressBar np={np} />
             <div className="flex h-7 items-center justify-center">

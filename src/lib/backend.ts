@@ -69,7 +69,14 @@ const AM_PUSH_MS = [1000, 700, 1300, 900, 1100];
 /** Small ring the mock's next/prev walk, so preview can exercise track-change
  * flows (lyrics refetch, the expanded view's reverse transition). */
 const MOCK_TRACKS = [
-  { title: "Savior", artist: "THE BOYZ", album: "THE BOYZ" },
+  // `?long`: a title and artist too long for any surface, for the marquee.
+  !IN_TAURI && new URLSearchParams(window.location.search).has("long")
+    ? {
+        title: "Go Back (feat. Julia Church) - Extended Club Mix",
+        artist: "John Summit, Sub Focus, Julia Church",
+        album: "Go Back (Remixes)",
+      }
+    : { title: "Savior", artist: "THE BOYZ", album: "THE BOYZ" },
   { title: "Instagram", artist: "DEAN", album: "Instagram - Single" },
   { title: "WHERE YOU AT?", artist: "STAYC", album: "2:LOVE - EP" },
 ];

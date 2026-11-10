@@ -422,6 +422,35 @@ html[data-opaque] {
   animation-delay: 540ms;
 }
 
+/* Marquee (src/Marquee.tsx): a too-long line pans instead of ending in an
+ * ellipsis. The left fade lives in a padding strip hung outside the column
+ * by a matching negative margin (layout unchanged, first letter crisp at
+ * rest); the right fade is the column's last 0.5em. 0.5em = MARQUEE.fadeEm
+ * in lib/marquee.ts. Static mask: only the inner text's transform moves. */
+.marquee[data-pan] {
+  --marquee-fade: 0.5em;
+  margin-left: calc(-1 * var(--marquee-fade));
+  padding-left: var(--marquee-fade);
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--marquee-fade),
+    #000 calc(100% - var(--marquee-fade)),
+    transparent
+  );
+}
+
+/* The waveform seat after a title (expanded header, card, pill). While the
+ * title pans, its right fade softens the last letters, and the capsules sat
+ * right against a half-faded word, which read as part of the text (Thien,
+ * 2026-11-10). A little more air only then makes the text end before the
+ * pulse starts; a title that fits keeps the waveform trailing it as before.
+ * The seat stays beside the title rather than moving to the row end, so
+ * short titles keep the capsules on the song (2026-07-10). */
+:has(.marquee[data-pan]) + .wave-seat {
+  margin-left: var(--wave-pan-gap, 14px);
+}
+
 /* Track-change title beat (the pill): the incoming title/artist fade in
  * fast and plain — remount-keyed, so the outgoing text exits instantly per
  * the track-change doctrine. Reuses caption-in's keyframes. */
