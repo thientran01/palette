@@ -505,7 +505,7 @@ fn open_loopback(
                         ring.push_frame(m);
                     }
                 }
-                crate::karaoke::push_frames(&mono, None, sample_rate as u32);
+                crate::karaoke::push_frames(&mono, None, sample_rate as u32, true);
             },
             |e| log::warn!("audio loopback stream error: {e}"),
             None,
