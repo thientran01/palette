@@ -244,8 +244,14 @@ fn is_zero(n: &u32) -> bool {
 /// are what this recovers.
 const MAX_LISTENS: u32 = 3;
 /// How much surer, in mean log support, a new listen's line must be to
-/// replace the saved one. Keeps an identical decode from churning.
-const MERGE_MARGIN: f32 = 0.01;
+/// replace the saved one: about a fifth more support. Support is saved to
+/// two decimals, so two listens that heard a faint word the same can save
+/// 0.05 and 0.06 (0.18 apart in log); a smaller margin traded lines, and
+/// counted a listen as an improvement, on that rounding alone.
+const MERGE_MARGIN: f32 = 0.2;
+/// Saved support below this is all the same "barely heard": 0.00 and 0.01
+/// are one rounding step and 2.3 apart in log.
+const SUPPORT_FLOOR: f32 = 0.05;
 /// Words this sure in both listens (under 1% of them are more than 300ms
 /// off) measure how far apart the two listens' timelines sit, and a saved
 /// line whose words are all this sure is never traded for another listen's...
@@ -518,12 +524,13 @@ fn wants_another_listen(listens: u32, words: &[Word]) -> bool {
 }
 
 /// How sure the review was of a line as saved: the mean log support of its
-/// words (`LineDecode::score`), or None for a line it didn't check.
+/// words (as `LineDecode::score`, but floored at SUPPORT_FLOOR, since the
+/// saved figure is rounded), or None for a line it didn't check.
 fn line_score(words: &[&Word]) -> Option<f32> {
     let logs: Vec<f32> = words
         .iter()
         .filter_map(|w| w.support)
-        .map(|p| p.max(1e-3).ln())
+        .map(|p| p.max(SUPPORT_FLOOR).ln())
         .collect();
     (!logs.is_empty()).then(|| logs.iter().sum::<f32>() / logs.len() as f32)
 }
@@ -1065,8 +1072,10 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         acc: 0.0,
         n: 0,
         samples: Vec::with_capacity(TARGET_HZ as usize * 240),
+        // Reserved like `samples`, so the capture thread never stops to
+        // move tens of megabytes mid-song.
         stereo: (crate::vocal_preview::enabled() || acoustic::second_ear_installed())
-            .then(Vec::new),
+            .then(|| Vec::with_capacity(crate::loopback::SAMPLE_RATE as usize * 2 * 240)),
         peak: 0.0,
         started: None,
         received: 0,
@@ -1375,7 +1384,32 @@ fn seek_residual(anchors: &[(usize, i64)], idx: usize, position_ms: i64) -> Opti
     }
     let map = TimeMap::fit(anchors, TARGET_HZ, 0);
     let r = map.residual_ms(idx, position_ms);
-    (r.abs() > align::SEEK_RESIDUAL_MS).then_some(r)
+    (r.abs() > seek_band(&map)).then_some(r)
+}
+
+/// A recording whose pairs agree this closely comes from a player that
+/// reports to the millisecond. Spotify's fits on Thien's PC sit at 3 to
+/// 26 ms (96 songs, 2026-11-10); Apple Music's whole-second reports never
+/// get near it.
+const TIGHT_FIT_MS: f64 = 50.0;
+const TIGHT_MIN_ANCHORS: usize = 4;
+/// The seek band for such a recording. The worst single pair in five
+/// dumps sat 41 ms off its fit, so half a second is a scrub or a pause,
+/// not jitter. Under the wide band a two-second scrub back passed as
+/// jitter and bent the whole song's clock, with nothing downstream to
+/// notice.
+const TIGHT_SEEK_MS: f64 = 500.0;
+
+/// How far a pair may sit off `map` before it is a seek: `TIGHT_SEEK_MS`
+/// once the recording has shown its reports are precise, otherwise
+/// `align::SEEK_RESIDUAL_MS`.
+fn seek_band(map: &TimeMap) -> f64 {
+    if map.n_anchors >= TIGHT_MIN_ANCHORS && map.dropped == 0 && map.residual_rms_ms <= TIGHT_FIT_MS
+    {
+        TIGHT_SEEK_MS
+    } else {
+        align::SEEK_RESIDUAL_MS
+    }
 }
 
 #[derive(Serialize)]
@@ -2407,6 +2441,22 @@ mod tests {
     }
 
     #[test]
+    fn rounding_alone_never_trades_a_line() {
+        // One rounding step apart at the faint end, where a step is
+        // largest in log: the same decode, saved twice.
+        for (old, new) in [(0.0, 0.01), (0.01, 0.04), (0.05, 0.06), (0.3, 0.31)] {
+            let saved = vec![checked(1_000, 1_100, old)];
+            let listen = vec![checked(1_000, 1_900, new)];
+            let (merged, improved) = merge_listens(&saved, &listen);
+            assert_eq!((merged[0].t, improved), (1_100, 0), "{old} against {new}");
+        }
+        // A real gain still wins.
+        let (merged, improved) =
+            merge_listens(&[checked(1_000, 1_100, 0.3)], &[checked(1_000, 1_900, 0.4)]);
+        assert_eq!((merged[0].t, improved), (1_900, 1));
+    }
+
+    #[test]
     fn a_new_listen_is_lined_up_on_words_both_are_sure_of() {
         // Twelve sure words 40ms later in the new listen, one unsure word
         // far off, and one sure word a single listen misplaced.
@@ -2581,6 +2631,38 @@ mod tests {
         // 10s in, the player reports 14s: the user scrubbed forward 3s.
         assert!(seek_detected(&two_anchors(), 160_000, 14_000));
         assert!(seek_detected(&two_anchors(), 160_000, 8_000));
+    }
+
+    #[test]
+    fn a_precise_player_gets_the_tight_band() {
+        // Six pairs 5s apart, within 20ms of a straight line (Spotify).
+        let tight: Vec<(usize, i64)> = (0..6)
+            .map(|i| {
+                (
+                    i * 80_000,
+                    1_000 + i as i64 * 5_000 + [0, 12, -8, 20, -15, 5][i],
+                )
+            })
+            .collect();
+        // 30s of samples in, a pair says 32.4s: scrubbed back about 1.4s
+        // short of where it would be, which the wide band calls jitter.
+        assert!(seek_detected(&tight, 480_000, 31_000 - 1_400));
+        assert!(seek_detected(&tight, 480_000, 31_000 + 700));
+        assert!(!seek_detected(&tight, 480_000, 31_000 + 300));
+        assert!(!seek_detected(&tight, 480_000, 31_000 - 300));
+        // Too few pairs to know the player is precise: the wide band.
+        assert!(!seek_detected(&tight[..3], 480_000, 31_000 - 1_400));
+        // Whole-second reports (Apple Music) never earn the tight band.
+        let coarse: Vec<(usize, i64)> = (0..6)
+            .map(|i| {
+                (
+                    i * 80_000,
+                    1_000 + i as i64 * 5_000 + [0, 600, -700, 400, -500, 800][i],
+                )
+            })
+            .collect();
+        assert!(!seek_detected(&coarse, 480_000, 31_000 - 1_400));
+        assert!(seek_detected(&coarse, 480_000, 31_000 - 4_000));
     }
 
     #[test]

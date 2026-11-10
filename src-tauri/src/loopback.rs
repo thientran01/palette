@@ -484,8 +484,12 @@ fn capture_loop(
             // Downmixed packet, reused across packets: the ring takes it
             // under one lock and the karaoke recorder as one push.
             let mut mono: Vec<f32> = Vec::with_capacity(4096);
-            // The vocal trial's separator wants the stereo the downmix loses.
-            let keep_stereo = channels == 2 && crate::vocal_preview::enabled();
+            // The separator (the karaoke review's second ear, or the vocal
+            // trial) wants the stereo the downmix loses. Every packet offers
+            // it; the recorder keeps it only for a recording that will use
+            // it (`karaoke::push_frames`). Gated here on the trial alone,
+            // the second ear heard 16 kHz mono in every release build.
+            let keep_stereo = channels == 2;
             let mut stereo: Vec<f32> = Vec::new();
             'outer: while !stop.load(Ordering::Relaxed) {
                 let _ = WaitForSingleObject(event, 200);
