@@ -21,6 +21,8 @@ const STAR: usize = 28;
 mod entry_timing;
 #[path = "japanese.rs"]
 mod japanese;
+#[path = "korean.rs"]
+mod korean;
 #[path = "sync_review.rs"]
 mod review;
 #[path = "spoken.rs"]
@@ -36,6 +38,13 @@ use spoken::Numerals;
 /// is unchanged and the new decoder looks at the same windows; the rest
 /// relearn on the song's next full listen. Add the old value to
 /// EARLIER_RECIPES.
+///
+/// Korean lines spelled as sung (`korean`, 2026-11-10) kept /4: takes only
+/// exist for listens since they were added that day, so a bump now would
+/// still send nearly every saved sync, in every language, back to
+/// relearning from one listen. Korean syncs with doubted lines get their
+/// extra listens with the new spelling, merged line by line. The spelling
+/// keeps every line's window, so a later bump re-decodes Korean takes too.
 pub const RECIPE: &str = "mms-int8/4";
 /// Recipes RECIPE replaced. Words saved under them keep showing, and are
 /// never deleted on mismatch, until the next full listen relearns the song.
@@ -251,8 +260,8 @@ fn expand_digit(token: &str) -> String {
 /// it. It costs that one line its words, never the song.
 const UNREPRESENTABLE: &str = "unrepresentable spoken token";
 
-/// `spelled` holds letters a token should be said as (`japanese::spell`),
-/// or is empty; a token it leaves None is spelled here.
+/// `spelled` holds letters a token should be said as (`japanese::spell`,
+/// `korean::spell`), or is empty; a token it leaves None is spelled here.
 fn plan_tokens(
     tokens: Vec<String>,
     romanizer: &uroman::Uroman,
@@ -595,6 +604,20 @@ fn japanese_letters(
     japanese::spell(tokens, &readings, |token| {
         romanizer
             .romanize_string::<uroman::rom_format::Str>(token, None)
+            .to_string()
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_lowercase())
+            .collect()
+    })
+}
+
+/// Letters for a Korean line's tokens, each syllable spelled as sung
+/// (`korean::spell`) the way uroman spells it written.
+fn korean_letters(romanizer: &uroman::Uroman, tokens: &[String]) -> Vec<Option<String>> {
+    korean::spell(tokens, |syllable| {
+        romanizer
+            .romanize_string::<uroman::rom_format::Str>(syllable, None)
             .to_string()
             .to_lowercase()
             .chars()
@@ -1034,10 +1057,10 @@ impl AcousticAligner {
                 continue;
             }
             let next = lines.get(li + 1).map_or(to_time(pcm.len() as f64), |l| l.t);
-            let spelled = if numerals == Numerals::Japanese {
-                self.spell_japanese(&tokens)
-            } else {
-                Vec::new()
+            let spelled = match numerals {
+                Numerals::Japanese => self.spell_japanese(&tokens),
+                Numerals::Korean => korean_letters(&self.romanizer, &tokens),
+                _ => Vec::new(),
             };
             // A held "ooh" has no syllable budget (eight seconds apiece on
             // JamendoLyrics' Fantasma), so vocable lines keep the full gap.
@@ -2433,6 +2456,35 @@ mod digit_tests {
         assert_eq!(said("baby ねぇ"), ["baby", "ne", "e"]);
         // A line-final っ still says something, so the line keeps its words.
         assert_eq!(said("あっ"), ["a", "tsu"]);
+    }
+
+    #[test]
+    fn korean_lines_spell_as_sung() {
+        // uroman alone: 같이 "gat i", 없어 "eobs eo", 좋아 "joh a", 몰라 "mol ra",
+        // 있는 "iss neun".
+        let roman = uroman::Uroman::new();
+        let ko = Numerals::Korean;
+        let said = |text: &str| -> Vec<String> {
+            let tokens = tokenize(text);
+            let letters = korean_letters(&roman, &tokens);
+            let plan = plan_tokens(tokens, &roman, ko, &letters).unwrap();
+            plan.ranges
+                .iter()
+                .flatten()
+                .map(|r| {
+                    plan.targets[r.clone()]
+                        .iter()
+                        .map(|&i| LABELS[i] as char)
+                        .collect()
+                })
+                .collect()
+        };
+        assert_eq!(said("같이 없어"), ["ga", "ci", "eob", "seo"]);
+        assert_eq!(said("좋아 몰라"), ["jo", "a", "mol", "la"]);
+        assert_eq!(said("있는 학교"), ["in", "neun", "hag", "gyo"]);
+        // English in a K-pop line keeps its own spelling; 11 is still said.
+        assert_eq!(said("Baby 같이"), ["baby", "ga", "ci"]);
+        assert_eq!(said("11년째"), ["sibil", "nyeon", "jjae"]);
     }
 }
 
