@@ -5,7 +5,7 @@
 //! karaoke-takes/<key>.ptk. After an update that bumps
 //! `acoustic::RECIPE` but not `acoustic::EMISSIONS`, a background sweep
 //! decodes each saved song's takes again with the new decoder, folds them
-//! together the way the listens were (`merge_listens`), and saves the
+//! together the way the listens were (`combine_listens`), and saves the
 //! result in place, keeping the song's listens and detail. It runs one
 //! song at a time on the sync job slot, so a listen that finishes meanwhile
 //! queues behind one short decode instead of racing it.
@@ -309,7 +309,7 @@ fn decode_listens(
         let fresh = decoder.redecode(take.clone(), lines)?;
         words = Some(match words {
             None => fresh,
-            Some(saved) => merge_listens(&saved, &fresh).0,
+            Some(saved) => combine_listens(&saved, &fresh).words,
         });
     }
     Ok(words)

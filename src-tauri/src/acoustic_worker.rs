@@ -258,13 +258,18 @@ fn run(rx: mpsc::Receiver<Request>) {
                 );
             }
             log::info!(
-                "karaoke: model reused={}, load {:.2}s, align {:.2}s, second ear on {:.1}s of {:.1}s ({} passes), take {} KB",
+                "karaoke: model reused={}, load {:.2}s, align {:.2}s, second ear on {:.1}s of {:.1}s ({} passes, {}), take {} KB",
                 reused,
                 loaded.as_secs_f64(),
                 aligned.as_secs_f64(),
                 heard as f64 / hz as f64,
                 request.pcm.len() as f64 / hz as f64,
                 passes,
+                if request.stereo.is_some() {
+                    "stereo"
+                } else {
+                    "mono"
+                },
                 take.as_ref().map_or(0, |t| t.bytes() / 1024),
             );
             result.map(|words| Aligned { words, take })

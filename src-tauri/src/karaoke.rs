@@ -183,12 +183,15 @@ const STORE_V: u32 = 5;
 /// 2 digits spelled as said, 3 the review's support per word (the Lyric
 /// syncs panel's estimate), 4 that plus the singer's voice on held notes
 /// (voice.rs), 5 that plus a second listen on every doubted line (no pass
-/// cap, 2026-11-10). A file below what this install writes (`detail_v`)
-/// still displays, and the next full listen relearns it, except a 4 whose
-/// doubted lines were all re-heard anyway (`detail_settled`).
+/// cap, 2026-11-10), 6 that plus windows moved for a song whose stamps run
+/// late (`acoustic::late_stamps`). A file below what this install writes
+/// (`detail_v`) still displays, and the next full listen relearns it,
+/// except a 4 whose doubted lines were all re-heard anyway and a 4 or 5
+/// whose stamps don't run late (`detail_settled`).
 const SUPPORT_DETAIL_V: u32 = 3;
 const VOICE_DETAIL_V: u32 = 4;
 const FULL_EAR_DETAIL_V: u32 = 5;
+const RECENTRE_DETAIL_V: u32 = 6;
 fn recipe() -> &'static str {
     if acoustic::assets().is_some() {
         acoustic::RECIPE
@@ -247,8 +250,20 @@ fn is_zero(n: &u32) -> bool {
 /// are what this recovers.
 const MAX_LISTENS: u32 = 3;
 /// How much surer, in mean log support, a new listen's line must be to
-/// replace the saved one. Keeps an identical decode from churning.
-const MERGE_MARGIN: f32 = 0.01;
+/// replace the saved one: about a fifth more support. Support is saved to
+/// two decimals, so two listens that heard a faint word the same can save
+/// 0.05 and 0.06 (0.18 apart in log); a smaller margin traded lines, and
+/// counted a listen as an improvement, on that rounding alone.
+const MERGE_MARGIN: f32 = 0.2;
+/// Saved support below this is all the same "barely heard": 0.00 and 0.01
+/// are one rounding step and 2.3 apart in log.
+const SUPPORT_FLOOR: f32 = 0.05;
+/// Words this sure in both listens (under 1% of them are more than 300ms
+/// off) measure how far apart the two listens' timelines sit, and a saved
+/// line whose words are all this sure is never traded for another listen's...
+const REGISTER_SURE: f32 = 0.9;
+/// ...and it takes this many to trust the median.
+const REGISTER_MIN_WORDS: usize = 12;
 
 #[derive(Serialize, Clone)]
 pub struct KaraokeReady {
@@ -518,52 +533,174 @@ fn wants_another_listen(listens: u32, words: &[Word]) -> bool {
 }
 
 /// How sure the review was of a line as saved: the mean log support of its
-/// words (`LineDecode::score`), or None for a line it didn't check.
+/// words (as `LineDecode::score`, but floored at SUPPORT_FLOOR, since the
+/// saved figure is rounded), or None for a line it didn't check.
 fn line_score(words: &[&Word]) -> Option<f32> {
     let logs: Vec<f32> = words
         .iter()
         .filter_map(|w| w.support)
-        .map(|p| p.max(1e-3).ln())
+        .map(|p| p.max(SUPPORT_FLOOR).ln())
         .collect();
     (!logs.is_empty()).then(|| logs.iter().sum::<f32>() / logs.len() as f32)
 }
 
-/// Two listens of the same lyrics, line by line: the saved line stays unless
-/// the new listen is surer of it by MERGE_MARGIN, a line only one listen
-/// placed comes from that one, and an unchecked line yields to a checked
-/// one. Returns the words and how many lines the new listen improved.
-fn merge_listens(saved: &[Word], new: &[Word]) -> (Vec<Word>, usize) {
-    fn group(words: &[Word]) -> BTreeMap<i64, Vec<&Word>> {
-        let mut lines: BTreeMap<i64, Vec<&Word>> = BTreeMap::new();
-        for w in words {
-            if let Some(line_t) = w.line_t {
-                lines.entry(line_t).or_default().push(w);
-            }
+/// Every checked word of the line is sure: nothing a new listen could add
+/// is worth moving it for.
+fn settled_line(words: &[&Word]) -> bool {
+    words
+        .iter()
+        .filter_map(|w| w.support)
+        .all(|p| p >= REGISTER_SURE)
+}
+
+/// Words by the stamp of their line, in the order saved.
+fn by_line(words: &[Word]) -> BTreeMap<i64, Vec<&Word>> {
+    let mut lines: BTreeMap<i64, Vec<&Word>> = BTreeMap::new();
+    for w in words {
+        if let Some(line_t) = w.line_t {
+            lines.entry(line_t).or_default().push(w);
         }
-        lines
     }
-    let (old_lines, new_lines) = (group(saved), group(new));
-    let keys: BTreeSet<i64> = old_lines.keys().chain(new_lines.keys()).copied().collect();
+    lines
+}
+
+/// How far a new listen's timeline sits from the saved sync's, in ms
+/// (new − saved), and the words it was measured on. Each listen has its own
+/// time map, fitted to that play's position reports, so two listens can
+/// disagree by a constant even where both decodes are right. The median
+/// onset difference over words both listens are sure of (same line, same
+/// place in it, same text) is that constant. None with too few to tell.
+fn listen_offset(saved: &[Word], new: &[Word]) -> Option<(i64, usize)> {
+    let (old_lines, new_lines) = (by_line(saved), by_line(new));
+    let sure = |w: &Word| w.support.is_some_and(|p| p >= REGISTER_SURE);
+    let mut diffs: Vec<i64> = Vec::new();
+    for (key, old) in &old_lines {
+        let Some(fresh) = new_lines.get(key) else {
+            continue;
+        };
+        if old.len() != fresh.len() {
+            continue;
+        }
+        diffs.extend(
+            old.iter()
+                .zip(fresh)
+                .filter(|(o, n)| o.text == n.text && sure(o) && sure(n))
+                .map(|(o, n)| n.t - o.t),
+        );
+    }
+    if diffs.len() < REGISTER_MIN_WORDS {
+        return None;
+    }
+    let n = diffs.len();
+    let mid = n / 2;
+    Some((*diffs.select_nth_unstable(mid).1, n))
+}
+
+/// `words` moved by `by` ms. A voice track counts from its word's onset,
+/// so it moves with it.
+fn shifted(words: &[Word], by: i64) -> Vec<Word> {
+    words
+        .iter()
+        .map(|w| {
+            let mut w = w.clone();
+            w.t += by;
+            w.end = w.end.map(|end| end + by);
+            for point in &mut w.points {
+                point.t += by;
+            }
+            w
+        })
+        .collect()
+}
+
+/// Two listens of the same lyrics, line by line: the saved line stays unless
+/// it has a word short of sure (`settled_line`) and the new listen is surer
+/// of the line by MERGE_MARGIN, a line only one listen
+/// placed comes from that one, and an unchecked line yields to a checked
+/// one. A new line is only taken where line starts stay in order, whichever
+/// listen its neighbours come from. Returns the words and how many lines the
+/// new listen improved. `new` must already be on `saved`'s timeline: call
+/// `combine_listens`, not this.
+fn merge_listens(saved: &[Word], new: &[Word]) -> (Vec<Word>, usize) {
+    let (old_lines, new_lines) = (by_line(saved), by_line(new));
+    let start = |line: &[&Word]| line.iter().map(|w| w.t).min();
+    let keys: Vec<i64> = old_lines
+        .keys()
+        .chain(new_lines.keys())
+        .copied()
+        .collect::<BTreeSet<i64>>()
+        .into_iter()
+        .collect();
     let mut out = Vec::with_capacity(new.len());
     let mut improved = 0;
-    for key in keys {
+    let mut last_start: Option<i64> = None;
+    for (i, key) in keys.iter().enumerate() {
         // (take the new listen's line, and it is an improvement)
-        let (take_new, better) = match (old_lines.get(&key), new_lines.get(&key)) {
+        let (mut take_new, mut better) = match (old_lines.get(key), new_lines.get(key)) {
             (Some(old), Some(fresh)) => match (line_score(old), line_score(fresh)) {
-                (Some(o), Some(n)) => (n > o + MERGE_MARGIN, n > o + MERGE_MARGIN),
+                (Some(o), Some(n)) => {
+                    let surer = !settled_line(old) && n > o + MERGE_MARGIN;
+                    (surer, surer)
+                }
                 (None, n) => (true, n.is_some()),
                 (Some(_), None) => (false, false),
             },
             (None, _) => (true, true),
             (Some(_), None) => (false, false),
         };
+        if take_new && old_lines.contains_key(key) {
+            // The next line's start in either listen: whichever is kept
+            // there, this line still starts before it.
+            let next = keys.get(i + 1).and_then(|next| {
+                [old_lines.get(next), new_lines.get(next)]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|line| start(line))
+                    .min()
+            });
+            let begins = start(&new_lines[key]);
+            let in_order = begins.is_some_and(|t| {
+                last_start.is_none_or(|prev| t > prev) && next.is_none_or(|next| t < next)
+            });
+            if !in_order {
+                (take_new, better) = (false, false);
+            }
+        }
         improved += usize::from(better);
         let side = if take_new { &new_lines } else { &old_lines };
-        out.extend(side[&key].iter().map(|w| (*w).clone()));
+        let line = &side[key];
+        last_start = start(line).or(last_start);
+        out.extend(line.iter().map(|w| (*w).clone()));
     }
     // A word without a line has nothing to compare; the new listen's stand.
     out.extend(new.iter().filter(|w| w.line_t.is_none()).cloned());
     (out, improved)
+}
+
+/// A new listen folded into the saved sync.
+struct Combined {
+    words: Vec<Word>,
+    /// Lines the new listen improved.
+    improved: usize,
+    /// (new − saved in ms, sure words it was measured on) where the two
+    /// could be lined up.
+    offset: Option<(i64, usize)>,
+}
+
+/// The one way a listen joins a saved sync: onto the saved timeline first
+/// (`listen_offset`), so a line taken from the new listen sits where the
+/// lines kept beside it expect, then merged line by line (`merge_listens`).
+fn combine_listens(saved: &[Word], new: &[Word]) -> Combined {
+    let offset = listen_offset(saved, new);
+    let (words, improved) = match offset {
+        Some((by, _)) if by != 0 => merge_listens(saved, &shifted(new, -by)),
+        _ => merge_listens(saved, new),
+    };
+    Combined {
+        words,
+        improved,
+        offset,
+    }
 }
 
 /// The saved sync a new listen of the same lyrics merges into: decoded under
@@ -578,6 +715,9 @@ fn mergeable(root: &Path, path: &Path, key: &str, synced: &str) -> Option<StoreF
     };
     (file.recipe == crate::vocal_preview::cache_recipe(path, recipe())
         && file.detail_v >= detail
+        // Its lines sit sure at the edge of windows that started too late:
+        // the new listen replaces it, or they would outvote the fix.
+        && !(acoustic::second_ear_installed() && stuck_late(file.detail_v, &file.words))
         && !crate::sync_library::deleted_locked(root, key))
     .then_some(file)
 }
@@ -589,7 +729,27 @@ fn detail_settled(detail_v: u32, words: &[Word], second_ear: bool) -> bool {
     if !second_ear {
         return detail_v >= SUPPORT_DETAIL_V;
     }
-    detail_v >= FULL_EAR_DETAIL_V || (detail_v >= VOICE_DETAIL_V && !unheard_doubt(words))
+    (detail_v >= FULL_EAR_DETAIL_V || (detail_v >= VOICE_DETAIL_V && !unheard_doubt(words)))
+        && !stuck_late(detail_v, words)
+}
+
+/// Saved before late stamps were handled, and its lines say the stamps
+/// run late: learned in windows that began after the singer did.
+fn stuck_late(detail_v: u32, words: &[Word]) -> bool {
+    if detail_v >= RECENTRE_DETAIL_V {
+        return false;
+    }
+    let mut seen = HashSet::new();
+    let offsets = words
+        .iter()
+        .filter_map(|w| {
+            let line_t = w.line_t?;
+            // The line's first word, when the review didn't doubt it.
+            (seen.insert(line_t) && w.support.is_none_or(|p| p >= acoustic::REVIEW_BELOW))
+                .then_some(w.t - line_t)
+        })
+        .collect();
+    acoustic::late_stamps(offsets, acoustic::RECENTRE_MS).is_some()
 }
 
 /// A line the review doubted (a word under `REVIEW_BELOW`) that the second
@@ -690,7 +850,7 @@ fn superseded(stored: &str, expected: &str) -> bool {
 /// a song saved without it says 3 and relearns once the separator arrives.
 fn detail_v() -> u32 {
     if acoustic::second_ear_installed() {
-        FULL_EAR_DETAIL_V
+        RECENTRE_DETAIL_V
     } else {
         SUPPORT_DETAIL_V
     }
@@ -959,8 +1119,10 @@ pub fn observe(app: &AppHandle, np: &NowPlaying) {
         acc: 0.0,
         n: 0,
         samples: Vec::with_capacity(TARGET_HZ as usize * 240),
+        // Reserved like `samples`, so the capture thread never stops to
+        // move tens of megabytes mid-song.
         stereo: (crate::vocal_preview::enabled() || acoustic::second_ear_installed())
-            .then(Vec::new),
+            .then(|| Vec::with_capacity(crate::loopback::SAMPLE_RATE as usize * 2 * 240)),
         peak: 0.0,
         started: None,
         received: 0,
@@ -1280,7 +1442,32 @@ fn seek_residual(anchors: &[(usize, i64)], idx: usize, position_ms: i64) -> Opti
     }
     let map = TimeMap::fit(anchors, TARGET_HZ, 0);
     let r = map.residual_ms(idx, position_ms);
-    (r.abs() > align::SEEK_RESIDUAL_MS).then_some(r)
+    (r.abs() > seek_band(&map)).then_some(r)
+}
+
+/// A recording whose pairs agree this closely comes from a player that
+/// reports to the millisecond. Spotify's fits on Thien's PC sit at 3 to
+/// 26 ms (96 songs, 2026-11-10); Apple Music's whole-second reports never
+/// get near it.
+const TIGHT_FIT_MS: f64 = 50.0;
+const TIGHT_MIN_ANCHORS: usize = 4;
+/// The seek band for such a recording. The worst single pair in five
+/// dumps sat 41 ms off its fit, so half a second is a scrub or a pause,
+/// not jitter. Under the wide band a two-second scrub back passed as
+/// jitter and bent the whole song's clock, with nothing downstream to
+/// notice.
+const TIGHT_SEEK_MS: f64 = 500.0;
+
+/// How far a pair may sit off `map` before it is a seek: `TIGHT_SEEK_MS`
+/// once the recording has shown its reports are precise, otherwise
+/// `align::SEEK_RESIDUAL_MS`.
+fn seek_band(map: &TimeMap) -> f64 {
+    if map.n_anchors >= TIGHT_MIN_ANCHORS && map.dropped == 0 && map.residual_rms_ms <= TIGHT_FIT_MS
+    {
+        TIGHT_SEEK_MS
+    } else {
+        align::SEEK_RESIDUAL_MS
+    }
 }
 
 #[derive(Serialize)]
@@ -1579,12 +1766,22 @@ fn commit_recording(
     let saved_listens = saved.as_ref().map(|f| f.listens.max(1));
     let (words, listens) = match saved {
         Some(saved) => {
-            let (merged, improved) = merge_listens(&saved.words, &words);
+            let Combined {
+                words: merged,
+                improved,
+                offset,
+            } = combine_listens(&saved.words, &words);
             let listen = saved.listens.max(1).saturating_add(1);
-            log::info!(
-                "karaoke: listen {listen} of {} improved {improved} lines",
-                rec.title
-            );
+            match offset {
+                Some((by, n)) => log::info!(
+                    "karaoke: listen {listen} of {} improved {improved} lines; it sat {by:+}ms from the saved sync ({n} sure words)",
+                    rec.title
+                ),
+                None => log::info!(
+                    "karaoke: listen {listen} of {} improved {improved} lines; too few sure words in common to line the listens up",
+                    rec.title
+                ),
+            }
             (
                 merged,
                 if improved == 0 {
@@ -2276,6 +2473,41 @@ mod tests {
         assert!(detail_settled(SUPPORT_DETAIL_V, &starved, false));
     }
 
+    #[test]
+    fn a_save_whose_stamps_run_late_relearns_once() {
+        // Ten lines, each first word sure and 480ms before its stamp (the
+        // edge of the old window), then a second word.
+        let late: Vec<Word> = (0..10)
+            .flat_map(|i| {
+                let line = 10_000 + i * 4_000;
+                [
+                    checked(line, line - 480, 0.95),
+                    checked(line, line + 300, 0.95),
+                ]
+            })
+            .collect();
+        assert!(stuck_late(FULL_EAR_DETAIL_V, &late));
+        assert!(!detail_settled(FULL_EAR_DETAIL_V, &late, true));
+        // Learned again with its windows moved, it is done.
+        assert!(detail_settled(RECENTRE_DETAIL_V, &late, true));
+        // Stamps on time: lines start a little after them.
+        let on_time: Vec<Word> = (0..10)
+            .map(|i| checked(10_000 + i * 4_000, 10_150 + i * 4_000, 0.95))
+            .collect();
+        assert!(detail_settled(FULL_EAR_DETAIL_V, &on_time, true));
+        // Doubted first words don't vote, and too few lines say nothing.
+        let doubted: Vec<Word> = late
+            .iter()
+            .cloned()
+            .map(|mut w| {
+                w.support = Some(0.2);
+                w
+            })
+            .collect();
+        assert!(!stuck_late(FULL_EAR_DETAIL_V, &doubted));
+        assert!(!stuck_late(FULL_EAR_DETAIL_V, &late[..12]));
+    }
+
     fn checked(line_t: i64, t: i64, support: f32) -> Word {
         Word {
             t,
@@ -2311,6 +2543,85 @@ mod tests {
         let (again, improved) = merge_listens(&merged, &merged);
         assert_eq!(again, merged);
         assert_eq!(improved, 0);
+    }
+
+    #[test]
+    fn rounding_alone_never_trades_a_line() {
+        // One rounding step apart at the faint end, where a step is
+        // largest in log: the same decode, saved twice.
+        for (old, new) in [(0.0, 0.01), (0.01, 0.04), (0.05, 0.06), (0.3, 0.31)] {
+            let saved = vec![checked(1_000, 1_100, old)];
+            let listen = vec![checked(1_000, 1_900, new)];
+            let (merged, improved) = merge_listens(&saved, &listen);
+            assert_eq!((merged[0].t, improved), (1_100, 0), "{old} against {new}");
+        }
+        // A real gain still wins.
+        let (merged, improved) =
+            merge_listens(&[checked(1_000, 1_100, 0.3)], &[checked(1_000, 1_900, 0.4)]);
+        assert_eq!((merged[0].t, improved), (1_900, 1));
+    }
+
+    #[test]
+    fn a_new_listen_is_lined_up_on_words_both_are_sure_of() {
+        // Twelve sure words 40ms later in the new listen, one unsure word
+        // far off, and one sure word a single listen misplaced.
+        let mut saved = Vec::new();
+        let mut new = Vec::new();
+        for i in 0..12 {
+            saved.push(checked(i * 4_000, i * 4_000 + 300, 0.95));
+            new.push(checked(i * 4_000, i * 4_000 + 340, 0.99));
+        }
+        saved.push(checked(60_000, 60_200, 0.2));
+        new.push(checked(60_000, 61_900, 0.95));
+        saved.push(checked(64_000, 64_100, 0.95));
+        new.push(checked(64_000, 66_000, 0.95));
+        assert_eq!(listen_offset(&saved, &new), Some((40, 13)));
+        // Too few sure words in common says nothing.
+        assert_eq!(listen_offset(&saved[..8], &new[..8]), None);
+        // A line whose words don't pair up is left out.
+        let mut other = new.clone();
+        other.push(checked(0, 500, 0.99));
+        assert_eq!(listen_offset(&saved, &other), Some((40, 12)));
+
+        // The line the new listen is surer of lands on the saved timeline.
+        let combined = combine_listens(&saved[..13], &new[..13]);
+        assert_eq!(combined.offset, Some((40, 12)));
+        assert_eq!(combined.improved, 1);
+        assert_eq!(combined.words[12].t, 61_860);
+        assert_eq!(combined.words[..12], saved[..12]);
+
+        let mut held = checked(1_000, 1_340, 0.9);
+        held.end = Some(2_340);
+        held.points = vec![align::WordPoint {
+            t: 1_500,
+            fraction: 0.5,
+        }];
+        let moved = shifted(&[held], -40);
+        assert_eq!((moved[0].t, moved[0].end), (1_300, Some(2_300)));
+        assert_eq!(moved[0].points[0].t, 1_460);
+    }
+
+    #[test]
+    fn a_merged_line_never_starts_out_of_order() {
+        let saved = vec![
+            checked(1_000, 1_100, 0.9),
+            checked(5_000, 5_200, 0.2),
+            checked(9_000, 9_100, 0.9),
+        ];
+        // Surer, but before the line above it...
+        let early = vec![checked(5_000, 900, 0.99)];
+        // ...or after the line below it, in the listen that has it later.
+        let late = vec![checked(5_000, 9_300, 0.99), checked(9_000, 9_500, 0.5)];
+        for new in [&early, &late] {
+            let (merged, improved) = merge_listens(&saved, new);
+            assert_eq!(merged, saved);
+            assert_eq!(improved, 0);
+        }
+        let fits = vec![checked(5_000, 5_400, 0.99)];
+        assert_eq!(merge_listens(&saved, &fits).0[1].t, 5_400);
+        // A line already sure stays, however sure the new listen is.
+        let surer = vec![checked(1_000, 1_300, 0.99)];
+        assert_eq!(merge_listens(&saved, &surer), (saved.clone(), 0));
     }
 
     #[test]
@@ -2425,6 +2736,38 @@ mod tests {
         // 10s in, the player reports 14s: the user scrubbed forward 3s.
         assert!(seek_detected(&two_anchors(), 160_000, 14_000));
         assert!(seek_detected(&two_anchors(), 160_000, 8_000));
+    }
+
+    #[test]
+    fn a_precise_player_gets_the_tight_band() {
+        // Six pairs 5s apart, within 20ms of a straight line (Spotify).
+        let tight: Vec<(usize, i64)> = (0..6)
+            .map(|i| {
+                (
+                    i * 80_000,
+                    1_000 + i as i64 * 5_000 + [0, 12, -8, 20, -15, 5][i],
+                )
+            })
+            .collect();
+        // 30s of samples in, a pair says 32.4s: scrubbed back about 1.4s
+        // short of where it would be, which the wide band calls jitter.
+        assert!(seek_detected(&tight, 480_000, 31_000 - 1_400));
+        assert!(seek_detected(&tight, 480_000, 31_000 + 700));
+        assert!(!seek_detected(&tight, 480_000, 31_000 + 300));
+        assert!(!seek_detected(&tight, 480_000, 31_000 - 300));
+        // Too few pairs to know the player is precise: the wide band.
+        assert!(!seek_detected(&tight[..3], 480_000, 31_000 - 1_400));
+        // Whole-second reports (Apple Music) never earn the tight band.
+        let coarse: Vec<(usize, i64)> = (0..6)
+            .map(|i| {
+                (
+                    i * 80_000,
+                    1_000 + i as i64 * 5_000 + [0, 600, -700, 400, -500, 800][i],
+                )
+            })
+            .collect();
+        assert!(!seek_detected(&coarse, 480_000, 31_000 - 1_400));
+        assert!(seek_detected(&coarse, 480_000, 31_000 - 4_000));
     }
 
     #[test]
