@@ -134,17 +134,18 @@ const ON_TIME_SURE: f32 = 5.27;
 /// What a hard song takes off those log-odds, per share of its words on
 /// lines the first pass doubted. Support alone read high on hard songs:
 /// where the model doubts many lines, its sure words are wrong more often
-/// too (Embers: 82% estimated, 71% measured, 59% of its words on doubted
-/// lines). The benchmark has no song past HARDEST, so the share stops
-/// counting there.
+/// too (Embers: 81% estimated, 72% measured, 66% of its words on doubted
+/// lines). The benchmark has nothing harder than that to fit on, so the
+/// share stops counting at HARDEST.
 const HARD_SONG: f32 = 2.59;
 const HARDEST: f32 = 0.6;
 /// What a late line takes off, per second its first word starts after
 /// the stamp, beyond LATE_FROM_MS past the song's usual start (the median
 /// line: lyric files lead or trail the vocal by a song-wide offset). A
-/// path that finds a line seconds late has usually found something else,
-/// however sure it is: with stamps 200ms early, sure words on lines 1.5s
-/// or more late were on time 20% of the time.
+/// path that finds a line late has often found something else: words
+/// after the first were on time 97% of the time on lines that started
+/// where the song's lines usually do, 77% on lines 300-700ms late, 60%
+/// on lines 0.7-1.5s late, and 1 in 19 past that.
 const LATE_LINE: f32 = 3.29;
 const LATE_FROM_MS: f32 = 300.0;
 const LATEST_S: f32 = 2.0;
