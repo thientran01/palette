@@ -8,6 +8,16 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Changed
+
+- Word karaoke gives every line it doubts a second listen. With the vocal separator installed, it used to re-hear at most 14 short stretches a song, so songs that doubt many lines (often K-pop, where it doubts about 44% of lines) kept some of them unchecked. Now it re-hears all of them. A song that finishes while another is still syncing waits its turn instead of needing another listen. Saved songs the old limit left short relearn once on their next full listen; the rest stay as they are.
+- Listens add up. When a song is learned again, by Relearn or on its own, Palette keeps each line from whichever listen it was surer of, so a bad listen no longer replaces a good one. A song with a line it's still unsure of learns again on its next full listens, up to three in all, and stops as soon as a listen improves nothing.
+- Word karaoke keeps what the model heard on each listen (about 0.8 MB a song, in its own folder beside the saved syncs). When an update only changes how Palette reads that, your saved songs are re-synced in the background a minute or two after launch, in a fraction of a second each, instead of each one waiting for its next full listen. Songs saved before this update, or captured from the whole device's sound instead of the player, still relearn by listening.
+
+### Fixed
+
+- The Lyric syncs panel's "words on time" no longer reads high on hard songs. On a song where the check doubts many lines, even the words it's sure of are right less often, and a line that starts well after its timestamp is off more often. The estimate now counts both. Against 79 hand-timed songs, the ones it scores under 93% used to average 88% estimated against 86% measured and now average 85%, the hardest song went from 81% to 72% against a measured 72%, and 70 of the 79 songs show the same percent as before or one point different. Scores update on their own; nothing needs relearning.
+
 ## [1.0.13] - 2026-11-09
 
 ### Changed

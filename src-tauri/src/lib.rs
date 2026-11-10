@@ -22,6 +22,7 @@ mod similar;
 mod spotify;
 mod spotify_jump;
 mod sync_library;
+pub mod takes;
 mod upnext;
 mod vocal_preview;
 pub mod voice;
@@ -1704,6 +1705,11 @@ pub fn run() {
             // Play-history: resolve the log dir now, build the line index on a
             // background thread (off the launch path — history_page waits on it).
             history::init(app.handle());
+            // Lyric syncs panel: read the saved syncs once in the background.
+            sync_library::warm(app.handle());
+            // Saved syncs an earlier decoder made, re-decoded from their
+            // takes (karaoke/redecode.rs), out of startup's way.
+            karaoke::redecode_saved(app.handle());
             // Managed up-next: restore the persisted list + fed marker.
             upnext::init(app.handle());
             // Docking: seed the persisted corner (the decoder ring for the
