@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useLayoutEffect,useRef,useState} from "react";
+import {memo,startTransition,useCallback,useEffect,useLayoutEffect,useRef,useState} from "react";
 import {commands,savedSyncs,savedSyncAction,onSyncLibraryChanged,onKaraokeReady,activeSyncs,type ActiveSync,type SavedSync,type SyncCheck} from "./lib/backend";
 import {useArt} from "./lib/artAccent";
 import {checkSummary,onTimePercent,savedWhen,sortSyncs,type SyncSort} from "./lib/syncCheck";
@@ -21,6 +21,8 @@ function Glyph({kind,size=18}:{kind:"close"|"refresh"|"delete"|"music"|"working"
   return <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[kind]}</svg>;
 }
 const PANEL_MAX = 560;
+/** Saved rows drawn on the opening frame: more than the tallest panel shows. */
+const FIRST_ROWS = 8;
 function useActiveSyncs() {
   const [jobs, setJobs] = useState<ActiveSync[]>([]);
   const [unavailable, setUnavailable] = useState(false);
@@ -128,29 +130,45 @@ function CurrentSong({np,mine,job,lines,current,busy,onRelearn}:{np:NowPlaying;m
   {saved&&mine&&!mine.refresh&&<button className={`${actionStyle} -mb-1 -ml-2 mt-1.5`} disabled={busy} title="Learn this song again on your next full listen" onClick={onRelearn}><Glyph kind="refresh" size={14}/>Relearn</button>}
  </section>;
 }
-export function SavedSyncs({np,lines,onClose,current}:{np:NowPlaying;lines:number;onClose:(restoreFocus?:boolean)=>void;current:{title:string;detail:string;phase:SyncStatus["phase"]}}){
+/** `top` is where the panel opens, read by the trigger before the click's
+ * render, so sizing the panel never forces a layout on the opening frame. */
+export function SavedSyncs({np,lines,onClose,current,top}:{np:NowPlaying;lines:number;onClose:(restoreFocus?:boolean)=>void;current:{title:string;detail:string;phase:SyncStatus["phase"]};top?:number}){
  const {jobs, unavailable}=useActiveSyncs();
  const [rows,setRows]=useState<SavedSync[]|null>(lastRows),[error,setError]=useState(""),[busy,setBusy]=useState<string|null>(null),[notice,setNotice]=useState("");
- const [undo,setUndo]=useState<{key:string;revision:number}|null>(null),[sort,setSort]=useState<SyncSort>("recent"),[maxH,setMaxH]=useState<number|null>(null);const alive=useRef(true),serial=useRef(0),panel=useRef<HTMLDivElement>(null);
+ const [undo,setUndo]=useState<{key:string;revision:number}|null>(null),[sort,setSort]=useState<SyncSort>("recent"),[allRows,setAllRows]=useState(false);const alive=useRef(true),serial=useRef(0),panel=useRef<HTMLDivElement>(null);
  useThumbs();
  // Opening may join the read a hover already started; later refreshes
  // (after an action or a new save) always read again.
  const refresh=useCallback(async(join=false)=>{const n=++serial.current;try{const data=await (join&&rowsInFlight?rowsInFlight:readRows());if(alive.current&&n===serial.current){setRows(data);setError("");}}catch{if(alive.current&&n===serial.current)setError("Couldn’t load saved syncs.");}},[]);
  useEffect(()=>{alive.current=true;void refresh(true);const a=onSyncLibraryChanged(()=>void refresh()),b=onKaraokeReady(()=>void refresh());return ()=>{alive.current=false;serial.current++;a();b();};},[refresh]);
- useEffect(()=>{panel.current?.focus();const outside=(e:PointerEvent)=>{if(!panel.current?.parentElement?.contains(e.target as Node))onClose(false);};const escape=(e:KeyboardEvent)=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();onClose();}};document.addEventListener("pointerdown",outside);document.addEventListener("keydown",escape,true);return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape,true);};},[onClose]);
+ useEffect(()=>{const outside=(e:PointerEvent)=>{if(!panel.current?.parentElement?.contains(e.target as Node))onClose(false);};const escape=(e:KeyboardEvent)=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();onClose();}};document.addEventListener("pointerdown",outside);document.addEventListener("keydown",escape,true);return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape,true);};},[onClose]);
  async function act(key:string,action:"refresh"|"delete"|"undo",revision?:number){if(busy)return;setBusy(key);setError("");try{const rev=await savedSyncAction(key,action,revision);if(!alive.current)return;if(action==="delete"){setUndo({key,revision:rev});setNotice("Timing deleted.");}else{setUndo(null);setNotice(action==="refresh"?"Will relearn on your next full listen. Current timing stays available.":"Timing restored.");}await refresh();}catch(e){if(alive.current)setError(typeof e==="string"?e:"Couldn’t update this sync.");}finally{if(alive.current)setBusy(null);}}
+ // Rows are memoized, so the once-a-second sync poll doesn't redraw a long
+ // library: they get one stable act that calls the latest.
+ const actNow=useRef(act);actNow.current=act;
+ const rowAct=useCallback((key:string,action:"refresh"|"delete")=>actNow.current(key,action),[]);
  // Reach down to the window's bottom edge, over the transport while open
  // (the window never resizes; the old 65vh cap left the expanded widget's
  // lower third unused). Focus mode's tall room stops at PANEL_MAX.
- useLayoutEffect(()=>{const fit=()=>{const top=panel.current?.getBoundingClientRect().top;if(top!==undefined)setMaxH(Math.max(0,Math.min(PANEL_MAX,Math.floor(window.innerHeight-top-8))));};fit();window.addEventListener("resize",fit);return ()=>window.removeEventListener("resize",fit);},[]);
+ // Written straight to the element: as state it re-rendered every row
+ // once more before the first paint. Measuring the panel here would force a
+ // style and layout pass inside the click, so the first fit uses `top`.
+ useLayoutEffect(()=>{const el=panel.current;if(!el)return;const fit=(at:number)=>{el.style.maxHeight=`${Math.max(0,Math.min(PANEL_MAX,Math.floor(window.innerHeight-at-8)))}px`;};fit(top??el.getBoundingClientRect().top);const resize=()=>fit(el.getBoundingClientRect().top);window.addEventListener("resize",resize);return ()=>window.removeEventListener("resize",resize);
+ // eslint-disable-next-line react-hooks/exhaustive-deps
+ },[]);
+ // The click paints the panel with the rows that fit on screen. Focus moves
+ // in (two style passes over the whole window, for :focus-visible) and the
+ // rest of a long library mounts after that frame, the rows as
+ // interruptible work, so the panel opens as fast as any other button.
+ useEffect(()=>{let t=0;const f=requestAnimationFrame(()=>{t=window.setTimeout(()=>{panel.current?.focus({preventScroll:true});startTransition(()=>setAllRows(true));});});return ()=>{cancelAnimationFrame(f);window.clearTimeout(t);};},[]);
  const mine=rows?.find(r=>r.title===np.title&&r.artist===np.artist)??null;
  const isMine=(j:{title:string;artist:string})=>j.title===np.title&&j.artist===np.artist;
  const myJob=jobs.find(isMine)??null,others=jobs.filter(j=>!isMine(j));
- const list=rows?sortSyncs(rows,sort):[];
+ const sorted=rows?sortSyncs(rows,sort):[],list=allRows?sorted:sorted.slice(0,FIRST_ROWS);
  const checked=rows?.filter(r=>r.check).length??0;
  const btn="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg/65 transition-[color,background-color,transform] duration-2 ease-out-tk hover:bg-fg/10 hover:text-fg active:scale-95 motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg/50 disabled:opacity-40";
  const seg=(on:boolean)=>`rounded-[5px] px-[7px] py-[3px] text-[11px] font-medium normal-case tracking-normal transition-colors duration-2 ease-out-tk focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg/50 ${on?"bg-fg/10 text-fg":"text-muted hover:text-fg"}`;
- return <div ref={panel} role="dialog" aria-label="Lyric syncs" data-sync-library tabIndex={-1} onMouseDown={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==="Escape"){e.stopPropagation();onClose();}}} style={maxH===null?undefined:{maxHeight:maxH}} className="absolute right-0 top-full z-50 mt-2 flex max-h-[min(320px,65vh)] w-[312px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-xl border border-border/15 bg-surface text-fg shadow-xl shadow-black/40 outline-none">
+ return <div ref={panel} role="dialog" aria-label="Lyric syncs" data-sync-library tabIndex={-1} onMouseDown={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==="Escape"){e.stopPropagation();onClose();}}} className="absolute right-0 top-full z-50 mt-2 flex max-h-[min(320px,65vh)] w-[312px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-xl border border-border/15 bg-surface text-fg shadow-xl shadow-black/40 outline-none">
   <div className="flex shrink-0 items-center justify-between px-3 pb-2 pt-3"><div className="text-sm font-medium">Lyric syncs</div><button className={btn} aria-label="Close lyric syncs" onClick={()=>onClose()}><Glyph kind="close"/></button></div>
   <div className="sync-scroll min-h-0 overflow-y-auto overscroll-contain px-1 pb-2">
     <CurrentSong np={np} mine={mine} job={myJob} lines={lines} current={current} busy={!!busy} onRelearn={()=>{if(mine)void act(mine.key,"refresh");}}/>
@@ -159,7 +177,7 @@ export function SavedSyncs({np,lines,onClose,current}:{np:NowPlaying;lines:numbe
     <div className="flex items-center justify-between pb-1 pl-2 pr-1 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted"><span>Saved <span className="ml-1 tabular-nums">{rows?.length ?? ""}</span>{!!rows?.length&&<span className="ml-1 normal-case tracking-normal">· {checked} checked</span>}</span>
       {!!rows?.length&&<div className="flex gap-0.5" role="group" aria-label="Sort saved syncs"><button className={seg(sort==="recent")} aria-pressed={sort==="recent"} onClick={()=>setSort("recent")}>Recent</button><button className={seg(sort==="least")} aria-pressed={sort==="least"} onClick={()=>setSort("least")}>Least sure</button></div>}
     </div>
-    {rows===null&&!error?<p className="px-3 py-7 text-xs text-muted">Loading saved timing…</p>:rows?.length===0?<div className="px-3 py-7"><p className="text-sm">Your collection starts here.</p><p className="mt-1 text-xs leading-5 text-muted">Listen to a song with lyrics from start to finish. Saved word timing will appear here.</p></div>:list.map(song=><SavedRow key={song.key} song={song} busy={!!busy} btn={btn} act={act}/>)}</div>
+    {rows===null&&!error?<p className="px-3 py-7 text-xs text-muted">Loading saved timing…</p>:rows?.length===0?<div className="px-3 py-7"><p className="text-sm">Your collection starts here.</p><p className="mt-1 text-xs leading-5 text-muted">Listen to a song with lyrics from start to finish. Saved word timing will appear here.</p></div>:list.map(song=><SavedRow key={song.key} song={song} thumb={song.thumb_key?thumbs.get(song.thumb_key)??null:null} busy={!!busy} btn={btn} act={rowAct}/>)}</div>
   {error&&<div role="alert" className="px-3 pb-3 text-xs text-muted">{error} <button className="underline" onClick={()=>void refresh()}>Retry</button></div>}
   {notice&&<div role="status" className="border-t border-border/10 px-3 py-2 text-xs leading-5 text-muted">{notice}{undo&&<button className="ml-2 text-fg underline" disabled={!!busy} onClick={()=>void act(undo.key,"undo",undo.revision)}>Undo</button>}</div>}
   {/* Research capture is a tool, not part of the song's story: it rides the footer. */}
@@ -177,13 +195,13 @@ function RowMap({lines}:{lines:string}){
 }
 /** The estimate rests at the row's end; hover or focus swaps it for the
  * row's actions in the same seat, so neither shifts the title. */
-function SavedRow({song,busy,btn,act}:{song:SavedSync;busy:boolean;btn:string;act:(key:string,action:"refresh"|"delete")=>Promise<void>}){
+const SavedRow=memo(function SavedRow({song,thumb,busy,btn,act}:{song:SavedSync;thumb:string|null;busy:boolean;btn:string;act:(key:string,action:"refresh"|"delete")=>Promise<void>}){
  const when=song.relearns?song.check?"relearns next listen":"not checked yet":savedWhen(song.saved_at);
  const swap="transition-opacity duration-2 ease-out-tk motion-reduce:transition-none";
  // Rows off screen skip layout and paint until scrolled to (a long library
  // is hundreds of rows, all mounted on open).
  return <div className="group/sync flex min-h-14 items-center [contain-intrinsic-size:auto_56px] [content-visibility:auto] gap-2.5 rounded-lg px-2 py-1.5 hover:bg-fg/5">
-  <Cover thumbKey={song.thumb_key}/>
+  <Cover thumbKey={null} url={thumb}/>
   <div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{song.title}</div><div className="truncate text-xs text-muted">{song.refresh?"Relearns on your next full listen":`${song.artist} · ${when}`}</div></div>
   {song.check&&<RowMap lines={song.check.lines}/>}
   <div className="relative flex shrink-0 items-center justify-end">
@@ -191,4 +209,4 @@ function SavedRow({song,busy,btn,act}:{song:SavedSync;busy:boolean;btn:string;ac
    <div className={`flex opacity-0 ${swap} group-hover/sync:opacity-100 focus-within:opacity-100`}><button className={btn} disabled={busy} title="Relearn on next full listen" aria-label={`Relearn timing for ${song.title}`} onClick={()=>void act(song.key,"refresh")}><Glyph kind="refresh"/></button><button className={btn} disabled={busy} title="Delete timing" aria-label={`Delete timing for ${song.title}`} onClick={()=>void act(song.key,"delete")}><Glyph kind="delete"/></button></div>
   </div>
  </div>;
-}
+});
