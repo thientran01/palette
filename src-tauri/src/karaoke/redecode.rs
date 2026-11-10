@@ -273,6 +273,7 @@ fn redecode(
             &job.synced,
             &words,
             job.store.listens,
+            &job.store.unheard,
             job.store.detail_v,
         )
         .map_err(|e| e.to_string())?;
