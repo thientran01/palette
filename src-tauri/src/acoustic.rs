@@ -533,7 +533,8 @@ impl Knobs {
     /// on time and 200ms early): each part won on its own, on the mix and
     /// on separated vocals, and together no song got clearly worse.
     /// docs/specs/2026-10-31-karaoke-sync-fixes.md. Changing these changes
-    /// RECIPE: every saved sync was learned under them.
+    /// RECIPE: every saved sync was learned under them. `review_passes`
+    /// aside (see REVIEW_PASSES).
     pub const MIX: Knobs = Knobs {
         guide: true,
         guide_late_ms: 700,
@@ -2099,6 +2100,8 @@ mod tests {
     #[test]
     fn both_paths_run_the_tuned_decoder() {
         // These values ARE recipe mms-int8/4; changing one changes RECIPE.
+        // The pass budget is the exception: lifting it only re-hears lines
+        // the cap skipped, and karaoke's detail_v 5 relearns those saves.
         let tuned = Knobs {
             guide: true,
             guide_late_ms: 700,
@@ -2109,7 +2112,7 @@ mod tests {
             connected_retry: true,
             review_below: 0.5,
             review_blend: true,
-            review_passes: 14,
+            review_passes: 0,
         };
         assert_eq!(Knobs::MIX, tuned);
         assert_eq!(Knobs::TRIAL, tuned);
