@@ -9,6 +9,7 @@ import { useKaraokePreference } from "./lib/karaokePreference";
 import { useBracketPulse } from "./icons/useBracketPulse";
 import {
   commands,
+  onCursorEntered,
   onCursorLeft,
   onDockCorner,
   onHotkeysChanged,
@@ -1831,6 +1832,7 @@ function App() {
   // root's data-hot instead of group-hover.
   const [hot, setHot] = useState(false);
   useEffect(() => onCursorLeft(() => setHot(false)), []);
+  useEffect(() => onCursorEntered(() => setHot(true)), []);
   // Presence (presence.rs) reaches the UI for exactly one reason now:
   // conceal drops hover state (a hidden webview never receives the
   // mouseleave), so the revealed chrome isn't pinned open on restore. The
