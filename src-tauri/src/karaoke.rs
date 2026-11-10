@@ -10,7 +10,7 @@ use crate::separation::Stereo;
 use crate::settings::{self, write_atomic};
 use crate::spotify;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -226,7 +226,26 @@ struct StoreFile {
     words: Vec<Word>,
     #[serde(default)]
     detail_v: u32,
+    /// Listens merged into these words (`merge_listens`); 0 in files saved
+    /// before listens added up, which counts as one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    listens: u32,
 }
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// A song with an unsure line is learned again on its next full listens,
+/// up to this many in all, and each listen's surer lines are kept. It stops
+/// sooner once a listen improves no line. Most listens of the same track
+/// decode alike; the ones that don't (a noisy or glitched capture, a time
+/// map off by a few frames, a second ear that heard a stretch differently)
+/// are what this recovers.
+const MAX_LISTENS: u32 = 3;
+/// How much surer, in mean log support, a new listen's line must be to
+/// replace the saved one. Keeps an identical decode from churning.
+const MERGE_MARGIN: f32 = 0.01;
 
 #[derive(Serialize, Clone)]
 pub struct KaraokeReady {
@@ -460,8 +479,9 @@ pub(crate) fn read_file_preserving(path: &Path, synced: Option<&str>) -> Vec<Wor
 /// A saved sync as the Lyric syncs panel lists it.
 pub(crate) struct SavedFile {
     pub words: Vec<Word>,
-    /// The next full listen relearns it (an earlier recipe, or saved
-    /// before the review's support was kept). Its words still display.
+    /// The next full listen relearns it (an earlier recipe, saved before
+    /// the review's support was kept, or an unsure line with listens to
+    /// spare). Its words still display.
     pub relearns: bool,
 }
 
@@ -479,7 +499,81 @@ pub(crate) fn read_saved(path: &Path, synced: Option<&str>) -> Option<SavedFile>
 fn settled(path: &Path, file: &StoreFile) -> bool {
     file.recipe == crate::vocal_preview::cache_recipe(path, recipe())
         && (crate::acoustic::assets().is_none()
-            || detail_settled(file.detail_v, &file.words, acoustic::second_ear_installed()))
+            || (detail_settled(file.detail_v, &file.words, acoustic::second_ear_installed())
+                && !wants_another_listen(file.listens, &file.words)))
+}
+
+/// An unsure line (a word under `REVIEW_BELOW`) and listens to spare.
+fn wants_another_listen(listens: u32, words: &[Word]) -> bool {
+    listens.max(1) < MAX_LISTENS
+        && words
+            .iter()
+            .any(|w| w.support.is_some_and(|p| p < acoustic::REVIEW_BELOW))
+}
+
+/// How sure the review was of a line as saved: the mean log support of its
+/// words (`LineDecode::score`), or None for a line it didn't check.
+fn line_score(words: &[&Word]) -> Option<f32> {
+    let logs: Vec<f32> = words
+        .iter()
+        .filter_map(|w| w.support)
+        .map(|p| p.max(1e-3).ln())
+        .collect();
+    (!logs.is_empty()).then(|| logs.iter().sum::<f32>() / logs.len() as f32)
+}
+
+/// Two listens of the same lyrics, line by line: the saved line stays unless
+/// the new listen is surer of it by MERGE_MARGIN, a line only one listen
+/// placed comes from that one, and an unchecked line yields to a checked
+/// one. Returns the words and how many lines the new listen improved.
+fn merge_listens(saved: &[Word], new: &[Word]) -> (Vec<Word>, usize) {
+    fn group(words: &[Word]) -> BTreeMap<i64, Vec<&Word>> {
+        let mut lines: BTreeMap<i64, Vec<&Word>> = BTreeMap::new();
+        for w in words {
+            if let Some(line_t) = w.line_t {
+                lines.entry(line_t).or_default().push(w);
+            }
+        }
+        lines
+    }
+    let (old_lines, new_lines) = (group(saved), group(new));
+    let keys: BTreeSet<i64> = old_lines.keys().chain(new_lines.keys()).copied().collect();
+    let mut out = Vec::with_capacity(new.len());
+    let mut improved = 0;
+    for key in keys {
+        // (take the new listen's line, and it is an improvement)
+        let (take_new, better) = match (old_lines.get(&key), new_lines.get(&key)) {
+            (Some(old), Some(fresh)) => match (line_score(old), line_score(fresh)) {
+                (Some(o), Some(n)) => (n > o + MERGE_MARGIN, n > o + MERGE_MARGIN),
+                (None, n) => (true, n.is_some()),
+                (Some(_), None) => (false, false),
+            },
+            (None, _) => (true, true),
+            (Some(_), None) => (false, false),
+        };
+        improved += usize::from(better);
+        let side = if take_new { &new_lines } else { &old_lines };
+        out.extend(side[&key].iter().map(|w| (*w).clone()));
+    }
+    // A word without a line has nothing to compare; the new listen's stand.
+    out.extend(new.iter().filter(|w| w.line_t.is_none()).cloned());
+    (out, improved)
+}
+
+/// The saved sync a new listen of the same lyrics merges into: decoded under
+/// the same recipe, with the review's support (and the voice, when the
+/// second ear is installed), and not deleted in the library.
+fn mergeable(root: &Path, path: &Path, key: &str, synced: &str) -> Option<StoreFile> {
+    let file = read_store(path, Some(synced), false)?;
+    let detail = if acoustic::second_ear_installed() {
+        VOICE_DETAIL_V
+    } else {
+        SUPPORT_DETAIL_V
+    };
+    (file.recipe == crate::vocal_preview::cache_recipe(path, recipe())
+        && file.detail_v >= detail
+        && !crate::sync_library::deleted_locked(root, key))
+    .then_some(file)
 }
 
 /// Detail enough for this install. Under the old 14-pass cap a 4 could
@@ -594,7 +688,19 @@ fn detail_v() -> u32 {
     }
 }
 
+/// One listen's words, as tests write them.
+#[cfg(test)]
 fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::Result<()> {
+    write_listens(dir, key, synced, words, 1)
+}
+
+fn write_listens(
+    dir: &Path,
+    key: &str,
+    synced: &str,
+    words: &[Word],
+    listens: u32,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(&StoreFile {
         v: STORE_V,
@@ -603,6 +709,7 @@ fn write_file(dir: &Path, key: &str, synced: &str, words: &[Word]) -> std::io::R
             .to_string(),
         synced: Some(synced.to_string()),
         words: words.to_vec(),
+        listens,
     })
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     write_atomic(&dir.join(format!("{key}.json")), &json)?;
@@ -1185,6 +1292,7 @@ fn write_dump(
         recipe: recipe().to_string(),
         synced: Some(lrc.to_string()),
         words: words.to_vec(),
+        listens: 1,
     })
     .map_err(to_io)?;
     write_atomic(&dir.join("words.json"), &words_json)?;
@@ -1432,7 +1540,29 @@ fn commit_recording(
         );
         return;
     }
-    if let Err(e) = write_file(karaoke_dir, &rec.key, &synced, &words)
+    // Listens add up: the saved sync keeps every line this listen isn't
+    // surer of. One that improves nothing ends the extra listens.
+    let path = karaoke_dir.join(format!("{}.json", rec.key));
+    let (words, listens) = match mergeable(root, &path, &rec.key, &synced) {
+        Some(saved) => {
+            let (merged, improved) = merge_listens(&saved.words, &words);
+            let listen = saved.listens.max(1).saturating_add(1);
+            log::info!(
+                "karaoke: listen {listen} of {} improved {improved} lines",
+                rec.title
+            );
+            (
+                merged,
+                if improved == 0 {
+                    listen.max(MAX_LISTENS)
+                } else {
+                    listen
+                },
+            )
+        }
+        None => (words, 1),
+    };
+    if let Err(e) = write_listens(karaoke_dir, &rec.key, &synced, &words, listens)
         .map_err(|e| e.to_string())
         .and_then(|()| crate::sync_library::complete_locked(root, &rec.key))
     {
@@ -2100,6 +2230,74 @@ mod tests {
         assert!(!detail_settled(SUPPORT_DETAIL_V, &sure, true));
         // Without the second ear nothing could have re-heard the line.
         assert!(detail_settled(SUPPORT_DETAIL_V, &starved, false));
+    }
+
+    fn checked(line_t: i64, t: i64, support: f32) -> Word {
+        Word {
+            t,
+            text: "la".into(),
+            line_t: Some(line_t),
+            support: Some(support),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn listens_keep_each_lines_surer_version() {
+        let saved = vec![
+            checked(1_000, 1_100, 0.95),
+            checked(1_000, 1_400, 0.9),
+            checked(5_000, 5_200, 0.2),
+            checked(9_000, 9_100, 0.6),
+        ];
+        let new = vec![
+            // Worse here, so the saved line stays...
+            checked(1_000, 1_900, 0.4),
+            checked(1_000, 2_300, 0.3),
+            // ...surer here, so this one is taken...
+            checked(5_000, 5_600, 0.97),
+            // ...and a line the first listen never placed.
+            checked(13_000, 13_100, 0.8),
+        ];
+        let (merged, improved) = merge_listens(&saved, &new);
+        let at: Vec<i64> = merged.iter().map(|w| w.t).collect();
+        assert_eq!(at, [1_100, 1_400, 5_600, 9_100, 13_100]);
+        assert_eq!(improved, 2);
+        // The same listen again changes nothing and counts nothing.
+        let (again, improved) = merge_listens(&merged, &merged);
+        assert_eq!(again, merged);
+        assert_eq!(improved, 0);
+    }
+
+    #[test]
+    fn unsure_songs_get_a_few_listens() {
+        let sure = [checked(1_000, 1_000, 0.95)];
+        let unsure = [checked(1_000, 1_000, 0.95), checked(2_000, 2_000, 0.3)];
+        assert!(!wants_another_listen(1, &sure));
+        assert!(
+            wants_another_listen(0, &unsure),
+            "saved before listens counted"
+        );
+        assert!(wants_another_listen(MAX_LISTENS - 1, &unsure));
+        assert!(!wants_another_listen(MAX_LISTENS, &unsure));
+    }
+
+    #[test]
+    fn listens_round_trip_and_older_files_count_as_one() {
+        let dir =
+            std::env::temp_dir().join(format!("pulse-karaoke-listens-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let source = "[00:01.00]one";
+        let words = [checked(1_000, 900, 0.9)];
+        write_listens(&dir, "a", source, &words, 2).unwrap();
+        let raw = std::fs::read_to_string(dir.join("a.json")).unwrap();
+        let file: StoreFile = serde_json::from_str(&raw).unwrap();
+        assert_eq!(file.listens, 2);
+        let mut old: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        old.as_object_mut().unwrap().remove("listens");
+        let file: StoreFile = serde_json::from_value(old).unwrap();
+        assert_eq!(file.listens, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
