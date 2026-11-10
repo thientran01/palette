@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { letterLit, letterSegments, RISE_EARLY_MS, RISE_MS, rowLetterOnsets, LATIN_LETTER_MS } from "./letterRise";
+import { letterLit, letterSegments, RISE_EARLY_MS, RISE_MS, rowLetterOnsets, SYLLABLE_LAG_MS } from "./letterRise";
 
 const w = (t: number, end: number, text: string, extra = {}) => ({ t, end, text, ...extra });
 
@@ -37,27 +37,46 @@ describe("letter onsets follow one smooth cursor per row", () => {
   });
 });
 
-describe("Latin words rise evenly over their own sound", () => {
-  it("spaces letters evenly and lets punctuation ride along", () => {
-    const [o] = rowLetterOnsets([w(1000, 1200, "away, "), w(2000, 2200, "go")]);
-    expect(o.slice(0, 4)).toEqual([1000, 1050, 1100, 1150]);
+/** Checkpoints the way acoustic.rs spelling_points writes them: each
+ * letter's CTC span as a (start, its offset) and (end, next offset) pair. */
+function spelled(text: string, heard: number[], end: number) {
+  const width = text.trimEnd().length;
+  const at = [...text].map((c, i) => [c, i] as const).filter(([c]) => /[a-z']/i.test(c)).map(([, i]) => i);
+  const points = at.flatMap((offset, k) => [
+    { t: heard[k], fraction: k === 0 ? 0 : offset / width },
+    { t: k + 1 === at.length ? end : heard[k] + 20, fraction: k + 1 === at.length ? 1 : at[k + 1] / width },
+  ]);
+  return { t: heard[0], end, text, points };
+}
+
+describe("Latin words rise a syllable at a time", () => {
+  it("starts each syllable when the aligner heard it", () => {
+    // "away," sung "a" (held) then "way": w heard at +240, y at the end.
+    const [o] = rowLetterOnsets([spelled("away, ", [1000, 1240, 1300, 1500], 1520), w(2000, 2200, "go")]);
+    expect(o[0]).toBe(1000);
+    expect(o[1]).toBe(1240);
+    // "ay" rides with "w" (one sound), not on the aligner's late "y".
+    expect(o[3] - o[1]).toBeLessThanOrEqual(2 * SYLLABLE_LAG_MS);
+    // The comma rises with the letter before it.
     expect(o[4]).toBe(o[3]);
   });
-  it("finishes a held word early in its hold", () => {
-    const [o] = rowLetterOnsets([w(1000, 3000, "love")]);
-    expect(o[3] - o[0]).toBeLessThanOrEqual(3 * LATIN_LETTER_MS);
+  it("rises a one-syllable word as one sound", () => {
+    const [o] = rowLetterOnsets([w(1000, 1300, "strength")]);
+    expect(o[o.length - 1] - o[0]).toBeLessThanOrEqual(7 * SYLLABLE_LAG_MS);
   });
-  it("looks the same on every repeat, whatever gap or checkpoints", () => {
+  it("looks the same on every repeat, whatever gap follows", () => {
     const tight = rowLetterOnsets([w(1000, 1400, "baby "), w(1420, 1600, "go")])[0].map(t => t - 1000);
-    const gapped = rowLetterOnsets([w(5000, 5400, "baby ", { points: [
-      { t: 5000, fraction: 0 }, { t: 5300, fraction: 0.5 }, { t: 5400, fraction: 1 },
-    ] }), w(7000, 7200, "go")])[0].map(t => t - 5000);
+    const gapped = rowLetterOnsets([w(5000, 5400, "baby "), w(7000, 7200, "go")])[0].map(t => t - 5000);
     expect(tight).toEqual(gapped);
+    // No checkpoints: "ba·by" splits the word's own sound evenly.
+    expect(tight[2]).toBe(200);
   });
-  it("starts a leading apostrophe with the word", () => {
-    const [o] = rowLetterOnsets([w(1000, 1600, "'Cause")]);
-    expect(o[0]).toBe(1000);
-    expect(o[1]).toBe(1000);
+  it("keeps every word's letters in order", () => {
+    for (const text of ["pretending,", "beautiful", "'Cause", "you're", "Hmm"]) {
+      const [o] = rowLetterOnsets([w(1000, 1900, text)]);
+      for (let i = 1; i < o.length; i++) expect(o[i]).toBeGreaterThanOrEqual(o[i - 1]);
+      expect(o[o.length - 1]).toBeLessThanOrEqual(1900);
+    }
   });
 });
 

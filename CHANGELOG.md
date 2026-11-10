@@ -10,7 +10,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ### Changed
 
-- English karaoke rises more evenly. Each English word now spreads its letters evenly over the time it is sung, and commas rise with the letter before them instead of taking a turn. The same word used to rise at a different pace each time it repeated, depending on how long it was held and whether a pause followed. Korean and Japanese are unchanged.
+- English karaoke rises one syllable at a time, the way Korean and Japanese rise one character at a time. Letters used to take equal turns, so silent letters and commas rose on their own while the singer held a vowel, and the same word moved differently each time it repeated. Now "away," rises as "a" then "way," right when each is sung, and every repeat looks the same. Korean and Japanese are unchanged.
 
 ### Fixed
 
