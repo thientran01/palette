@@ -4,6 +4,7 @@ use crate::{
     acoustic::{AcousticAligner, Knobs},
     align::{TimeMap, TimedLine, Word},
     separation::{Stereo, VocalEar, VocalSeparator},
+    takes::Take,
 };
 use std::{
     path::PathBuf,
@@ -14,12 +15,14 @@ use std::{
 type Result<T> = std::result::Result<T, String>;
 const IDLE: Duration = Duration::from_secs(5 * 60);
 /// The review's second ear starts no stretch this long after the align
-/// began: its 14 passes take about 90s on Thien's PC, after the first pass
-/// over the song, so only a busy PC reaches this.
-const EAR_DEADLINE: Duration = Duration::from_secs(120);
+/// began. Every doubted line of a four-minute song is at most about 43
+/// passes, roughly 275s on Thien's PC, so only a busy PC (a pass several
+/// times slower) or a very long song reaches it; lines left keep the mix's
+/// timing.
+const EAR_DEADLINE: Duration = Duration::from_secs(360);
 /// The voice pass on held notes (voice.rs) starts no stretch this long
-/// after the align began. Its budget is about 64s on Thien's PC.
-const VOICE_DEADLINE: Duration = Duration::from_secs(150);
+/// after it began. Its budget is about 64s on Thien's PC.
+const VOICE_DEADLINE: Duration = Duration::from_secs(90);
 struct Request {
     pcm: Vec<i16>,
     /// Full-rate stereo kept for separation (the vocal trial, or the
@@ -28,7 +31,15 @@ struct Request {
     lines: Vec<TimedLine>,
     map: TimeMap,
     dir: PathBuf,
-    reply: mpsc::SyncSender<Result<Vec<Word>>>,
+    reply: mpsc::SyncSender<Result<Aligned>>,
+}
+
+/// One listen's words, and the take (takes.rs) a decoder change can
+/// re-decode them from. No take on the vocal trial, whose emissions came
+/// from whole-song separated vocals.
+pub struct Aligned {
+    pub words: Vec<Word>,
+    pub take: Option<Take>,
 }
 struct Connection<T> {
     generation: u64,
@@ -69,7 +80,7 @@ pub fn align(
     lines: Vec<TimedLine>,
     map: TimeMap,
     dir: PathBuf,
-) -> Result<Vec<Word>> {
+) -> Result<Aligned> {
     let (generation, sender) = connection().connect(|| {
         let (tx, rx) = mpsc::sync_channel(1);
         std::thread::Builder::new()
@@ -205,6 +216,9 @@ fn run(rx: mpsc::Receiver<Request>) {
                     Some(aligning + EAR_DEADLINE),
                 )
             });
+            if vocals.is_none() {
+                model.record_take(request.pcm.len(), &request.map);
+            }
             let mut result = if let Some(vocals) = vocals.as_deref() {
                 model.align_guided_entries(vocals, &request.lines, &request.map, None)
             } else if let Some(ear) = ear.as_mut() {
@@ -219,13 +233,14 @@ fn run(rx: mpsc::Receiver<Request>) {
             } else {
                 model.align(&request.pcm, &request.lines, &request.map)
             };
+            let take = model.finish_take();
             let aligned = aligning.elapsed();
             let (heard, passes) = ear.as_ref().map_or((0, 0), |e| (e.heard, e.passes));
             // The singer's voice on held notes, with the same separator.
             // The vocal trial (whole-song vocals) skips it: dev-only.
             if let (Ok(words), Some(ear)) = (result.as_mut(), ear.as_mut()) {
                 let voicing = Instant::now();
-                ear.deadline = Some(aligning + VOICE_DEADLINE);
+                ear.deadline = Some(voicing + VOICE_DEADLINE);
                 let voiced = crate::voice::listen(
                     words,
                     &request.map,
@@ -243,15 +258,16 @@ fn run(rx: mpsc::Receiver<Request>) {
                 );
             }
             log::info!(
-                "karaoke: model reused={}, load {:.2}s, align {:.2}s, second ear on {:.1}s of {:.1}s ({} passes)",
+                "karaoke: model reused={}, load {:.2}s, align {:.2}s, second ear on {:.1}s of {:.1}s ({} passes), take {} KB",
                 reused,
                 loaded.as_secs_f64(),
                 aligned.as_secs_f64(),
                 heard as f64 / hz as f64,
                 request.pcm.len() as f64 / hz as f64,
                 passes,
+                take.as_ref().map_or(0, |t| t.bytes() / 1024),
             );
-            result
+            result.map(|words| Aligned { words, take })
         }))
         .unwrap_or_else(|_| Err("acoustic worker panicked".into()));
         // Never reuse a failed or possibly poisoned runtime session.
@@ -335,10 +351,12 @@ fn local_worker_preserves_cold_and_warm_results() {
         serde_json::from_slice(&std::fs::read(baseline).unwrap()).unwrap();
     let expected: Vec<Word> = serde_json::from_value(expected["words"].clone()).unwrap();
     let start = Instant::now();
-    let first = align(pcm.clone(), None, lines.clone(), map.clone(), dir.clone()).unwrap();
+    let first = align(pcm.clone(), None, lines.clone(), map.clone(), dir.clone())
+        .unwrap()
+        .words;
     let cold = start.elapsed();
     let start = Instant::now();
-    let second = align(pcm, None, lines, map, dir).unwrap();
+    let second = align(pcm, None, lines, map, dir).unwrap().words;
     assert_eq!(first.len(), expected.len());
     for (i, (a, b)) in first.iter().zip(&expected).enumerate() {
         assert_eq!(

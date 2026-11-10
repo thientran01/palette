@@ -26,7 +26,7 @@ pub const HELD_MS: i64 = 450;
 /// Frame step of a track.
 pub const HOP_MS: i64 = 10;
 /// A track runs past the word's end by the frontend's release.
-const TAIL_MS: i64 = 120;
+pub const TAIL_MS: i64 = 120;
 /// Separator passes the voice may spend per song (~6.4s each on Thien's PC).
 pub const PASS_BUDGET: usize = 10;
 /// Unvoiced frame in `c`.
