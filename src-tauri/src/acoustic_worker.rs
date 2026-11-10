@@ -14,12 +14,14 @@ use std::{
 type Result<T> = std::result::Result<T, String>;
 const IDLE: Duration = Duration::from_secs(5 * 60);
 /// The review's second ear starts no stretch this long after the align
-/// began: its 14 passes take about 90s on Thien's PC, after the first pass
-/// over the song, so only a busy PC reaches this.
-const EAR_DEADLINE: Duration = Duration::from_secs(120);
+/// began. Every doubted line of a four-minute song is at most about 43
+/// passes, roughly 275s on Thien's PC, so only a busy PC (a pass several
+/// times slower) or a very long song reaches it; lines left keep the mix's
+/// timing.
+const EAR_DEADLINE: Duration = Duration::from_secs(360);
 /// The voice pass on held notes (voice.rs) starts no stretch this long
-/// after the align began. Its budget is about 64s on Thien's PC.
-const VOICE_DEADLINE: Duration = Duration::from_secs(150);
+/// after it began. Its budget is about 64s on Thien's PC.
+const VOICE_DEADLINE: Duration = Duration::from_secs(90);
 struct Request {
     pcm: Vec<i16>,
     /// Full-rate stereo kept for separation (the vocal trial, or the
@@ -225,7 +227,7 @@ fn run(rx: mpsc::Receiver<Request>) {
             // The vocal trial (whole-song vocals) skips it: dev-only.
             if let (Ok(words), Some(ear)) = (result.as_mut(), ear.as_mut()) {
                 let voicing = Instant::now();
-                ear.deadline = Some(aligning + VOICE_DEADLINE);
+                ear.deadline = Some(voicing + VOICE_DEADLINE);
                 let voiced = crate::voice::listen(
                     words,
                     &request.map,

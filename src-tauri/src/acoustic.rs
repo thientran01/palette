@@ -533,7 +533,8 @@ impl Knobs {
     /// on time and 200ms early): each part won on its own, on the mix and
     /// on separated vocals, and together no song got clearly worse.
     /// docs/specs/2026-10-31-karaoke-sync-fixes.md. Changing these changes
-    /// RECIPE: every saved sync was learned under them.
+    /// RECIPE: every saved sync was learned under them. `review_passes`
+    /// aside (see REVIEW_PASSES).
     pub const MIX: Knobs = Knobs {
         guide: true,
         guide_late_ms: 700,
@@ -596,14 +597,19 @@ fn japanese_letters(
 /// as support for it.
 const REVIEW_RADIUS_MS: f64 = 150.0;
 /// A line with any word under this support goes to the second ear.
-const REVIEW_BELOW: f32 = 0.5;
-/// Fourteen passes of Kim Vocal 2 (80s of audio) take about 90s on
-/// Thien's PC (6.4s a pass, pulse.log 2026-10-31). With the align itself
-/// that keeps a song's job inside the next song, which ALIGNING would
-/// otherwise skip. On JamendoLyrics they fixed 89% of what no limit did
-/// (310 of 347 words); the median song used 10. (`separation::VocalEar`
-/// also stops early on a busy PC.)
-const REVIEW_PASSES: usize = 14;
+pub(crate) const REVIEW_BELOW: f32 = 0.5;
+/// No limit: every doubted line gets its second listen. Until 2026-11-10
+/// this was 14 passes (about 90s on Thien's PC at 6.4s a pass), to keep a
+/// song's job inside the next song, which ALIGNING then skipped. That
+/// fixed 89% of what no limit did on JamendoLyrics (310 of 347 words),
+/// but K-pop doubts 44% of lines, not 18%, and every such song hit the
+/// cap. Songs that finish during a job now wait their turn (karaoke's
+/// queue), so a long job costs time instead. Neighbouring stretches merge
+/// whenever that is no dearer, so a song costs at most about one whole-song
+/// separation (about 43 passes for four minutes); `acoustic_worker`'s deadline
+/// still stops a busy PC. Not part of RECIPE: saves the old cap starved
+/// relearn through karaoke's detail_v instead.
+const REVIEW_PASSES: usize = 0;
 
 /// Vowel groups in each token's romanization (the same spelling the decoder
 /// targets, `spelled` where it has one), at least one per token: a rough
@@ -2094,6 +2100,8 @@ mod tests {
     #[test]
     fn both_paths_run_the_tuned_decoder() {
         // These values ARE recipe mms-int8/4; changing one changes RECIPE.
+        // The pass budget is the exception: lifting it only re-hears lines
+        // the cap skipped, and karaoke's detail_v 5 relearns those saves.
         let tuned = Knobs {
             guide: true,
             guide_late_ms: 700,
@@ -2104,7 +2112,7 @@ mod tests {
             connected_retry: true,
             review_below: 0.5,
             review_blend: true,
-            review_passes: 14,
+            review_passes: 0,
         };
         assert_eq!(Knobs::MIX, tuned);
         assert_eq!(Knobs::TRIAL, tuned);

@@ -140,6 +140,17 @@ pub async fn active_syncs() -> Vec<ActiveSync> {
             });
         }
     }
+    for rec in lock_queue().iter() {
+        if !rows.iter().any(|row| row.key == rec.key) {
+            rows.push(ActiveSync {
+                key: rec.key.clone(),
+                title: rec.title.clone(),
+                artist: rec.artist.clone(),
+                phase: "processing",
+                progress: None,
+            });
+        }
+    }
     rows
 }
 
@@ -168,10 +179,13 @@ const STORE_V: u32 = 5;
 /// What a v5 file carries beyond its words: 1 per-letter spelling points,
 /// 2 digits spelled as said, 3 the review's support per word (the Lyric
 /// syncs panel's estimate), 4 that plus the singer's voice on held notes
-/// (voice.rs). A file below what this install writes (`detail_v`) still
-/// displays, and the next full listen relearns it.
+/// (voice.rs), 5 that plus a second listen on every doubted line (no pass
+/// cap, 2026-11-10). A file below what this install writes (`detail_v`)
+/// still displays, and the next full listen relearns it, except a 4 whose
+/// doubted lines were all re-heard anyway (`detail_settled`).
 const SUPPORT_DETAIL_V: u32 = 3;
 const VOICE_DETAIL_V: u32 = 4;
+const FULL_EAR_DETAIL_V: u32 = 5;
 fn recipe() -> &'static str {
     if acoustic::assets().is_some() {
         acoustic::RECIPE
@@ -332,7 +346,27 @@ fn unix_ms() -> i64 {
 }
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
+/// One sync job at a time. Set and cleared only under `lock_queue`, so a
+/// listen that finishes as a job ends is either queued for it or starts
+/// its own job, never stranded.
 static ALIGNING: AtomicBool = AtomicBool::new(false);
+/// Listens that finished while another song's sync was running wait here
+/// and are aligned in order after it, so a long job (every doubted line
+/// re-heard) costs time, not songs. Each holds its recording (about 60 MB
+/// for four minutes with stereo kept); past this many, a listen waits for
+/// its next play.
+const QUEUE_MAX: usize = 2;
+
+fn queue() -> &'static Mutex<VecDeque<Rec>> {
+    static S: OnceLock<Mutex<VecDeque<Rec>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn lock_queue() -> std::sync::MutexGuard<'static, VecDeque<Rec>> {
+    queue()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn rec_slot() -> &'static Mutex<Option<Rec>> {
     static S: OnceLock<Mutex<Option<Rec>>> = OnceLock::new();
@@ -444,7 +478,36 @@ pub(crate) fn read_saved(path: &Path, synced: Option<&str>) -> Option<SavedFile>
 /// Saved under the current recipe and detail: nothing left to relearn.
 fn settled(path: &Path, file: &StoreFile) -> bool {
     file.recipe == crate::vocal_preview::cache_recipe(path, recipe())
-        && (crate::acoustic::assets().is_none() || file.detail_v >= detail_v())
+        && (crate::acoustic::assets().is_none()
+            || detail_settled(file.detail_v, &file.words, acoustic::second_ear_installed()))
+}
+
+/// Detail enough for this install. Under the old 14-pass cap a 4 could
+/// leave doubted lines the second ear never reached; only those songs
+/// relearn, not every saved sync.
+fn detail_settled(detail_v: u32, words: &[Word], second_ear: bool) -> bool {
+    if !second_ear {
+        return detail_v >= SUPPORT_DETAIL_V;
+    }
+    detail_v >= FULL_EAR_DETAIL_V || (detail_v >= VOICE_DETAIL_V && !unheard_doubt(words))
+}
+
+/// A line the review doubted (a word under `REVIEW_BELOW`) that the second
+/// ear never re-heard.
+fn unheard_doubt(words: &[Word]) -> bool {
+    // line_t -> (doubted, reheard)
+    let mut lines: HashMap<i64, (bool, bool)> = HashMap::new();
+    for w in words {
+        let Some(line_t) = w.line_t else {
+            continue;
+        };
+        let line = lines.entry(line_t).or_default();
+        line.0 |= w.support.is_some_and(|p| p < acoustic::REVIEW_BELOW);
+        line.1 |= w.reheard;
+    }
+    lines
+        .values()
+        .any(|&(doubted, reheard)| doubted && !reheard)
 }
 
 fn read_store(path: &Path, synced: Option<&str>, prune: bool) -> Option<StoreFile> {
@@ -525,7 +588,7 @@ fn superseded(stored: &str, expected: &str) -> bool {
 /// a song saved without it says 3 and relearns once the separator arrives.
 fn detail_v() -> u32 {
     if acoustic::second_ear_installed() {
-        VOICE_DETAIL_V
+        FULL_EAR_DETAIL_V
     } else {
         SUPPORT_DETAIL_V
     }
@@ -888,13 +951,59 @@ impl Drop for EvidenceGuard {
     }
 }
 
-struct AlignGuard;
+/// Holds ALIGNING for one job thread. Dropped armed (a failed spawn or a
+/// panic), it releases the flag and gives up the queue, whose listens
+/// learn on their next play instead.
+struct AlignGuard {
+    armed: bool,
+}
+
+impl AlignGuard {
+    fn new() -> Self {
+        Self { armed: true }
+    }
+}
 
 impl Drop for AlignGuard {
     fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut queue = lock_queue();
+        for rec in queue.drain(..) {
+            finish_sync_state(
+                &rec.key,
+                "waiting",
+                "Sync stopped before this track’s turn. It needs a fresh listen.",
+            );
+        }
         *active_job() = None;
         ALIGNING.store(false, Ordering::SeqCst);
     }
+}
+
+/// The next queued listen, or None once ALIGNING is released. Both happen
+/// under the queue's lock, so a listen queued a moment later is not left
+/// behind a job that already finished.
+fn next_queued(guard: &mut AlignGuard) -> Option<Rec> {
+    let mut queue = lock_queue();
+    let next = queue.pop_front();
+    if next.is_none() {
+        *active_job() = None;
+        ALIGNING.store(false, Ordering::SeqCst);
+        guard.armed = false;
+    }
+    next
+}
+
+fn show_job(rec: &Rec) {
+    *active_job() = Some(ActiveSync {
+        key: rec.key.clone(),
+        title: rec.title.clone(),
+        artist: rec.artist.clone(),
+        phase: "processing",
+        progress: None,
+    });
 }
 
 fn try_commit(app: &AppHandle, rec: Rec) {
@@ -947,53 +1056,65 @@ fn try_commit(app: &AppHandle, rec: Rec) {
         log::info!("karaoke: silence on {} — leaving line karaoke", rec.title);
         return;
     }
-    if ALIGNING.swap(true, Ordering::SeqCst) {
-        sync_state(
-            &rec.key,
-            "waiting",
-            "Another track is finishing sync. This track needs a fresh listen afterward.",
-        );
-        // Neither cached nor a miss: the track re-records on its next listen.
-        log::info!("karaoke: align busy — skipping {} this listen", rec.title);
-        return;
+    {
+        let mut queue = lock_queue();
+        if ALIGNING.swap(true, Ordering::SeqCst) {
+            if queue.len() >= QUEUE_MAX {
+                sync_state(
+                    &rec.key,
+                    "waiting",
+                    "Other tracks are finishing sync. This track needs a fresh listen afterward.",
+                );
+                // Neither cached nor a miss: the track re-records on its next listen.
+                log::info!(
+                    "karaoke: align queue full — skipping {} this listen",
+                    rec.title
+                );
+                return;
+            }
+            sync_state(
+                &rec.key,
+                "processing",
+                "Your listen is captured. Word timing is aligned after the track ahead of it.",
+            );
+            log::info!(
+                "karaoke: align busy — {} queued ({} ahead of it)",
+                rec.title,
+                queue.len()
+            );
+            queue.push_back(rec);
+            return;
+        }
     }
-    let lyrics_dir = lyrics_dir(app);
-    let Some(karaoke_dir) = karaoke_dir(app) else {
-        ALIGNING.store(false, Ordering::SeqCst);
-        return;
-    };
-    // Opt-in evidence dump (settings.json "karaokeDump": true) — the
-    // offline scorer's input. Installed builds have no env vars.
-    let dump_dir = if settings::get_bool(app, DUMP_SETTING, false) {
-        app.path()
-            .app_data_dir()
-            .ok()
-            .map(|d| d.join(DUMP_DIR).join(&rec.key))
-    } else {
-        None
-    };
     sync_state(
         &rec.key,
         "processing",
         "Finishing sync… Your listen is captured; word timing is being aligned.",
     );
+    show_job(&rec);
     let status_key = rec.key.clone();
     let handle = app.clone();
     // Move the guard into the closure: a failed spawn drops the closure
     // and releases ALIGNING too, even though the thread body never ran.
-    *active_job() = Some(ActiveSync {
-        key: rec.key.clone(),
-        title: rec.title.clone(),
-        artist: rec.artist.clone(),
-        phase: "processing",
-        progress: None,
-    });
-    let guard = AlignGuard;
+    let guard = AlignGuard::new();
     let result = std::thread::Builder::new()
         .name("karaoke-align".into())
         .spawn(move || {
-            let _g = guard;
-            commit_sync(&handle, rec, &lyrics_dir, &karaoke_dir, dump_dir.as_deref());
+            let mut guard = guard;
+            let mut rec = rec;
+            loop {
+                commit_sync(&handle, rec);
+                let Some(next) = next_queued(&mut guard) else {
+                    break;
+                };
+                rec = next;
+                sync_state(
+                    &rec.key,
+                    "processing",
+                    "Finishing sync… Your listen is captured; word timing is being aligned.",
+                );
+                show_job(&rec);
+            }
         });
     if let Err(e) = result {
         sync_state(
@@ -1109,16 +1230,30 @@ fn evict_dump_dirs(parent: &Path) {
     }
 }
 
-fn commit_sync(
-    app: &AppHandle,
-    rec: Rec,
-    lyrics_dir: &Path,
-    karaoke_dir: &Path,
-    dump_dir: Option<&Path>,
-) {
-    commit_recording(rec, lyrics_dir, karaoke_dir, dump_dir, |ready| {
-        let _ = app.emit("karaoke-ready", ready);
-    });
+fn commit_sync(app: &AppHandle, rec: Rec) {
+    let _status = SyncAttempt(rec.key.clone());
+    let Some(karaoke_dir) = karaoke_dir(app) else {
+        return;
+    };
+    // Opt-in evidence dump (settings.json "karaokeDump": true) — the
+    // offline scorer's input. Installed builds have no env vars.
+    let dump_dir = if settings::get_bool(app, DUMP_SETTING, false) {
+        app.path()
+            .app_data_dir()
+            .ok()
+            .map(|d| d.join(DUMP_DIR).join(&rec.key))
+    } else {
+        None
+    };
+    commit_recording(
+        rec,
+        &lyrics_dir(app),
+        &karaoke_dir,
+        dump_dir.as_deref(),
+        |ready| {
+            let _ = app.emit("karaoke-ready", ready);
+        },
+    );
 }
 
 struct SyncAttempt(String);
@@ -1375,7 +1510,7 @@ mod tests {
     fn short_evidence_can_save_while_another_song_is_aligning() {
         let _test_gate = ALIGNMENT_FLAG_TEST_GATE.lock().unwrap();
         ALIGNING.store(true, Ordering::SeqCst);
-        let _align = AlignGuard;
+        let _align = AlignGuard::new();
         let evidence = EvidenceGuard::acquire().expect("diagnostics must not share the model gate");
         assert!(
             EvidenceGuard::acquire().is_none(),
@@ -1595,12 +1730,48 @@ mod tests {
     fn dropping_unstarted_alignment_job_releases_flag() {
         let _test_gate = ALIGNMENT_FLAG_TEST_GATE.lock().unwrap();
         ALIGNING.store(true, Ordering::SeqCst);
-        let guard = AlignGuard;
+        let guard = AlignGuard::new();
         let job = move || {
             let _g = guard;
         };
         // Failed Builder::spawn drops its captured job without running it.
         drop(job);
+        assert!(!ALIGNING.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn queued_listens_run_in_order_then_the_flag_releases() {
+        let _test_gate = ALIGNMENT_FLAG_TEST_GATE.lock().unwrap();
+        ALIGNING.store(true, Ordering::SeqCst);
+        let mut guard = AlignGuard::new();
+        for key in ["first", "second"] {
+            let mut rec = rec_with(Vec::new(), 1_000);
+            rec.key = key.into();
+            lock_queue().push_back(rec);
+        }
+        assert_eq!(next_queued(&mut guard).unwrap().key, "first");
+        assert!(ALIGNING.load(Ordering::SeqCst), "the job keeps the flag");
+        assert_eq!(next_queued(&mut guard).unwrap().key, "second");
+        assert!(next_queued(&mut guard).is_none());
+        assert!(!ALIGNING.load(Ordering::SeqCst));
+        // Released under the queue's lock: a job that starts next owns the
+        // flag, and this guard's drop must not take it away.
+        ALIGNING.store(true, Ordering::SeqCst);
+        drop(guard);
+        assert!(ALIGNING.load(Ordering::SeqCst));
+        ALIGNING.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_lost_job_gives_up_its_queue() {
+        let _test_gate = ALIGNMENT_FLAG_TEST_GATE.lock().unwrap();
+        ALIGNING.store(true, Ordering::SeqCst);
+        let guard = AlignGuard::new();
+        let mut rec = rec_with(Vec::new(), 1_000);
+        rec.key = "stranded".into();
+        lock_queue().push_back(rec);
+        drop(guard);
+        assert!(lock_queue().is_empty());
         assert!(!ALIGNING.load(Ordering::SeqCst));
     }
 
@@ -1895,6 +2066,40 @@ mod tests {
         write_file(&dir, "heard", source, &song(40, 6, 250)).unwrap();
         assert!(!read_file(&dir.join("heard.json"), Some(source)).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_saves_the_pass_cap_starved_relearn() {
+        let w = |line_t: i64, support: f32, reheard: bool| Word {
+            t: line_t,
+            text: "la".into(),
+            line_t: Some(line_t),
+            support: Some(support),
+            reheard,
+            ..Default::default()
+        };
+        let sure = [w(1_000, 0.95, false), w(1_000, 0.9, false)];
+        let reheard = [
+            w(1_000, 0.95, false),
+            w(2_000, 0.2, true),
+            w(2_000, 0.9, false),
+        ];
+        let starved = [
+            w(1_000, 0.95, false),
+            w(2_000, 0.9, false),
+            w(2_000, 0.3, false),
+        ];
+        for words in [&sure[..], &reheard[..]] {
+            assert!(detail_settled(VOICE_DETAIL_V, words, true));
+        }
+        assert!(!detail_settled(VOICE_DETAIL_V, &starved, true));
+        assert!(
+            detail_settled(FULL_EAR_DETAIL_V, &starved, true),
+            "relearns once"
+        );
+        assert!(!detail_settled(SUPPORT_DETAIL_V, &sure, true));
+        // Without the second ear nothing could have re-heard the line.
+        assert!(detail_settled(SUPPORT_DETAIL_V, &starved, false));
     }
 
     #[test]
