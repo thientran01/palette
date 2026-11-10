@@ -268,8 +268,8 @@ pub struct VocalEar<'a> {
     /// Separator input so far, in recording samples, and the passes it took.
     pub heard: usize,
     pub passes: usize,
-    /// Every stretch heard so far and its vocals (16 kHz, ~2.5 MB for the
-    /// review's 14 passes).
+    /// Every stretch heard so far and its vocals (16 kHz, at most ~8 MB
+    /// for a four-minute song heard end to end).
     kept: Vec<(Range<usize>, Vec<i16>)>,
 }
 
