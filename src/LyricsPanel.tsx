@@ -26,7 +26,7 @@ import { planRoll, rollOffsetAt, singingEndMs, type RollPlan } from "./lib/credi
 import * as posClock from "./lib/posClock";
 import { describeWordLead, useWordLead } from "./lib/wordLead";
 import type { NowPlaying } from "./types";
-import { isProvisionalDuration, trackIdOf } from "./lib/trackId";
+import { isProvisionalDuration, NO_SONG_MEMORY, rememberSong, trackIdOf, type SongMemory } from "./lib/trackId";
 import { driveWordRows, type WordDriver, type WordRow } from "./lib/wordWipeDriver";
 import { whileShown } from "./lib/windowShown";
 import { letterSegments } from "./lib/letterFill";
@@ -164,7 +164,9 @@ export type LyricsState =
   // previous track's stale one â€” see lyricsVerdictOf.
   | { status: "loading" }
   | { status: "none" | "offline"; key: string | null }
-  | { status: "synced"; lines: LyricLine[]; key: string };
+  // `song` is trackIdOf for the track these lines belong to: a late album or
+  // duration re-keys the same song, and the lines carry over (useLyrics).
+  | { status: "synced"; lines: LyricLine[]; key: string; song: string | null };
 
 /** The track identity a lyric fetch is keyed on. Consumers compare a synced
  * state's stamped key against the CURRENT track's key before rendering â€”
@@ -200,7 +202,7 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
         const parsed = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
         const lines = l.words?.length ? attachWords(parsed, l.words) : parsed;
         setState(previous => lines.length
-          ? {status: "synced", lines, key}
+          ? {status: "synced", lines, key, song: trackIdOf(np)}
           : previous.status === "synced" && previous.key === key
             ? previous : {status: l.offline ? "offline" : "none", key});
       }).catch(() => {
@@ -212,9 +214,19 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
   // A library event reloads the current identity, not its playback position.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
-  // The last song this hook keyed and its duration, for spotting a skip
-  // whose first payload still carries the previous song's duration.
-  const lastSong = useRef<{ id: string | null; durationMs: number } | null>(null);
+  // The song keyed now and the one before it, for spotting a skip whose
+  // payloads still carry the previous song's duration.
+  const songs = useRef<SongMemory>(NO_SONG_MEMORY);
+  // A late album or duration re-keys the SAME song (a skip's fields land
+  // piecemeal: lib/trackId.ts). Lines already showing carry over to the new
+  // key at render time, so consumers' key gate (lyricsKeyOf) never drops for
+  // a frame and the panel isn't torn down and mounted again: Thien's "the
+  // lyrics enter twice on every song change" (2026-11-11). The effect below
+  // still refetches for the corrected key and swaps the lines in place.
+  const song = trackIdOf(np);
+  if (key !== null && song !== null && state.status === "synced" && state.key !== key && state.song === song) {
+    setState({ ...state, key });
+  }
   useEffect(() => {
     if (!key || !np) {
       lastKey.current = null;
@@ -225,13 +237,16 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
     lastKey.current = key;
     const id = trackIdOf(np);
     // A stale duration's lookup would miss (LRCLIB matches duration ±4s) or
-    // win the race and seat lines that the corrected key then tears down:
-    // the lyric body entering twice. Wait briefly for the correction (the
-    // next heartbeat snapshot, ~500ms); it re-keys this effect, which
-    // cancels the timer and fetches at once.
-    const provisional = isProvisionalDuration(lastSong.current, id, np.duration_ms);
-    lastSong.current = { id, durationMs: np.duration_ms };
-    setState({ status: "loading" });
+    // win the race and seat lines that the corrected key then has to
+    // replace. Wait briefly for the correction (the next heartbeat snapshot,
+    // ~500ms); it re-keys this effect, which cancels the timer and fetches
+    // at once. Compared against the song BEFORE this one, so an album
+    // straggler carrying the same stale duration still waits.
+    songs.current = rememberSong(songs.current, id, np.duration_ms);
+    const provisional = isProvisionalDuration(songs.current.previous, id, np.duration_ms);
+    // Lines carried over from this song's previous key stay up while the
+    // corrected key refetches; anything else waits on the new answer.
+    setState((previous) => previous.status === "synced" && previous.key === key ? previous : { status: "loading" });
     let alive = true;
     const request = ++fetchSerial.current;
     const fetchNow = () => {
@@ -239,12 +254,16 @@ export function useLyrics(np: NowPlaying | null): LyricsState {
         if (!alive || lastKey.current !== key || request !== fetchSerial.current) return;
         const parsed = l.synced ? parseLrc(l.synced, np.duration_ms).slice(0, 600) : [];
         const lines = l.words && l.words.length > 0 ? attachWords(parsed, l.words) : parsed;
-        setState(
+        // A miss for the corrected key keeps carried lines: they were found
+        // for this same artist and title a moment ago.
+        setState((previous) =>
           lines.length > 0
-            ? { status: "synced", lines, key }
-            : l.offline
-              ? { status: "offline", key }
-              : { status: "none", key },
+            ? { status: "synced", lines, key, song: id }
+            : previous.status === "synced" && previous.key === key
+              ? previous
+              : l.offline
+                ? { status: "offline", key }
+                : { status: "none", key },
         );
       });
     };

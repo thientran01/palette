@@ -23,7 +23,8 @@ export function trackIdOf(np: NowPlaying | null): string | null {
 /**
  * True when a new song's payload still reports the PREVIOUS song's duration,
  * so the duration is probably the stale timeline that the next heartbeat
- * snapshot will correct. `prev` is the last song seen and its duration. Two
+ * snapshot will correct. `prev` is the song before this one and its last
+ * duration (SongMemory.previous after rememberSong). Two
  * different songs with the exact same millisecond duration are rare, and
  * the cost of a wrong guess is only a short delay (see useLyrics).
  */
@@ -33,4 +34,26 @@ export function isProvisionalDuration(
   durationMs: number,
 ): boolean {
   return prev !== null && prev.id !== null && id !== null && prev.id !== id && durationMs > 0 && prev.durationMs === durationMs;
+}
+
+/** The song now playing and the one before it, each with the last duration
+ * seen for it. isProvisionalDuration must compare against the PREVIOUS
+ * song: a skip's fields land piecemeal (an album fix, then the duration), and
+ * remembering only "the last payload" let the album straggler overwrite the
+ * old song with the new song at the stale duration, so the lookup stopped
+ * waiting and fetched with the wrong duration. */
+export type SongMemory = {
+  current: { id: string | null; durationMs: number } | null;
+  previous: { id: string | null; durationMs: number } | null;
+};
+
+export const NO_SONG_MEMORY: SongMemory = { current: null, previous: null };
+
+/** Folds one keyed payload into the memory: the same song refreshes its
+ * duration and keeps the song before it; a new song pushes the old one back. */
+export function rememberSong(memory: SongMemory, id: string | null, durationMs: number): SongMemory {
+  if (memory.current !== null && memory.current.id === id) {
+    return { previous: memory.previous, current: { id, durationMs } };
+  }
+  return { previous: memory.current, current: { id, durationMs } };
 }

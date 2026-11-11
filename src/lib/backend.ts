@@ -50,10 +50,11 @@ const LYRICS_PARAM = IN_TAURI ? null : new URLSearchParams(window.location.searc
 const NOTHING_PARAM = !IN_TAURI && new URLSearchParams(window.location.search).has("nothing");
 
 /** `?straggle` delivers a skip the way GSMTC does live: the first payload
- * carries the new title with the PREVIOUS track's duration, and the real
- * duration lands on the next tick (~500ms), like media.rs's heartbeat
- * snapshot catching the restamped timeline. The double-entrance repro
- * (lib/trackId.ts); the default mock emits a skip atomically. */
+ * carries the new title with the PREVIOUS track's album and duration, the
+ * album corrects ~150ms later, and the real duration lands on the next tick
+ * (~500ms), like media.rs's heartbeat snapshot catching the restamped
+ * timeline. The double-entrance repro (lib/trackId.ts, useLyrics); the
+ * default mock emits a skip atomically. */
 const STRAGGLE_PARAM = !IN_TAURI && new URLSearchParams(window.location.search).has("straggle");
 
 /** The AM profile's hidden ms-precise timeline. Payloads only ever carry its
@@ -118,13 +119,23 @@ function mockJumpTo(i: number): void {
     status: "playing",
     position_ms: 0,
     position_at_ms: now,
-    duration_ms: STRAGGLE_PARAM ? mock.duration_ms : duration,
+    ...(STRAGGLE_PARAM ? { album: mock.album, duration_ms: mock.duration_ms } : { duration_ms: duration }),
     art_id: `mock-art-${mockTrack}`,
   });
   if (STRAGGLE_PARAM) {
     const landed = mockTrack;
+    // Each piece is its own payload, like the live media-properties and
+    // timeline wakes (the 500ms mock tick would merge them).
+    mockEmitNow?.();
     window.setTimeout(() => {
-      if (mockTrack === landed) pushMock({ duration_ms: duration });
+      if (mockTrack !== landed) return;
+      pushMock({ album: MOCK_TRACKS[landed].album });
+      mockEmitNow?.();
+    }, 150);
+    window.setTimeout(() => {
+      if (mockTrack !== landed) return;
+      pushMock({ duration_ms: duration });
+      mockEmitNow?.();
     }, 500);
   }
   const front = mockUpNext[0];
@@ -524,6 +535,9 @@ if (!IN_TAURI) {
   };
 }
 
+/** Delivers the current mock payload at once, between ticks (`?straggle`). */
+let mockEmitNow: (() => void) | null = null;
+
 /** Mutate the mock payload, advancing the seq stamp like the backend does. */
 function pushMock(patch: Partial<NowPlaying>): void {
   mock = { ...mock, ...patch, seq: mock.seq + 1 };
@@ -671,7 +685,11 @@ export function onNowPlaying(cb: (np: NowPlaying) => void): () => void {
   };
   tick();
   const id = window.setInterval(tick, 500);
-  return () => window.clearInterval(id);
+  mockEmitNow = () => cb(mock);
+  return () => {
+    window.clearInterval(id);
+    mockEmitNow = null;
+  };
 }
 
 /** Work-area corner the window is docked to — dock.rs owns the derivation

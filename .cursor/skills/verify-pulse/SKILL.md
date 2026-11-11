@@ -38,7 +38,7 @@ Mock routes (same origin, same process):
 | `/?lyrics=words` | In-line word karaoke (local times fixture) |
 | `/?lyrics=<ms>` | Delayed lyric fetch |
 | `/?jump=partial` | Play-now returns `partial` |
-| `/?straggle` | Skips deliver the new title with the previous track's duration, then the real duration ~500ms later (the live GSMTC order) |
+| `/?straggle` | Skips deliver the new title with the previous track's album and duration, then the album ~150ms later and the real duration ~500ms later, each as its own payload (the live GSMTC order) |
 | `/?long` | First track has a title and artist too long for every surface (marquee pan) |
 | `/?similar=<status>` | More-like-this toast (`no_data`, `no_key`, `offline`, …) |
 | `/?window=palette` | Search palette window |
