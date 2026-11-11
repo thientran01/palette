@@ -8,6 +8,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.14] - 2026-11-10
+
 ### Changed
 
 - Word karaoke fills instead of rising. Each letter brightens as the singing passes through it, and nothing moves: a held note keeps brightening for as long as it's held, a fast line keeps up, and each word finishes exactly as it's sung, with no flash at the end. English no longer hops through letters the singer isn't voicing. Held notes no longer sway with the singer's pitch.
@@ -15,6 +17,9 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - Listens add up. When a song is learned again, by Relearn or on its own, Palette keeps each line from whichever listen it was surer of, so a bad listen no longer replaces a good one. The new listen is first lined up with the saved timing, using words both are sure of, lines already sure are left alone, and a line is swapped only when the new listen is clearly surer of it. A song with a line it's still unsure of learns again on its next full listens, up to three in all, and stops as soon as a listen improves nothing.
 - Word karaoke learns from partial listens. A song started partway in, skipped before the end, or interrupted by a seek, a pause or a switch to another app now saves the lines it heard from start to finish, instead of throwing the whole listen away. A song can be learned in pieces across plays: lines no listen has heard yet show line karaoke and keep the song learning, and the Lyric syncs panel shows it as relearning until they're filled in. A listen needs at least 8 full lines to count, so it can prove it heard the vocals, and a short one costs no processing at all. Before this, a skip after half the song was still fully processed and then discarded.
 - Word karaoke keeps what the model heard on each listen (about 0.8 MB a song, in its own folder beside the saved syncs). When an update only changes how Palette reads that, your saved songs are re-synced in the background a minute or two after launch, in a fraction of a second each, instead of each one waiting for its next full listen. Songs saved before this update, or captured from the whole device's sound instead of the player, still relearn by listening.
+- Long titles and artist names that don't fit now pan slowly to their end and back instead of being cut off, in the pill, the card, the expanded header, the album view and focus mode. Only text that overflows moves, its edges fade, and it stops while its window is hidden. With reduced motion on, it keeps the ellipsis. Queue and Search rows are unchanged.
+- The Lyric syncs panel opens instantly. Every open used to re-read every saved sync and the whole play history, then fetch each cover separately. It now keeps its list and covers, shows them at once and refreshes behind them, and grows in from its button. The first frame after a click went from about 80 ms to about 10 ms.
+- Focus mode's waveform plays smoothly. Its large bars are drawn on a canvas at about 60 frames a second instead of stepping at 30, keep their round ends instead of squashing, and take less than half the main-thread time they did.
 
 ### Fixed
 
@@ -23,6 +28,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - A short scrub or a brief pause no longer bends a song's word timing. A jump of less than 2.5 seconds used to pass as jitter in the player's position reports, and the song was saved with part or all of it up to a second or two off. When the player reports as precisely as Spotify does, a jump of more than half a second now ends that part of the listen, keeping the lines heard before it.
 - A line sung before the recording started is no longer forced into the audio that's left. Starting a song a few seconds in squeezed its first line into what remained of it and saved that timing. Such a line now waits for a listen that hears it from the start.
 - The Lyric syncs panel's "words on time" no longer reads high on hard songs. On a song where the check doubts many lines, even the words it's sure of are right less often, and a line that starts well after its timestamp is off more often. The estimate now counts both. Against 79 hand-timed songs, the ones it scores under 93% used to average 88% estimated against 86% measured and now average 85%, the hardest song went from 81% to 72% against a measured 72%, and 70 of the 79 songs show the same percent as before or one point different. Scores update on their own; nothing needs relearning.
+- The karaoke highlight no longer freezes or trails a line behind after Search closes. Closing Search also told the widget it was hidden, so the highlight stopped following the singing (the new line barely lit, the last one left fully lit). This came in with 1.0.13.
+- Switching to another release of the song that's playing, such as picking the single from Search while the album version plays, now shows that release's cover in focus mode instead of keeping the old one.
 
 ## [1.0.13] - 2026-11-09
 
