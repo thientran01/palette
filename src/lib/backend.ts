@@ -710,6 +710,17 @@ export function onCursorLeft(cb: () => void): () => void {
   };
 }
 
+/** The hit watcher saw the cursor enter the widget's hit rect (dock.rs),
+ * the twin of onCursorLeft. A re-shown widget can get no mousemove until a
+ * press, so the hover reveal can't wait for one. */
+export function onCursorEntered(cb: () => void): () => void {
+  if (!IN_TAURI) return () => {}; // mock: real mousemove always fires
+  const un = listen("cursor-entered", () => cb());
+  return () => {
+    un.then((f) => f());
+  };
+}
+
 /** `?fs` seeds the browser mock's presence state (fullscreen ⇒ concealed,
  * mirroring the real engine) so the conceal-driven UI reactions and the dev
  * overlay are preview-iterable without a live fullscreen app. */

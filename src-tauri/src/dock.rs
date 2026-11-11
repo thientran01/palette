@@ -1081,6 +1081,10 @@ pub fn spawn_hit_watcher(window: WebviewWindow) {
             // Burst deadline + last re-assert, driving the cadence above.
             let mut burst_until = Instant::now();
             let mut last_assert = Instant::now() - Duration::from_millis(TOPMOST_IDLE_MS);
+            // Set on every wake from the hidden park: the first visible poll
+            // re-announces a cursor that is already inside (see cursor-entered
+            // below), since no flip will happen to announce it.
+            let mut just_shown = true;
             loop {
                 let mut near = false;
                 if !watched.visible() {
@@ -1104,6 +1108,7 @@ pub fn spawn_hit_watcher(window: WebviewWindow) {
                         shown = g;
                     }
                     *shown = false; // consume
+                    just_shown = true;
                     continue;
                 }
                 // Z-order: keep the widget at the front of the topmost band.
@@ -1140,6 +1145,14 @@ pub fn spawn_hit_watcher(window: WebviewWindow) {
                                 && p.y >= t - HIT_NEAR_PAD
                                 && p.y < t + hh + HIT_NEAR_PAD;
                             let inside = p.x >= l && p.x < l + hw && p.y >= t && p.y < t + hh;
+                            // cursor-entered is the other half: the webview's
+                            // own mousemove arms the hover reveal, but after the
+                            // widget is re-shown (focus closing) it can get no
+                            // moves at all until a button press (measured on
+                            // Thien's PC, 2026-11-10), so the press landed on
+                            // still-hidden controls. The frontend arms hover on
+                            // this instead of waiting for a move.
+                            //
                             // inside == ignoring means the state is wrong-way —
                             // flip it, unless a press is in flight. The mirror
                             // only advances when the OS call lands, so a failed
@@ -1158,8 +1171,13 @@ pub fn spawn_hit_watcher(window: WebviewWindow) {
                                     // frontend to drop its hover state instead
                                     // (quick-review catch, 2026-07-10).
                                     let _ = window.emit("cursor-left", ());
+                                } else {
+                                    let _ = window.emit("cursor-entered", ());
                                 }
+                            } else if just_shown && inside && !ignoring {
+                                let _ = window.emit("cursor-entered", ());
                             }
+                            just_shown = false;
                         }
                     }
                 }

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import type { MorphName } from "./icons/geometry";
 import { MorphIcon } from "./icons/MorphIcon";
@@ -8,6 +9,7 @@ import { useKaraokePreference } from "./lib/karaokePreference";
 import { useBracketPulse } from "./icons/useBracketPulse";
 import {
   commands,
+  onCursorEntered,
   onCursorLeft,
   onDockCorner,
   onHotkeysChanged,
@@ -41,6 +43,7 @@ import * as posClock from "./lib/posClock";
 import { initTrackDir, SLIDE_PX, SLIDE_SETTLE_MS, takeTrackDir } from "./lib/trackDir";
 import { trackIdOf } from "./lib/trackId";
 import { initReactive } from "./lib/reactive";
+import { domColdPressDeps, routeColdPress } from "./lib/coldPress";
 import { MODE_SIZES, WINDOW_MAX, type Mode } from "./lib/sizes";
 import { DUR, EASE, SLIDE_REST, slideX } from "./lib/tokens";
 import {
@@ -1829,6 +1832,7 @@ function App() {
   // root's data-hot instead of group-hover.
   const [hot, setHot] = useState(false);
   useEffect(() => onCursorLeft(() => setHot(false)), []);
+  useEffect(() => onCursorEntered(() => setHot(true)), []);
   // Presence (presence.rs) reaches the UI for exactly one reason now:
   // conceal drops hover state (a hidden webview never receives the
   // mouseleave), so the revealed chrome isn't pinned open on restore. The
@@ -2037,6 +2041,16 @@ function App() {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.closest('button, [role="slider"]')) return;
+    // A press with no hover before it hit-tested the corner controls while
+    // they were still pointer-events none, so it landed here. If one of
+    // them sits under it once revealed, the press was aimed at it: replay
+    // its click instead of dragging (lib/coldPress.ts).
+    const aimed = routeColdPress(
+      { x: e.clientX, y: e.clientY },
+      hot,
+      domColdPressDeps(() => flushSync(() => setHot(true))),
+    );
+    if (aimed) return;
     commands.startDrag();
   };
 

@@ -30,6 +30,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 - The Lyric syncs panel's "words on time" no longer reads high on hard songs. On a song where the check doubts many lines, even the words it's sure of are right less often, and a line that starts well after its timestamp is off more often. The estimate now counts both. Against 79 hand-timed songs, the ones it scores under 93% used to average 88% estimated against 86% measured and now average 85%, the hardest song went from 81% to 72% against a measured 72%, and 70 of the 79 songs show the same percent as before or one point different. Scores update on their own; nothing needs relearning.
 - The karaoke highlight no longer freezes or trails a line behind after Search closes. Closing Search also told the widget it was hidden, so the highlight stopped following the singing (the new line barely lit, the last one left fully lit). This came in with 1.0.13.
 - Switching to another release of the song that's playing, such as picking the single from Search while the album version plays, now shows that release's cover in focus mode instead of keeping the old one.
+- The widget's corner buttons work on the first click after you leave focus mode. Closing focus left the widget unaware of the cursor until a click, so its buttons stayed hidden and the first click on one, such as Expand to focus, started a window drag instead. The buttons now appear as soon as the cursor reaches them, and a click that still arrives first goes to the button under it.
 
 ## [1.0.13] - 2026-11-09
 
