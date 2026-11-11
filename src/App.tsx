@@ -1136,7 +1136,10 @@ function ExpandedView({
         </div>
 
         {/* Lyrics view — the top-[52px] body box clears the fixed header.
-            Keyed per track so a change re-anchors fresh; the outgoing panel
+            Keyed per SONG (trackIdOf), not per lyrics key: a late album or
+            duration re-keys the same song, and remounting on it played the
+            entrance a second time (useLyrics carries the lines across). A
+            song change re-anchors fresh; the outgoing panel
             slides out through AnimatePresence (both states sit in the same
             absolute box, so the 90ms exit overlaps the entrance as one
             directional motion — dx 0 degrades it to the plain crossfade). */}
@@ -1151,7 +1154,7 @@ function ExpandedView({
               // carries the change's direction) — the earned cascade path
               // mounts "still" so choreography never stacks.
               <motion.div
-                key={lyrics.key}
+                key={songKey ?? lyrics.key}
                 custom={contentDx}
                 variants={contentSlide}
                 initial={celebrate ? "still" : "enter"}
