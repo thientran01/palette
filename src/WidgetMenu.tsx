@@ -12,11 +12,28 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { commands } from "./lib/backend";
 import { Keycaps } from "./Keycaps";
+import type { LyricLine } from "./lib/lrc";
+import { plainLine, startRetime, undoFix, type SongRef } from "./lib/lineFix";
 
 /** Box dims (mirror the w-[204px] class + ~5 items) so App can clamp the
  * cursor-anchored position to keep the whole menu inside the fixed window. */
 export const WIDGET_MENU_W = 204;
 export const WIDGET_MENU_H = 200;
+/** Extra height when the menu opens on a lyric line (LINE_ITEMS + Sep). */
+export const LINE_ITEMS_H = 72;
+
+/** A right-click on a lyric line of a song with word timing: the line can
+ * be fixed by hand (lib/lineFix.ts). */
+export type LineTarget = { song: SongRef; line: LyricLine; seekable: boolean };
+
+/** The line's own items, in menu order. Plain words: what happens. */
+export function lineItems(target: LineTarget): { label: string; run: () => void }[] {
+  const { song, line, seekable } = target;
+  const items = [{ label: "Tap in this line", run: () => startRetime(song, line, seekable) }];
+  if (line.fixed !== "plain") items.push({ label: "Show this line plain", run: () => void plainLine(song, line) });
+  if (line.fixed) items.push({ label: "Undo fix", run: () => void undoFix(song, line) });
+  return items;
+}
 
 function Item({
   label,
@@ -60,12 +77,17 @@ export function WidgetMenu({
   spotifyConnected,
   showhideChord,
   onClose,
+  line,
 }: {
   style: CSSProperties;
   spotifyConnected: boolean;
   showhideChord: string;
   onClose: () => void;
+  line?: LineTarget | null;
 }) {
+  const fixes = line ? lineItems(line) : [];
+  // Roving index of the first settings item, after the line's own.
+  const o = fixes.length;
   const act = (fn: () => void) => () => {
     fn();
     onClose();
@@ -121,18 +143,96 @@ export function WidgetMenu({
     >
       {/* tabIndex indices = DOM order of [role="menuitem"] (Sep isn't one), so
           they must stay in sync with the roving `active` index above. */}
-      <Item label="Preferences…" tabIndex={active === 0 ? 0 : -1} onClick={act(() => commands.openPrefs())} />
+      {fixes.map((item, i) => (
+        <Item key={item.label} label={item.label} tabIndex={active === i ? 0 : -1} onClick={act(item.run)} />
+      ))}
+      {o > 0 && <Sep />}
+      <Item label="Preferences…" tabIndex={active === o ? 0 : -1} onClick={act(() => commands.openPrefs())} />
       {/* Ellipsis: opens the same prefs window "Preferences…" does. */}
-      <Item label="Shortcuts…" tabIndex={active === 1 ? 0 : -1} onClick={act(() => commands.openPrefs("hotkeys"))} />
+      <Item label="Shortcuts…" tabIndex={active === o + 1 ? 0 : -1} onClick={act(() => commands.openPrefs("hotkeys"))} />
       <Item
         label={spotifyConnected ? "Disconnect Spotify" : "Connect Spotify"}
-        tabIndex={active === 2 ? 0 : -1}
+        tabIndex={active === o + 2 ? 0 : -1}
         onClick={act(() => (spotifyConnected ? commands.spotifyDisconnect() : commands.spotifyConnect()))}
       />
       <Sep />
-      <Item label="Hide Palette" chord={showhideChord} tabIndex={active === 3 ? 0 : -1} onClick={act(() => commands.hideWidget())} />
+      <Item label="Hide Palette" chord={showhideChord} tabIndex={active === o + 3 ? 0 : -1} onClick={act(() => commands.hideWidget())} />
       <Sep />
-      <Item label="Quit Palette" muted tabIndex={active === 4 ? 0 : -1} onClick={act(() => commands.quitApp())} />
+      <Item label="Quit Palette" muted tabIndex={active === o + 4 ? 0 : -1} onClick={act(() => commands.quitApp())} />
     </div>
+  );
+}
+
+/** The focus room's right-click on a lyric line: only the line's own items
+ * (the room has no settings menu). Same surface as the widget menu, at the
+ * cursor, over a full-window scrim that dismisses it. Esc closes the menu,
+ * not the room. */
+export function LineMenu({
+  at,
+  target,
+  onClose,
+}: {
+  at: { x: number; y: number };
+  target: LineTarget;
+  onClose: () => void;
+}) {
+  const items = lineItems(target);
+  const [active, setActive] = useState(0);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]')[active]?.focus();
+  }, [active]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const n = items.length;
+        setActive((i) => (e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n));
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [items.length, onClose]);
+  const w = WIDGET_MENU_W;
+  const h = items.length * 32 + 12;
+  const left = Math.max(4, Math.min(at.x, window.innerWidth - w - 4));
+  const top = Math.max(4, Math.min(at.y, window.innerHeight - h - 4));
+  return (
+    <>
+      <div
+        aria-hidden
+        className="fixed inset-0 z-30"
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onClose();
+        }}
+      />
+      <div
+        role="menu"
+        ref={menuRef}
+        onMouseDown={(e) => e.stopPropagation()}
+        className="pop-in fixed z-40 w-[204px] rounded-xl border border-border/10 bg-surface-2 p-1.5 shadow-xl shadow-black/40"
+        style={{ left, top, transformOrigin: `${at.x - left}px ${at.y - top}px` }}
+      >
+        {items.map((item, i) => (
+          <Item
+            key={item.label}
+            label={item.label}
+            tabIndex={active === i ? 0 : -1}
+            onClick={() => {
+              item.run();
+              onClose();
+            }}
+          />
+        ))}
+      </div>
+    </>
   );
 }

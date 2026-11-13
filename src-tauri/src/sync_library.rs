@@ -113,7 +113,8 @@ pub struct Check {
     on_time: f32,
     /// One letter per lyric line, in song order: `s` sure (every word at
     /// SURE or more), `l` loose, `u` unsure (a word under DOUBT, the line
-    /// the review would doubt), `n` no word timing (line sync only).
+    /// the review would doubt), `n` no word timing (line sync only), `f`
+    /// fixed by the listener's hand (karaoke/fixes.rs).
     lines: String,
     /// Lines still unsure.
     unsure: u32,
@@ -121,6 +122,12 @@ pub struct Check {
     reheard: u32,
     /// ...and those it left sure enough not to doubt.
     fixed: u32,
+    /// Lines the listener fixed by hand.
+    #[serde(skip_serializing_if = "is_zero")]
+    hand: u32,
+}
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// `acoustic::REVIEW_BELOW`: a word under it makes its line doubted.
@@ -234,7 +241,7 @@ fn check(lines: &[crate::align::TimedLine], words: &[crate::align::Word]) -> Opt
         return None;
     }
     let on_time = shares.iter().sum::<f32>() / shares.len() as f32;
-    let (mut unsure, mut reheard, mut fixed) = (0, 0, 0);
+    let (mut unsure, mut reheard, mut fixed, mut hand) = (0, 0, 0, 0);
     let mut seen = std::collections::HashSet::new();
     let map = lines
         .iter()
@@ -242,15 +249,17 @@ fn check(lines: &[crate::align::TimedLine], words: &[crate::align::Word]) -> Opt
         .filter(|l| !l.text.trim().is_empty() && seen.insert(l.t))
         .map(|line| {
             let own = words.iter().filter(|w| w.line_t == Some(line.t));
-            let (mut any, mut heard, mut least) = (false, false, None::<f32>);
+            let (mut any, mut heard, mut least, mut by_hand) = (false, false, None::<f32>, false);
             for w in own {
                 any = true;
                 heard |= w.reheard;
+                by_hand |= w.fixed.is_some();
                 if let Some(p) = w.support {
                     least = Some(least.map_or(p, |l| l.min(p)));
                 }
             }
             let state = match least {
+                _ if by_hand => 'f',
                 None if !any => 'n',
                 // Words the review couldn't judge: not sure, not doubted.
                 None => 'l',
@@ -261,6 +270,7 @@ fn check(lines: &[crate::align::TimedLine], words: &[crate::align::Word]) -> Opt
             unsure += u32::from(state == 'u');
             reheard += u32::from(heard);
             fixed += u32::from(heard && state != 'u');
+            hand += u32::from(by_hand);
             state
         })
         .collect();
@@ -270,6 +280,7 @@ fn check(lines: &[crate::align::TimedLine], words: &[crate::align::Word]) -> Opt
         unsure,
         reheard,
         fixed,
+        hand,
     })
 }
 /// A file's size and modified time: what tells a memo it went stale.
@@ -294,6 +305,8 @@ impl Stamp {
 struct Summary {
     saved: Stamp,
     source: Option<Stamp>,
+    /// The song's hand fixes (karaoke/fixes.rs).
+    fixes: Option<Stamp>,
     assets: bool,
     /// None when the file isn't a usable sync (`read_saved` refused it).
     row: Option<(Option<Check>, bool)>,
@@ -412,10 +425,10 @@ fn list(root: &Path) -> Result<Vec<SavedSync>, String> {
             }
             let source_path = root.join("lyrics").join(format!("{key}.json"));
             let (saved, source) = (Stamp::of(&meta), Stamp::at(&source_path));
-            let fresh = memo
-                .files
-                .get(&path)
-                .is_some_and(|s| s.saved == saved && s.source == source && s.assets == assets);
+            let fixes = Stamp::at(&crate::karaoke::fixes::path(root, &key));
+            let fresh = memo.files.get(&path).is_some_and(|s| {
+                s.saved == saved && s.source == source && s.fixes == fixes && s.assets == assets
+            });
             if !fresh {
                 let row = summarize(&path, &source_path);
                 memo.files.insert(
@@ -423,6 +436,7 @@ fn list(root: &Path) -> Result<Vec<SavedSync>, String> {
                     Summary {
                         saved,
                         source,
+                        fixes,
                         assets,
                         row,
                     },
@@ -459,6 +473,11 @@ fn list(root: &Path) -> Result<Vec<SavedSync>, String> {
     Ok(rows)
 }
 
+/// The song key a saved file is named by.
+fn key_of(path: &Path) -> Option<&str> {
+    path.file_stem().and_then(|s| s.to_str())
+}
+
 /// A saved file's check and relearn flag, or None when it isn't usable.
 fn summarize(path: &Path, source_path: &Path) -> Option<(Option<Check>, bool)> {
     let source = std::fs::read(source_path)
@@ -467,7 +486,13 @@ fn summarize(path: &Path, source_path: &Path) -> Option<(Option<Check>, bool)> {
     let synced = source.as_ref().and_then(|v| v["synced"].as_str());
     let saved = crate::karaoke::read_saved(path, synced)?;
     let lines = crate::align::parse_lrc(synced.unwrap_or_default());
-    Some((check(&lines, &saved.words), saved.relearns))
+    // Lines the listener fixed by hand show as fixed, whatever the aligner
+    // saved under them.
+    let words = match (path.parent().and_then(Path::parent), key_of(path)) {
+        (Some(root), Some(key)) => crate::karaoke::fixes::apply(root, key, synced, saved.words),
+        _ => saved.words,
+    };
+    Some((check(&lines, &words), saved.relearns))
 }
 /// Seconds after launch to build the memo, clear of startup work.
 const WARM_AFTER_S: u64 = 20;

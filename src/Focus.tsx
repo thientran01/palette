@@ -38,12 +38,14 @@
  * backend-side to keep feeding this window while the main widget hides
  * behind it.
  */
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { MorphIcon } from "./icons/MorphIcon";
 import { LyricSyncStatus } from "./LyricSyncStatus";
 import { lyricLineCount } from "./lib/syncCheck";
 import { useKaraokePreference } from "./lib/karaokePreference";
+import { LineMenu, type LineTarget } from "./WidgetMenu";
+import { hasWordSync } from "./lib/lineFix";
 import {
   commands,
   onFocusShown,
@@ -377,6 +379,17 @@ export default function Focus() {
 
   const seekable = !!np?.can_seek;
   const playing = np?.status === "playing";
+  // Right-click on a lyric line: fix it by hand (lib/lineFix.ts).
+  const [lineMenu, setLineMenu] = useState<{ x: number; y: number; target: LineTarget } | null>(null);
+  const closeLineMenu = useCallback(() => setLineMenu(null), []);
+  const onContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const row = (e.target as HTMLElement).closest?.("[data-lyric]");
+    if (!row || !np || !karaoke || lyrics.status !== "synced" || lyrics.key !== lyricsKeyOf(np)) return;
+    const line = lyrics.lines[Number(row.getAttribute("data-lyric"))];
+    if (!line || line.end !== undefined || line.words?.[0]?.timing === "phrase" || !hasWordSync(lyrics.lines)) return;
+    setLineMenu({ x: e.clientX, y: e.clientY, target: { song: np, line, seekable } });
+  };
   const lyricsLive =
     lyrics.status === "synced" && np !== null && lyrics.key === lyricsKeyOf(np);
   // What the state says about THIS track (stale verdicts read as pending) +
@@ -528,6 +541,7 @@ export default function Focus() {
     // no-lyrics cluster can anchor off the SAME geometry (see its seat).
     <div
       key={phase}
+      onContextMenu={onContextMenu}
       className="group/focus room-in relative flex h-screen w-screen flex-col overflow-hidden bg-surface text-fg [--art:min(560px,46vh,100vh_-_660px,40vw_-_390px)] [--stack-top:calc(50vh_-_var(--art)/2_-_73px)] [--horizon-mb:calc((93vh_-_212px_-_var(--stack-top)_-_var(--art))/2)]"
     >
       {/* Corner exit: hover-revealed + the has-[:focus-visible] keyboard
@@ -773,6 +787,7 @@ export default function Focus() {
           </div>
         </>
       )}
+      {lineMenu && <LineMenu at={lineMenu} target={lineMenu.target} onClose={closeLineMenu} />}
     </div>
   );
 }

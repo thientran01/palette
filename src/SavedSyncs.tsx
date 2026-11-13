@@ -92,9 +92,9 @@ function Cover({thumbKey,url}:{thumbKey:string|null;url?:string|null}){const [br
 type MapMode={kind:"check";check:SyncCheck}|{kind:"heard";count:number;share:number};
 function SongMap({mode}:{mode:MapMode}){
  const ticks=mode.kind==="check"?[...mode.check.lines]:Array.from({length:mode.count},(_,i)=>(i+0.5)/mode.count<=mode.share?"h":"-");
- const tick:{[k:string]:string}={s:"h-[5px] bg-fg/25",l:"h-[11px] bg-fg/50",u:"h-5 bg-fg",n:"h-[5px] bg-fg/[0.06] shadow-[inset_0_0_0_1px_rgb(var(--fg)/0.22)]",h:"h-[5px] bg-fg/50","-":"h-[5px] bg-fg/[0.12]"};
+ const tick:{[k:string]:string}={f:"h-[5px] bg-fg/50",s:"h-[5px] bg-fg/25",l:"h-[11px] bg-fg/50",u:"h-5 bg-fg",n:"h-[5px] bg-fg/[0.06] shadow-[inset_0_0_0_1px_rgb(var(--fg)/0.22)]",h:"h-[5px] bg-fg/50","-":"h-[5px] bg-fg/[0.12]"};
  const label=mode.kind==="check"
-  ?`${[...mode.check.lines].filter(c=>c==="s").length} of ${[...mode.check.lines].filter(c=>c!=="n").length} lines sure, ${mode.check.unsure} unsure`
+  ?`${[...mode.check.lines].filter(c=>c==="s").length} of ${[...mode.check.lines].filter(c=>c!=="n").length} lines sure, ${mode.check.unsure} unsure${mode.check.hand?`, ${mode.check.hand} fixed by hand`:""}`
   :`${Math.round(mode.share*100)}% of the song heard`;
  return <div role="img" aria-label={label} className={`flex h-5 items-end ${ticks.length>60?"gap-px":"gap-0.5"}`}>
   {ticks.map((c,i)=><i key={i} style={{transitionDelay:`${Math.min(i*6,240)}ms`}} className={`min-w-px flex-1 rounded-[1px] transition-[height,background-color] duration-4 ease-out-tk motion-reduce:transition-none ${tick[c]??tick.l}`}/>)}
@@ -190,9 +190,9 @@ export function SavedSyncs({np,lines,onClose,current,top}:{np:NowPlaying;lines:n
  * fold into ROW_TICKS stretches, each drawn as its least sure line. */
 const ROW_TICKS=14;
 function RowMap({lines}:{lines:string}){
- const rank="nslu",n=Math.min(lines.length,ROW_TICKS);
+ const rank="nfslu",n=Math.min(lines.length,ROW_TICKS);
  const ticks=Array.from({length:n},(_,i)=>[...lines.slice(Math.floor(i*lines.length/n),Math.floor((i+1)*lines.length/n))].reduce((a,c)=>rank.indexOf(c)>rank.indexOf(a)?c:a,"n"));
- const tick:{[k:string]:string}={s:"h-[3px] bg-fg/20",l:"h-[7px] bg-fg/40",u:"h-3 bg-fg/85",n:"h-[3px] bg-fg/[0.08]"};
+ const tick:{[k:string]:string}={f:"h-[3px] bg-fg/40",s:"h-[3px] bg-fg/20",l:"h-[7px] bg-fg/40",u:"h-3 bg-fg/85",n:"h-[3px] bg-fg/[0.08]"};
  return <div aria-hidden className="flex h-3 w-10 shrink-0 items-end gap-px">{ticks.map((c,i)=><i key={i} className={`min-w-0 flex-1 rounded-[0.5px] ${tick[c]??tick.l}`}/>)}</div>;
 }
 /** The estimate rests at the row's end; hover or focus swaps it for the

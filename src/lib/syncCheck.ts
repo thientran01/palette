@@ -11,6 +11,11 @@ export function onTimePercent(check: SyncCheck): number {
 /** One sentence on what the review and its second listen found. */
 export function checkSummary(check: SyncCheck): string {
   const lines = (n: number) => `${n} ${n === 1 ? "line" : "lines"}`;
+  const found = reviewSummary(check, lines);
+  return check.hand ? `${found} You fixed ${lines(check.hand)} by hand.` : found;
+}
+
+function reviewSummary(check: SyncCheck, lines: (n: number) => string): string {
   if (check.reheard > 0) {
     const fixed = `A second listen on isolated vocals fixed ${check.fixed} of ${lines(check.reheard)} it doubted.`;
     return check.unsure > 0 ? `${fixed} ${check.unsure} may still be off.` : fixed;

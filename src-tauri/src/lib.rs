@@ -1336,6 +1336,8 @@ pub fn run() {
             karaoke::karaoke_status,
             karaoke::vocal_preview_enabled,
             karaoke::word_lead,
+            karaoke::fixes::karaoke_fix_line,
+            karaoke::fixes::karaoke_unfix_line,
             now_playing,
             set_reactive_enabled,
             history::history_page,
