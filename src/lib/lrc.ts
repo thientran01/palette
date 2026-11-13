@@ -16,6 +16,9 @@ export interface LyricWord {
    * keys on this when present — a word placed before its own stamp must
    * not land on the previous row. */
   line_t?: number;
+  /** The review's support for the word's onset, 0-1 to two decimals
+   * (acoustic.rs, sync_review.rs). Absent on unchecked words. */
+  support?: number;
 }
 
 export interface LyricLine {
@@ -28,7 +31,7 @@ export interface LyricLine {
   end?: number;
   words?: LyricWord[];
   /** Display fallback only; saved acoustic timing is never rewritten. */
-  alignmentFallback?: "missing" | "invalid";
+  alignmentFallback?: "missing" | "invalid" | "unsure";
   /** Repeated-oh backing phrase spans the source line, not its printed tail. */
   backingPhrase?: { textStart: number; t: number; end: number };
 }
@@ -237,12 +240,38 @@ function backingWords(line: LyricLine, words: LyricWord[]): LyricWord[] {
   });
 }
 
-/** Only unusable spans lose word rendering. Source-entry disagreements are
- * resolved by the acoustic decoder, never by replacing the animated lyric. */
+/** A line whose words the review is this unsure of, on average (the
+ * geometric mean of their support), is lit as a whole line on its stamp
+ * instead of word by word. On JamendoLyrics (mix, re-look on) such lines
+ * were 3.3% of lines and 46% of their words were more than 300 ms off;
+ * from 0.35 to 0.5, 34%; over 0.9, 1%. Word timing that far off reads as
+ * broken; a line lit on its stamp reads as plain lyrics. About 2% of the
+ * lines in Thien's saves (2026-11-13).
+ * docs/specs/2026-11-13-karaoke-unsure-lines.md. */
+export const UNSURE_LINE_SUPPORT = 0.35;
+/** Saved support is rounded to two decimals; a 0 is "under 0.005", not
+ * certainty of being wrong (karaoke.rs SUPPORT_FLOOR). */
+const SUPPORT_FLOOR = 0.05;
+
+/** Geometric mean of the line's checked words' support, or undefined when
+ * the review didn't check any. */
+export function lineSupport(words: LyricWord[]): number | undefined {
+  const logs = words.flatMap(w => w.support === undefined || !Number.isFinite(w.support)
+    ? [] : [Math.log(Math.max(w.support, SUPPORT_FLOOR))]);
+  if (!logs.length) return undefined;
+  return Math.exp(logs.reduce((a, b) => a + b, 0) / logs.length);
+}
+
+/** Only unusable spans lose word rendering, and lines the review is so
+ * unsure of that their word timing is more likely wrong than right.
+ * Source-entry disagreements are resolved by the acoustic decoder, never by
+ * replacing the animated lyric. */
 function alignmentFallback(words: LyricWord[]): LyricLine["alignmentFallback"] {
   if (!words.length) return "missing";
   if (words.some(w => !Number.isFinite(w.t) ||
     (w.end !== undefined && (!Number.isFinite(w.end) || w.end < w.t)))) return "invalid";
+  const support = lineSupport(words);
+  if (support !== undefined && support < UNSURE_LINE_SUPPORT) return "unsure";
   return undefined;
 }
 
