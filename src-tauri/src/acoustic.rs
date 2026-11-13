@@ -549,6 +549,10 @@ pub struct Knobs {
     /// (`late_stamps`) is looked for again with every window moved to
     /// where the singer is. 0 = off.
     pub recentre_ms: i64,
+    /// A doubted line, or one jammed against an edge of its window, is
+    /// looked for again between the sure lines beside it, reaching this far
+    /// past them (`AcousticAligner::relook`). 0 = off.
+    pub relook_ms: i64,
 }
 
 impl Knobs {
@@ -570,6 +574,7 @@ impl Knobs {
         review_blend: true,
         review_passes: REVIEW_PASSES,
         recentre_ms: RECENTRE_MS,
+        relook_ms: RELOOK_MS,
     };
     pub const TRIAL: Knobs = Knobs::MIX;
     /// The decoder before 2026-10-31 (recipe mms-int8/1), for offline
@@ -586,6 +591,7 @@ impl Knobs {
         review_blend: false,
         review_passes: 0,
         recentre_ms: 0,
+        relook_ms: 0,
     };
 
     /// Where a line's window stops looking: the next stamp, or sooner when
@@ -640,6 +646,19 @@ pub(crate) const REVIEW_BELOW: f32 = 0.5;
 /// `Knobs::recentre_ms` as shipped. Half the window's 500 ms reach: a
 /// song this late already has lines at the edge.
 pub(crate) const RECENTRE_MS: i64 = 250;
+/// `Knobs::relook_ms` as shipped: a line looked for again may start this
+/// much before the sure line ahead of it ends, and end this much after the
+/// sure line behind it starts (sung lines overlap a little at the seams).
+pub(crate) const RELOOK_MS: i64 = 200;
+/// How far past a jammed edge the second look reaches when the line on
+/// that side is unsure too: a stamp 1.5 s off is common in LRCLIB, and the
+/// window already reaches 500 ms.
+const RELOOK_REACH_MS: f64 = 2500.0;
+/// A line whose first word starts, or last word ends, this close to its
+/// window's edge is jammed against it: the singer most likely went on past
+/// where the window let the decoder look, and its words were squeezed in.
+pub(crate) const JAMMED_MS: f64 = 60.0;
+
 /// No limit: every doubted line gets its second listen. Until 2026-11-10
 /// this was 14 passes (about 90s on Thien's PC at 6.4s a pass), to keep a
 /// song's job inside the next song, which ALIGNING then skipped. That
@@ -747,6 +766,24 @@ struct LineWork {
     second: serde_json::Value,
     /// The second ear heard this line again (whichever decode won).
     reheard: bool,
+    /// The relook's diagnostics, when there was one.
+    relook: serde_json::Value,
+}
+
+impl LineWork {
+    /// Recording sample where the line's first spoken word starts.
+    fn first_onset(&self) -> Option<usize> {
+        let r = self.plan.ranges.iter().flatten().next()?;
+        let frame = self.decode.spans.get(r.start)?.start;
+        Some(self.begin + (frame as f64 * self.decode.ratio).round() as usize)
+    }
+
+    /// Recording sample where its last spoken word ends.
+    fn last_end(&self) -> Option<usize> {
+        let r = self.plan.ranges.iter().flatten().last()?;
+        let frame = self.decode.spans.get(r.end.checked_sub(1)?)?.end;
+        Some(self.begin + (frame as f64 * self.decode.ratio).round() as usize)
+    }
 }
 
 pub struct AcousticAligner {
@@ -1223,6 +1260,7 @@ impl AcousticAligner {
                 decode,
                 second: serde_json::Value::Null,
                 reheard: false,
+                relook: serde_json::Value::Null,
             });
         }
         self.cut_lines = cut;
@@ -1288,6 +1326,9 @@ impl AcousticAligner {
             }
         }
         self.cut = cut;
+        if knobs.relook_ms > 0 {
+            self.relook(pcm, lines, map, knobs, &mut work, want);
+        }
         if let Some(ear) = ear {
             self.second_look(lines, map, knobs, &mut work, ear, want);
         }
@@ -1301,6 +1342,7 @@ impl AcousticAligner {
             decode,
             second,
             reheard,
+            relook,
             ..
         } in work
         {
@@ -1322,7 +1364,7 @@ impl AcousticAligner {
             if let Some(rows) = diagnostics.as_deref_mut() {
                 rows.push(serde_json::json!({
                     "line_index": li, "line_t": stamp, "looked_from": line.t, "next_t": next,
-                    "source_guided": guided.is_some(), "support": support, "second_ear": second,
+                    "source_guided": guided.is_some(), "support": support, "second_ear": second, "relook": relook,
                     "original_entry": original_entry, "retry": retry,
                     "window_start": to_time(begin as f64), "window_end": to_time(end as f64),
                     "frame_ms": ratio * map.slope_ms,
@@ -1380,6 +1422,118 @@ impl AcousticAligner {
             }
         }
         Ok(words)
+    }
+
+    /// The window fix: a line the first pass doubted, or found jammed
+    /// against an edge of its window, is decoded again on the recording
+    /// between the sure lines beside it, wherever its stamps put it. Each
+    /// line is looked for only from its stamp to the next one's (500 ms
+    /// either side), so one stamp a second or two off in the lyrics leaves
+    /// the singing partly outside, and the decoder squeezes every word into
+    /// what is left. The review can't see that: it only asks how sure each
+    /// word is of its place inside the window, and with nowhere else to go
+    /// the squeezed words are often sure. JamendoLyrics with every sixth
+    /// line stamped 1.5 s late: 61% of those lines more than 700 ms off,
+    /// 36% of them undoubted. The neighbours' edges are known once the
+    /// first pass is done, and a sure line ahead and behind bounds where
+    /// this one can be. A side with no sure line reaches RELOOK_REACH_MS
+    /// further when the line is jammed there. The new decode keeps the line
+    /// only if the model is surer of it (`LineDecode::score`).
+    /// docs/specs/2026-11-13-karaoke-relook.md.
+    fn relook(
+        &mut self,
+        pcm: &[i16],
+        lines: &[TimedLine],
+        map: &TimeMap,
+        knobs: Knobs,
+        work: &mut [LineWork],
+        want: bool,
+    ) {
+        let samples = |ms: f64| (ms / map.slope_ms).round().max(0.0) as usize;
+        let (margin, reach, edge) = (
+            samples(knobs.relook_ms as f64),
+            samples(RELOOK_REACH_MS),
+            samples(JAMMED_MS),
+        );
+        let to_time = |sample: usize| (map.intercept_ms + sample as f64 * map.slope_ms).round();
+        let sure = |w: &LineWork| !w.decode.doubted(knobs.review_below);
+        let mut found = Vec::new();
+        for (k, w) in work.iter().enumerate() {
+            let (Some(onset), Some(end)) = (w.first_onset(), w.last_end()) else {
+                continue;
+            };
+            let jammed_start = w.begin > 0 && onset < w.begin + edge;
+            let jammed_end = w.end < pcm.len() && end + edge > w.end;
+            if !(w.decode.doubted(knobs.review_below) || jammed_start || jammed_end) {
+                continue;
+            }
+            let ahead = k
+                .checked_sub(1)
+                .map(|j| &work[j])
+                .filter(|p| p.li + 1 == w.li && sure(p))
+                .and_then(LineWork::last_end);
+            let behind = work
+                .get(k + 1)
+                .filter(|n| n.li == w.li + 1 && sure(n))
+                .and_then(LineWork::first_onset);
+            let far_begin = w.begin.saturating_sub(reach);
+            let far_end = (w.end + reach).min(pcm.len());
+            let begin = match ahead {
+                Some(t) => t.saturating_sub(margin).max(far_begin),
+                None if jammed_start => far_begin,
+                None => w.begin,
+            };
+            let end = match behind {
+                Some(t) => (t + margin).min(far_end),
+                None if jammed_end => far_end,
+                None => w.end,
+            };
+            // Nothing new to look at (a fifth of a second either way is
+            // within what the window already held), or too little to hold
+            // the line, or past the model's bounded input.
+            let moved = begin.abs_diff(w.begin) + end.abs_diff(w.end);
+            if moved < samples(200.0) || end < begin + samples(100.0) || end - begin > 16_000 * 21 {
+                continue;
+            }
+            found.push((k, begin, end));
+        }
+        for (k, begin, end) in found {
+            let w = &mut work[k];
+            let heard = self.decode_line(
+                &pcm[begin..end],
+                begin,
+                Ear::Mix,
+                &w.plan,
+                &lines[w.li],
+                w.guide_next,
+                map,
+                knobs,
+                want,
+            );
+            let candidate = match heard {
+                Ok(c) => c,
+                // A saved take holds only the windows its listen decoded.
+                Err(e) if e == NOT_SAVED => continue,
+                Err(e) => {
+                    log::warn!("karaoke: relook skipped a line ({e})");
+                    continue;
+                }
+            };
+            let taken = candidate.score() > w.decode.score();
+            if want {
+                w.relook = serde_json::json!({
+                    "window": [to_time(begin), to_time(end)],
+                    "onsets": candidate.onsets(&w.plan, begin, map),
+                    "support": candidate.support,
+                    "taken": taken,
+                });
+            }
+            if taken {
+                w.begin = begin;
+                w.end = end;
+                w.decode = candidate;
+            }
+        }
     }
 
     /// The review's repair: the doubted lines `plan_second_look` fits in
@@ -2480,6 +2634,9 @@ mod tests {
             // whose stamps are on time, and karaoke's detail_v 6 relearns
             // the saves whose stamps run late.
             recentre_ms: 250,
+            // Not in the recipe either, for the same reason: karaoke's
+            // detail_v 7 relearns the saves it would change.
+            relook_ms: 200,
         };
         assert_eq!(Knobs::MIX, tuned);
         assert_eq!(Knobs::TRIAL, tuned);

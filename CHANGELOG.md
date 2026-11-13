@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Fixed
+
+- Word karaoke no longer wrecks a line when one timestamp in the lyrics is off. Each line is looked for only between its own timestamp and the next one, so a stamp a second or two off left part of the singing outside, and the words got crammed into the wrong spot. These lines often looked "sure", so nothing gave them a second listen and the sync percent stayed high. Palette now looks again for a line that's unsure, or jammed against the edge of where it was looked for, in the gap between the lines on either side it's sure of. It keeps the new timing only when it's more confident in it. On the 79-song test with one line in six stamped 1.5 s late, the badly wrong lines halved (396 to 201) and words more than 300 ms off fell from 16.2% to 9.0%. With on-time stamps they fell from 5.0% to 4.6%. A saved song with a jammed line relearns once on its next full listen.
+
 ## [1.0.14] - 2026-11-10
 
 ### Changed

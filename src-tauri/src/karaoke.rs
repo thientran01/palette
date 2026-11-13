@@ -188,14 +188,18 @@ const STORE_V: u32 = 5;
 /// syncs panel's estimate), 4 that plus the singer's voice on held notes
 /// (voice.rs), 5 that plus a second listen on every doubted line (no pass
 /// cap, 2026-11-10), 6 that plus windows moved for a song whose stamps run
-/// late (`acoustic::late_stamps`). A file below what this install writes
+/// late (`acoustic::late_stamps`), 7 that plus doubted or jammed lines
+/// looked for again between their sure neighbours (`acoustic`'s relook).
+/// A file below what this install writes
 /// (`detail_v`) still displays, and the next full listen relearns it,
 /// except a 4 whose doubted lines were all re-heard anyway and a 4 or 5
-/// whose stamps don't run late (`detail_settled`).
+/// whose stamps don't run late (`detail_settled`) and a 4 to 6 with no
+/// line jammed against its window (`jammed_save`).
 const SUPPORT_DETAIL_V: u32 = 3;
 const VOICE_DETAIL_V: u32 = 4;
 const FULL_EAR_DETAIL_V: u32 = 5;
 const RECENTRE_DETAIL_V: u32 = 6;
+const RELOOK_DETAIL_V: u32 = 7;
 fn recipe() -> &'static str {
     if acoustic::assets().is_some() {
         acoustic::RECIPE
@@ -560,6 +564,8 @@ fn settled(path: &Path, file: &StoreFile) -> bool {
         && file.recipe == crate::vocal_preview::cache_recipe(path, recipe())
         && (crate::acoustic::assets().is_none()
             || (detail_settled(file.detail_v, &file.words, acoustic::second_ear_installed())
+                && !(acoustic::second_ear_installed()
+                    && jammed_save(file.detail_v, &file.words, file.synced.as_deref()))
                 && !wants_another_listen(file.listens, &file.words)))
 }
 
@@ -819,6 +825,10 @@ fn mergeable(root: &Path, path: &Path, key: &str, synced: &str) -> Option<StoreF
         // Its lines sit sure at the edge of windows that started too late:
         // the new listen replaces it, or they would outvote the fix.
         && !(acoustic::second_ear_installed() && stuck_late(file.detail_v, &file.words))
+        // A jammed line can be sure of its squeezed place, and a sure line
+        // is never traded in a merge: the new listen replaces it.
+        && !(acoustic::second_ear_installed()
+            && jammed_save(file.detail_v, &file.words, file.synced.as_deref()))
         && !crate::sync_library::deleted_locked(root, key))
     .then_some(file)
 }
@@ -851,6 +861,30 @@ fn stuck_late(detail_v: u32, words: &[Word]) -> bool {
         })
         .collect();
     acoustic::late_stamps(offsets, acoustic::RECENTRE_MS).is_some()
+}
+
+/// Saved before the relook, with a line whose words touch an edge of the
+/// window it was decoded in (500 ms before its stamp, 500 ms after the next
+/// stamp): squeezed in by a stamp that was off, often sure of it, so neither
+/// the review nor the extra listens would ever move it. About 3% of the
+/// lines in Thien's newest saves (2026-11-13), most songs one or two.
+fn jammed_save(detail_v: u32, words: &[Word], synced: Option<&str>) -> bool {
+    if detail_v >= RELOOK_DETAIL_V {
+        return false;
+    }
+    let reach = 500 - acoustic::JAMMED_MS as i64;
+    let stamps: Vec<i64> = synced.map_or_else(Vec::new, |lrc| {
+        align::parse_lrc(lrc).iter().map(|l| l.t).collect()
+    });
+    by_line(words).iter().any(|(&line_t, line)| {
+        let first = line.first().map(|w| w.t);
+        let last = line.iter().filter_map(|w| w.end).max();
+        let next = stamps.iter().copied().find(|&t| t > line_t);
+        first.is_some_and(|t| t - line_t <= -reach)
+            || last
+                .zip(next)
+                .is_some_and(|(end, next)| end >= next + reach)
+    })
 }
 
 /// A line the review doubted (a word under `REVIEW_BELOW`) that the second
@@ -963,7 +997,7 @@ fn superseded(stored: &str, expected: &str) -> bool {
 /// a song saved without it says 3 and relearns once the separator arrives.
 fn detail_v() -> u32 {
     if acoustic::second_ear_installed() {
-        RECENTRE_DETAIL_V
+        RELOOK_DETAIL_V
     } else {
         SUPPORT_DETAIL_V
     }
@@ -2852,6 +2886,43 @@ mod tests {
             .collect();
         assert!(!stuck_late(FULL_EAR_DETAIL_V, &doubted));
         assert!(!stuck_late(FULL_EAR_DETAIL_V, &late[..12]));
+    }
+
+    #[test]
+    fn a_save_with_a_jammed_line_relearns_once() {
+        let lrc = "[00:10.00] a b\n[00:14.00] a b\n[00:18.00] a b\n";
+        let line = |stamp: i64, first: i64, end: i64| {
+            let mut a = checked(stamp, first, 0.95);
+            a.end = Some(first + 200);
+            let mut b = checked(stamp, end - 200, 0.95);
+            b.end = Some(end);
+            [a, b]
+        };
+        let fine: Vec<Word> = [
+            line(10_000, 10_150, 12_000),
+            line(14_000, 14_100, 16_000),
+            line(18_000, 18_200, 20_000),
+        ]
+        .concat();
+        assert!(!jammed_save(RECENTRE_DETAIL_V, &fine, Some(lrc)));
+        // The middle line's first word at the window's start (a late stamp).
+        let late_stamp: Vec<Word> = [
+            line(10_000, 10_150, 12_000),
+            line(14_000, 13_520, 16_000),
+            line(18_000, 18_200, 20_000),
+        ]
+        .concat();
+        assert!(jammed_save(RECENTRE_DETAIL_V, &late_stamp, Some(lrc)));
+        // The first line's last word at the window's end (an early next stamp).
+        let early_next: Vec<Word> = [
+            line(10_000, 10_150, 14_480),
+            line(14_000, 14_600, 16_000),
+            line(18_000, 18_200, 20_000),
+        ]
+        .concat();
+        assert!(jammed_save(RECENTRE_DETAIL_V, &early_next, Some(lrc)));
+        // Learned again with the relook, it is done.
+        assert!(!jammed_save(RELOOK_DETAIL_V, &late_stamp, Some(lrc)));
     }
 
     fn checked(line_t: i64, t: i64, support: f32) -> Word {
