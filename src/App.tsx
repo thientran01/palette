@@ -25,7 +25,8 @@ import {
 import { chordById } from "./lib/chords";
 import { Keycaps } from "./Keycaps";
 import { IntroBubble } from "./IntroBubble";
-import { WidgetMenu, WIDGET_MENU_W, WIDGET_MENU_H } from "./WidgetMenu";
+import { WidgetMenu, WIDGET_MENU_W, WIDGET_MENU_H, LINE_ITEMS_H, type LineTarget } from "./WidgetMenu";
+import { hasWordSync } from "./lib/lineFix";
 import { VOCAL_LEAD_MS } from "./lib/lrc";
 import { PlayPauseButton, ProgressBar, Transport, useProgressDom } from "./Transport";
 import {
@@ -497,12 +498,12 @@ const CORNER_SEAT: Record<DockCorner, string> = {
  * would push the menu off the far window edge). Its pop-in grows from the
  * cursor itself, which is the menu's top-left corner unless the clamp moved
  * the box. */
-function menuPlacement(at: { x: number; y: number }): React.CSSProperties {
+function menuPlacement(at: { x: number; y: number }, h = WIDGET_MENU_H): React.CSSProperties {
   const left = Math.max(4, Math.min(at.x, WINDOW_MAX[0] - WIDGET_MENU_W - 4));
-  const top = Math.max(4, Math.min(at.y, WINDOW_MAX[1] - WIDGET_MENU_H - 4));
+  const top = Math.max(4, Math.min(at.y, WINDOW_MAX[1] - h - 4));
   // Clamped into the box: a far-clamped menu grows from its nearest edge.
   const ox = Math.max(0, Math.min(at.x - left, WIDGET_MENU_W));
-  const oy = Math.max(0, Math.min(at.y - top, WIDGET_MENU_H));
+  const oy = Math.max(0, Math.min(at.y - top, h));
   return { left, top, transformOrigin: `${ox}px ${oy}px` };
 }
 
@@ -1601,6 +1602,7 @@ function App() {
   useArtAccent(shownArt);
   useHistoryThumb(np?.art_id ?? null);
   const lyrics = useLyrics(np);
+  const karaoke = useKaraokePreference();
   // Resolved global-hotkey table (seeded below), so onboarding surfaces render
   // the LIVE Search / show-hide chords rather than a hardcoded default.
   const [hotkeys, setHotkeys] = useState<HotkeyInfo[]>([]);
@@ -1608,7 +1610,7 @@ function App() {
   // so the bubble can't flash before the seed resolves the real value.
   const [seenIntro, setSeenIntro] = useState(true);
   const [introOpen, setIntroOpen] = useState(false);
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; line?: LineTarget } | null>(null);
   const didIntro = useRef(false);
   // initReactive owns the capture vote (pref seed + settings-changed). This
   // prefsSeed is the onboarding / hotkey / launch-mode snapshot.
@@ -2040,6 +2042,16 @@ function App() {
   // Whole-card drag, except interactive elements. (data-tauri-drag-region only
   // fires when the pressed element itself carries the attribute — art, gaps,
   // and icons didn't, which made the window feel undraggable.)
+  /** The lyric line under a right-click, when the song has word timing to
+   * fix it in (lib/lineFix.ts). */
+  const lineAt = (target: EventTarget): LineTarget | undefined => {
+    const row = (target as HTMLElement).closest?.("[data-lyric]");
+    if (!row || !np || lyrics.status !== "synced" || lyrics.key !== lyricsKeyOf(np) || !karaoke) return undefined;
+    const line = lyrics.lines[Number(row.getAttribute("data-lyric"))];
+    if (!line || line.end !== undefined || line.words?.[0]?.timing === "phrase" || !hasWordSync(lyrics.lines)) return undefined;
+    return { song: np, line, seekable };
+  };
+
   const onDragStart = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
@@ -2098,7 +2110,7 @@ function App() {
       onContextMenu={(e) => {
         e.preventDefault();
         setIntroOpen(false);
-        setMenu({ x: e.clientX, y: e.clientY });
+        setMenu({ x: e.clientX, y: e.clientY, line: lineAt(e.target) });
       }}
     >
       {PRESENCE_OVERLAY && <PresenceOverlay corner={corner} />}
@@ -2444,7 +2456,8 @@ function App() {
       )}
       {menu && (
         <WidgetMenu
-          style={menuPlacement(menu)}
+          line={menu.line}
+          style={menuPlacement(menu, WIDGET_MENU_H + (menu.line ? LINE_ITEMS_H : 0))}
           spotifyConnected={spotifyConnected}
           showhideChord={showhideChord}
           onClose={() => setMenu(null)}

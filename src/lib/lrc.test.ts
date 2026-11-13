@@ -128,6 +128,21 @@ describe("intro and unmarked outro", () => {
 });
 
 describe("attachWords", () => {
+  it("shows a line fixed plain as plain, and keeps tapped words as tapped", () => {
+    const lines: LyricLine[] = [{ t: 1000, text: "one two" }, { t: 5000, text: "three four" }];
+    const out = attachWords(lines, [
+      { t: 1000, text: "one two", line_t: 1000, fixed: "plain" },
+      { t: 5100, end: 5400, text: "three ", line_t: 5000, fixed: "timed" },
+      { t: 5500, end: 6000, text: "four", line_t: 5000, fixed: "timed" },
+    ]);
+    expect(out[0]).toMatchObject({ words: undefined, alignmentFallback: "plain", fixed: "plain" });
+    expect(out[1].fixed).toBe("timed");
+    expect(out[1].alignmentFallback).toBeUndefined();
+    expect(out[1].words?.map(w => w.t)).toEqual([5100, 5500]);
+    // Undone: the aligner's words take the line back.
+    const back = attachWords(out, [{ t: 1000, text: "one two", line_t: 1000, support: 0.95 }]);
+    expect(back[0]).toMatchObject({ fixed: undefined, alignmentFallback: undefined });
+  });
   it("does not invent a fill when the store is empty", () => {
     const lines = parseLrc("[00:01.00]hello world\n[00:05.00]next", 30_000);
     expect(attachWords(lines, [])).toBe(lines);

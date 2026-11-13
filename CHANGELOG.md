@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Added
+
+- Fix a bad karaoke line yourself. Right-click a lyric line and choose **Tap in this line**: Palette jumps back a few seconds, and you press Space (or hold the mouse on the lyrics) as each word is sung, holding through long notes. A line too fast to tap takes one long press from its first word to its last. **Show this line plain** lights the line whole instead, and **Undo fix** brings back Palette's timing. Fixes are kept apart from the learned timing, so relearning a song never undoes them. Works in the widget and focus mode.
+
 ### Changed
 
 - Word karaoke no longer animates a line it's sure it got wrong. When the review is very unsure of a line's words as a whole (about 2 lines in 100), that line lights up as a whole on its timestamp, like plain lyrics, instead of filling word by word at the wrong moments. Lines it's only unsure of in places keep their word timing.

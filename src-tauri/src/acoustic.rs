@@ -1403,6 +1403,7 @@ impl AcousticAligner {
                     support,
                     reheard,
                     voice: None,
+                    fixed: None,
                 });
             }
             if knobs.vocable_tolerance_ms > 0 {

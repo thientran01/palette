@@ -1258,12 +1258,40 @@ export const commands = {
       verse(84, 100);
       verse(124, 156);
       lines.push(`${stamp(160)} `);
+      mockSongWords.set(`${artist}|${title}`, words);
       return {
         synced: lines.join("\n"),
-        words: LYRICS_PARAM === "words" ? words : undefined,
+        words: LYRICS_PARAM === "words" ? mockWithFixes(artist, title, words) : undefined,
       };
     }
     return lyricsLatestWins(() => invoke("media_lyrics", { artist, title, album, durationMs }));
+  },
+  /** Keep a hand fix for one karaoke line (karaoke/fixes.rs): `words` as
+   * tapped, or none to light the line whole on its stamp. The song's words
+   * come back as a karaoke-ready. */
+  async karaokeFixLine(
+    song: Pick<NowPlaying, "artist" | "title" | "album" | "duration_ms">,
+    lineT: number,
+    text: string,
+    words: { t: number; end: number; text: string }[],
+  ): Promise<void> {
+    if (!IN_TAURI) return mockFixLine(song, lineT, text, words);
+    await invoke("karaoke_fix_line", {
+      artist: song.artist, title: song.title, album: song.album, durationMs: song.duration_ms,
+      lineT, text, words,
+    });
+  },
+  /** Drop the hand fix for one line: the aligner's timing shows again. */
+  async karaokeUnfixLine(
+    song: Pick<NowPlaying, "artist" | "title" | "album" | "duration_ms">,
+    lineT: number,
+    text: string,
+  ): Promise<void> {
+    if (!IN_TAURI) return mockFixLine(song, lineT, text, null);
+    await invoke("karaoke_unfix_line", {
+      artist: song.artist, title: song.title, album: song.album, durationMs: song.duration_ms,
+      lineT, text,
+    });
   },
   /** Seed for src/lib/wordLead.ts: the persisted word-wipe lead in ms. */
   async wordLead(): Promise<number> {
@@ -1684,8 +1712,44 @@ export type KaraokeReady = {
   words: LyricWord[];
 };
 
+/** Browser mock of karaoke/fixes.rs: fixes by song and line, laid over the
+ * mock words, and karaoke-ready sent to this page's listeners. */
+type MockFix = { line_t: number; text: string; words: { t: number; end: number; text: string }[] };
+const mockFixes = new Map<string, MockFix[]>();
+const mockSongWords = new Map<string, LyricWord[]>();
+const mockKaraokeListeners = new Set<(p: KaraokeReady) => void>();
+function mockWithFixes(artist: string, title: string, words: LyricWord[]): LyricWord[] {
+  const fixes = mockFixes.get(`${artist}|${title}`) ?? [];
+  if (!fixes.length) return words;
+  const fixed = new Set(fixes.map((f) => f.line_t));
+  const out = words.filter((w) => w.line_t === undefined || !fixed.has(w.line_t));
+  for (const f of fixes) {
+    if (!f.words.length) out.push({ t: f.line_t, text: f.text, line_t: f.line_t, fixed: "plain" });
+    else out.push(...f.words.map((w) => ({ ...w, line_t: f.line_t, fixed: "timed" as const })));
+  }
+  return out.sort((a, b) => (a.line_t ?? a.t) - (b.line_t ?? b.t));
+}
+async function mockFixLine(
+  song: Pick<NowPlaying, "artist" | "title" | "album" | "duration_ms">,
+  lineT: number,
+  text: string,
+  words: { t: number; end: number; text: string }[] | null,
+): Promise<void> {
+  const id = `${song.artist}|${song.title}`;
+  const rest = (mockFixes.get(id) ?? []).filter((f) => !(f.line_t === lineT && f.text === text));
+  mockFixes.set(id, words ? [...rest, { line_t: lineT, text, words }] : rest);
+  const base = mockSongWords.get(id) ?? [];
+  const payload = { ...song, words: mockWithFixes(song.artist, song.title, base) };
+  mockKaraokeListeners.forEach((cb) => cb(payload));
+}
+
 export function onKaraokeReady(cb: (p: KaraokeReady) => void): () => void {
-  if (!IN_TAURI) return () => {};
+  if (!IN_TAURI) {
+    mockKaraokeListeners.add(cb);
+    return () => {
+      mockKaraokeListeners.delete(cb);
+    };
+  }
   const un = listen<KaraokeReady>("karaoke-ready", (e) => cb(e.payload));
   return () => {
     un.then((f) => f());
@@ -1755,7 +1819,10 @@ function lyricsLatestWins(start: () => Promise<Lyrics>): Promise<Lyrics> {
 
 /** What the karaoke review found for one saved sync (sync_library::Check).
  * `lines` holds one letter per lyric line: s sure, l loose, u unsure, n line timing only. */
-export type SyncCheck = {on_time:number;lines:string;unsure:number;reheard:number;fixed:number};
+/** `lines`: one letter per lyric line, s sure, l loose, u unsure, n no
+ * word timing, f fixed by hand (karaoke/fixes.rs). `hand`: lines fixed by
+ * hand, absent when none. */
+export type SyncCheck = {on_time:number;lines:string;unsure:number;reheard:number;fixed:number;hand?:number};
 export type SavedSync = {key:string;title:string;artist:string;thumb_key:string|null;saved_at:number;refresh:boolean;relearns:boolean;check:SyncCheck|null};
 // Browser preview: a spread of checked songs plus a couple learned before the check.
 const MOCK_CHECKS: (SyncCheck|null)[] = [

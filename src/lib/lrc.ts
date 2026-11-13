@@ -19,6 +19,9 @@ export interface LyricWord {
   /** The review's support for the word's onset, 0-1 to two decimals
    * (acoustic.rs, sync_review.rs). Absent on unchecked words. */
   support?: number;
+  /** Timed by the listener's hand (karaoke/fixes.rs, lib/lineFix.ts):
+   * tapped in, or one word holding the line to light it whole. */
+  fixed?: "timed" | "plain";
 }
 
 export interface LyricLine {
@@ -31,7 +34,9 @@ export interface LyricLine {
   end?: number;
   words?: LyricWord[];
   /** Display fallback only; saved acoustic timing is never rewritten. */
-  alignmentFallback?: "missing" | "invalid" | "unsure";
+  alignmentFallback?: "missing" | "invalid" | "unsure" | "plain";
+  /** The listener fixed this line by hand. */
+  fixed?: "timed" | "plain";
   /** Repeated-oh backing phrase spans the source line, not its printed tail. */
   backingPhrase?: { textStart: number; t: number; end: number };
 }
@@ -268,6 +273,8 @@ export function lineSupport(words: LyricWord[]): number | undefined {
  * replacing the animated lyric. */
 function alignmentFallback(words: LyricWord[]): LyricLine["alignmentFallback"] {
   if (!words.length) return "missing";
+  // The listener asked for this line lit whole on its stamp.
+  if (words.some(w => w.fixed === "plain")) return "plain";
   if (words.some(w => !Number.isFinite(w.t) ||
     (w.end !== undefined && (!Number.isFinite(w.end) || w.end < w.t)))) return "invalid";
   const support = lineSupport(words);
@@ -290,8 +297,9 @@ export function attachWords(lines: LyricLine[], words: LyricWord[]): LyricLine[]
       w.line_t !== undefined ? w.line_t === line.t : w.t >= line.t && w.t < nextT,
     );
     const fallback = alignmentFallback(mine);
-    return fallback ? { ...line, words: undefined, alignmentFallback: fallback }
-      : { ...line, words: backingWords(line, mine), alignmentFallback: undefined };
+    const fixed = mine.find(w => w.fixed)?.fixed;
+    return fallback ? { ...line, words: undefined, alignmentFallback: fallback, fixed }
+      : { ...line, words: fixed ? mine : backingWords(line, mine), alignmentFallback: undefined, fixed };
   });
 }
 
