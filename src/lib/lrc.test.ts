@@ -9,7 +9,7 @@
  * break, and short gaps stay as they were (previous line current).
  */
 import { describe, expect, it } from "vitest";
-import { attachWords, currentLineIndex, msUntilNextLine, wordTimedStarts, parseLrc, wordWipe, wordWipeFraction, wordFillEnd, type LyricLine } from "./lrc";
+import { attachWords, lineSupport, currentLineIndex, msUntilNextLine, wordTimedStarts, parseLrc, wordWipe, wordWipeFraction, wordFillEnd, type LyricLine } from "./lrc";
 
 /** Lines that render as the five-dot rest row. */
 function breaks(lines: LyricLine[]): LyricLine[] {
@@ -157,6 +157,31 @@ describe("attachWords", () => {
     ]);
     expect(got[0].words?.map((w) => w.text)).toEqual(["hello ", "world"]);
     expect(got[1].words?.map((w) => w.text)).toEqual(["next ", "up"]);
+  });
+
+  it("shows line karaoke for a line the review is too unsure of", () => {
+    const lines = parseLrc("[00:01.00]hello world\n[00:05.00]next up\n[00:09.00]last one", 30_000);
+    const got = attachWords(lines, [
+      // Geometric mean 0.3: under the cut.
+      { t: 1000, text: "hello ", end: 1200, line_t: 1000, support: 0.9 },
+      { t: 1300, text: "world", end: 1600, line_t: 1000, support: 0.1 },
+      // One doubted word on an otherwise sure line keeps its words.
+      { t: 5000, text: "next ", end: 5400, line_t: 5000, support: 0.2 },
+      { t: 5400, text: "up", end: 5800, line_t: 5000, support: 1 },
+      // Unchecked words (older saves) are never judged.
+      { t: 9000, text: "last ", end: 9400, line_t: 9000 },
+      { t: 9400, text: "one", end: 9800, line_t: 9000 },
+    ]);
+    expect(got[0].words).toBeUndefined();
+    expect(got[0].alignmentFallback).toBe("unsure");
+    expect(got[1].words?.map((w) => w.text)).toEqual(["next ", "up"]);
+    expect(got[2].words?.map((w) => w.text)).toEqual(["last ", "one"]);
+  });
+
+  it("floors rounded support so one 0.00 word doesn't sink a sure line", () => {
+    expect(lineSupport([{ t: 0, text: "a", support: 0 }, { t: 1, text: "b", support: 1 },
+      { t: 2, text: "c", support: 1 }, { t: 3, text: "d", support: 1 }])).toBeCloseTo(0.473, 2);
+    expect(lineSupport([{ t: 0, text: "a" }])).toBeUndefined();
   });
 
   it("never attaches words onto a break row", () => {
