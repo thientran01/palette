@@ -535,6 +535,15 @@ if (!IN_TAURI) {
   };
 }
 
+// Preview affordance: replay recorded bands (say, audio.rs's math run over a
+// real song) instead of the synthetic motion. Set it to a function that
+// returns the payload for this tick; the synthetic motion would hide how the
+// Waveform looks on real audio, where bins idle mid-height.
+type BandsFeed = () => AudioBands;
+function mockBandsFeed(): BandsFeed | undefined {
+  return (window as unknown as { __mockBandsFeed?: BandsFeed }).__mockBandsFeed;
+}
+
 /** Delivers the current mock payload at once, between ticks (`?straggle`). */
 let mockEmitNow: (() => void) | null = null;
 
@@ -823,6 +832,11 @@ export function onAudioBands(cb: (b: AudioBands) => void): () => void {
     if (Date.now() < mockUnfedUntil) return;
     if (mock.status !== "playing" || Date.now() < mockSilenceUntil) {
       cb({ bass: 0, mid: 0, high: 0, level: 0, spectrum: new Array<number>(SPECTRUM_BINS).fill(0) });
+      return;
+    }
+    const feed = mockBandsFeed();
+    if (feed) {
+      cb(feed());
       return;
     }
     const t = Date.now() / 1000;

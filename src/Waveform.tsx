@@ -16,7 +16,7 @@
 import { useEffect, useRef, useState } from "react";
 import { type AudioBands } from "./lib/backend";
 import { Envelope, reactiveOn, subscribeBands } from "./lib/reactive";
-import { bandsStale } from "./lib/waveformFrame";
+import { BarRange, bandsStale } from "./lib/waveformFrame";
 import {
   bezierEase,
   blendCapsule,
@@ -29,7 +29,9 @@ import {
 import { DUR, EASE } from "./lib/tokens";
 
 /** Four renditions of the same instrument: "sm" is the pill's inline text
- * separator (5 bars); "md" is the card and lyrics-header separator (7 bars,
+ * separator (5 bars; GROWN 2026-11-20 from 9px×2px to 18px×3px, Thien: "you
+ * can barely tell it's even moving" — the 34px-tall pill had the room, and
+ * its bars now stretch over their own live range, see BarRange); "md" is the card and lyrics-header separator (7 bars,
  * scaled up — those containers are ~3× the pill's, so the separator steps
  * with them; the lyrics header is also that view's only now-playing signal);
  * "lg" is the standalone hero in the expanded big-art view (9 bars — the
@@ -53,7 +55,7 @@ import { DUR, EASE } from "./lib/tokens";
  * collapsing would re-seat everything around them. */
 type Size = "sm" | "md" | "lg" | "room";
 const GEOM = {
-  sm: { bar: "h-[9px] w-[2px]", dot: "h-[2px] w-[2px]", survivor: "h-[3px] w-[3px]", dropBlur: "blur-[1.5px]", boxH: "h-[11px]", aliveW: "w-[18px]", restW: "w-[5px]" },
+  sm: { bar: "h-[18px] w-[3px]", dot: "h-[2px] w-[2px]", survivor: "h-[3px] w-[3px]", dropBlur: "blur-[1.5px]", boxH: "h-[20px]", aliveW: "w-[25px]", restW: "w-[5px]" },
   md: { bar: "h-[18px] w-[4px]", dot: "h-[3px] w-[3px]", survivor: "h-[4px] w-[4px]", dropBlur: "blur-[2px]", boxH: "h-[20px]", aliveW: "w-[46px]", restW: "w-[6px]" },
   lg: { bar: "h-[26px] w-[5px]", dot: "h-[5px] w-[5px]", survivor: "h-[7px] w-[7px]", dropBlur: "blur-[3px]", boxH: "h-[30px]", aliveW: "w-[85px]", restW: "w-[85px]" },
   room: { bar: "h-[100px] w-[12px]", dot: "h-[6px] w-[6px]", survivor: "h-[10px] w-[10px]", dropBlur: "blur-[4px]", boxH: "h-[120px]", aliveW: "w-[780px]", restW: "w-[780px]" },
@@ -75,8 +77,10 @@ const BAR_BINS = {
   lg: [15, 12, 9, 4, 1, 6, 11, 14, 13],
   room: [12, 15, 13, 14, 12, 15, 12, 9, 4, 1, 6, 11, 14, 13, 15, 12, 14, 13, 15],
 } as const;
-/** Minimum bar height while alive, as a fraction of the full bar. */
-const REST = 0.15;
+/** Minimum bar height while alive, as a fraction of the full bar. The pill's
+ * 18px bar rests lower (~2px, a dot under its 3px width) so its stretched
+ * range has the whole height to move in. */
+const REST: Record<Size, number> = { sm: 0.12, md: 0.15, lg: 0.15, room: 0.15 };
 /** Frontend envelope on top of the backend's smoothing: fast attack so hits
  * land, release short enough that a bar visibly falls between beats (500ms
  * blurred adjacent kicks into a sway). */
@@ -297,6 +301,10 @@ export function Waveform({
     const envs = bins.map(() => new Envelope(ENV_ATTACK_MS, ENV_RELEASE_MS));
     // Per-bar peak ceiling: the room silhouette envelope; a flat 1 elsewhere.
     const peaks = size === "room" ? bins.map((_, i) => roomPeak(i, bins.length)) : bins.map(() => 1);
+    // The pill stretches each bar over its own live range (BarRange): its
+    // bins idle mid-height, and at pill size that read as static dots.
+    const ranges = size === "sm" ? bins.map(() => new BarRange()) : null;
+    const rest = REST[size];
     let latest: AudioBands | null = null;
     // When `latest` arrived. A hidden window stops getting payloads
     // (audio.rs BandFanout), so a stale one reads as silence (bandsStale).
@@ -312,7 +320,7 @@ export function Waveform({
 
     // Room canvas (capsule only). `owned` = the canvas is drawing the bars
     // and the DOM row is hidden; heights are the last drawn, in CSS px.
-    const heights = bins.map(() => REST * ROOM_H);
+    const heights = bins.map(() => REST[size] * ROOM_H);
     let owned = false;
     let enterAt = 0;
     let enterFrom: Capsule[] = [];
@@ -432,10 +440,11 @@ export function Waveform({
           b === null ? 0 : (b.spectrum?.[bin] ?? (bin <= 5 ? b.bass : bin <= 10 ? b.mid : b.high));
         const e = envs[i].step(target, dt);
         peak = Math.max(peak, e);
+        const v = ranges ? ranges[i].step(e, dt) : e;
         // Mildly concave shaping (SHAPE_EXP) between the uniform REST floor and
         // this bar's PEAK ceiling (the room envelope; 1 elsewhere) — quiet
         // settles to an even line, energy blooms into the tapered silhouette.
-        const scale = REST + Math.pow(e, SHAPE_EXP) * (peaks[i] - REST);
+        const scale = rest + Math.pow(v, SHAPE_EXP) * (peaks[i] - rest);
         if (onCanvas) {
           heights[i] = scale * ROOM_H;
         } else {
@@ -736,7 +745,7 @@ export function Waveform({
               }}
               className={`origin-center rounded-full will-change-transform bg-accent ${barClass(phase, i, size)}`}
               style={{
-                transform: phase === "alive" ? `scaleY(${REST})` : "scale(1)",
+                transform: phase === "alive" ? `scaleY(${REST[size]})` : "scale(1)",
                 transitionDelay: delay ? `${delay}ms` : undefined,
               }}
             />
