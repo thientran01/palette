@@ -7,7 +7,7 @@
  * machinery. Two type scales: "base" (the 380px expanded view) and "focus"
  * (the fullscreen takeover) â€” same grammar, bigger clothes.
  */
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   BREAK_DOTS,
   attachWords,
@@ -31,6 +31,18 @@ import { driveWordRows, type WordDriver, type WordRow } from "./lib/wordWipeDriv
 import { whileShown } from "./lib/windowShown";
 import { letterSegments } from "./lib/letterFill";
 import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
+import {
+  SETTLE_MS,
+  cancelRetime,
+  getRetime,
+  lineWords,
+  nothingHeard,
+  pressDown,
+  pressUp,
+  retimeCaption,
+  settle,
+  subscribeRetime,
+} from "./lib/lineFix";
 
 /** Current lyric line by SCHEDULING, not sampling: one timeout armed for the
  * next line boundary, recomputed on every kernel anchor event (seek, pause,
@@ -121,6 +133,9 @@ function useWordWipe(
   list: React.RefObject<HTMLDivElement | null>,
   lines: LyricLine[], currentLine: number, leadMs: number,
   enabled: boolean,
+  /** The row being tapped in (lib/lineFix.ts) draws without its words; the
+   * driver is rebuilt when that starts and ends. */
+  retimeRow: number,
 ): void {
   // The line moves often and the rows rarely: hand the running driver each
   // new line instead of rebuilding it (WordDriver.setCurrentLine).
@@ -150,7 +165,7 @@ function useWordWipe(
       running();
       driver.current = null;
     };
-  }, [list, lines, leadMs, enabled]);
+  }, [list, lines, leadMs, enabled, retimeRow]);
   useLayoutEffect(() => driver.current?.setCurrentLine(currentLine), [currentLine]);
 }
 
@@ -604,6 +619,7 @@ const LyricLineRow = memo(function LyricLineRow({
   distance,
   browsing,
   words,
+  retime,
 }: {
   text: string;
   index: number;
@@ -623,9 +639,13 @@ const LyricLineRow = memo(function LyricLineRow({
   distance: number;
   browsing: boolean;
   words?: LyricWord[];
+  /** Being tapped in by hand (lib/lineFix.ts): how many words so far. The
+   * row draws its words plain, the tapped ones in full ink: a state
+   * change per press, never motion. */
+  retime?: { tapped: number; timedWeight: boolean };
 }) {
   const Tag = seekable ? "button" : "div";
-  const timed = words && words.length > 0;
+  const timed = !retime && words && words.length > 0;
   // The current line never changes font-weight: a heavier weight has wider
   // glyphs, so a line that fits on one row inactive could wrap to two the
   // moment it lit up. It stands out by brightness alone (a text-stroke faux
@@ -647,6 +667,8 @@ const LyricLineRow = memo(function LyricLineRow({
             tabIndex: -1,
           }
         : {})}
+      data-lyric={index}
+      data-retime={retime ? "true" : undefined}
       data-word-row={timed ? index : undefined}
       data-current={current ? "true" : undefined}
       data-distance={distance}
@@ -663,14 +685,25 @@ const LyricLineRow = memo(function LyricLineRow({
           "--lyric-ignite-from": SCALE[scale].recede["1"],
         } as React.CSSProperties
       }
-      className={`lyric-row relative whitespace-pre-wrap ${keepHangulWords(text) ? "break-keep" : ""} rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${timed ? "font-medium" : ""} ${tone} ${
+      className={`lyric-row relative whitespace-pre-wrap ${keepHangulWords(text) ? "break-keep" : ""} rounded-md text-left transition-colors duration-3 ease-out-tk ${SCALE[scale].row} ${timed || retime?.timedWeight ? "font-medium" : ""} ${tone} ${
         // A faded-out row is not a click target: no hover wash over
         // empty space, and the click goes nowhere you can't see.
         opacity === 0 ? "pointer-events-none" : seekable ? "cursor-pointer hover:bg-fg/5" : ""
       }`}
     >
       <span className="lyric-ink">
-      {timed
+      {retime
+        ? lineWords(text).map((w, wi) => (
+            // Same weight and word boxes as the timed row, so starting to
+            // tap never rewraps it.
+            <span
+              key={wi}
+              className={`inline-block transition-colors duration-2 ease-out-tk ${wi < retime.tapped ? "text-fg" : "text-muted/60"}`}
+            >
+              {w}
+            </span>
+          ))
+        : timed
         ? words.map((w, wi) => (
             // Each letter fills on its own (letterFill.ts). useWordWipe
             // writes only its --lit, so a syllable is a style
@@ -809,6 +842,77 @@ function usePastPosition(at: number | null): boolean {
   return at !== null && past;
 }
 
+/** A press's place on the song's timeline: the clock as the lines read it,
+ * so a tapped word lights where the line highlight thinks the singer is.
+ * The word lead is left out on purpose: it is how early the listener likes
+ * a word lit, applied to tapped words as to every other. */
+function tapTime(leadMs: number): number {
+  return posClock.now() + leadMs;
+}
+
+/** The line being tapped in (lib/lineFix.ts), as a row index of `lines`,
+ * or -1. While there is one, Space and the mouse anywhere over the lyrics
+ * are the taps and Esc stops. The tapping ends when it pauses past the
+ * line (SETTLE_MS after the last release, and not before the next line's
+ * stamp, so a long rest between two words isn't read as the end). */
+function useRetimeRow(lines: LyricLine[], leadMs: number, fix: ReturnType<typeof getRetime>): number {
+  const r = fix.retime;
+  const row = r
+    ? lines.findIndex((l) => l.end === undefined && l.t === r.line.t && l.text === r.line.text)
+    : -1;
+  // Another song, or lyrics without the line: nothing left to tap.
+  useEffect(() => {
+    if (r && row < 0) cancelRetime();
+  }, [r, row]);
+  const active = row >= 0;
+  useEffect(() => {
+    if (!active) return;
+    const isSpace = (e: KeyboardEvent) => e.code === "Space" || e.key === " ";
+    const down = (e: KeyboardEvent) => {
+      // Esc stops the tapping only, never closes the focus room too.
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        cancelRetime();
+        return;
+      }
+      if (!isSpace(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!e.repeat) pressDown(tapTime(leadMs));
+    };
+    const up = (e: KeyboardEvent) => {
+      if (!isSpace(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      pressUp(tapTime(leadMs));
+    };
+    window.addEventListener("keydown", down, true);
+    window.addEventListener("keyup", up, true);
+    return () => {
+      window.removeEventListener("keydown", down, true);
+      window.removeEventListener("keyup", up, true);
+    };
+  }, [active, leadMs]);
+  const next = active ? lines[row + 1]?.t ?? Number.POSITIVE_INFINITY : 0;
+  const seekable = r?.seekable ?? false;
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setInterval(() => {
+      const now = getRetime().retime;
+      if (!now) return;
+      const at = tapTime(leadMs);
+      const last = now.presses[now.presses.length - 1];
+      if (last && now.down === null && at >= Math.max(last.up + SETTLE_MS, next)) settle();
+      // A line that came and went with no press (where the player can
+      // seek: elsewhere the listener may still be waiting for it).
+      else if (seekable && !last && now.down === null && at > next + 4_000) nothingHeard();
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [active, leadMs, next, seekable]);
+  return row;
+}
+
 export function LyricsPanel({
   lines,
   seekable,
@@ -848,7 +952,9 @@ export function LyricsPanel({
   }, [wordLead.nudges, wordLead.leadMs]);
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs, karaoke);
+  const fix = useSyncExternalStore(subscribeRetime, getRetime, getRetime);
+  const retimeRow = useRetimeRow(lines, leadMs, fix);
+  useWordWipe(listRef, lines, idx, leadMs + wordLead.leadMs, karaoke, retimeRow);
   const barRef = useRef<HTMLSpanElement>(null);
   const barShown = useRef<AccentBarState>({ y: null, first: true });
   const [autoOffset, setAutoOffset] = useState(0);
@@ -1118,6 +1224,26 @@ export function LyricsPanel({
     <div
       ref={viewportRef}
       onWheel={onWheel}
+      // While a line is tapped in, a press anywhere over the lyrics is a
+      // tap: it never seeks, selects or starts a window drag.
+      onPointerDown={(e) => {
+        if (retimeRow < 0 || e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        pressDown(tapTime(leadMs));
+      }}
+      onPointerUp={(e) => {
+        if (retimeRow < 0 || e.button !== 0) return;
+        e.stopPropagation();
+        pressUp(tapTime(leadMs));
+      }}
+      onPointerCancel={() => {
+        if (retimeRow >= 0) pressUp(tapTime(leadMs));
+      }}
+      onMouseDown={(e) => {
+        if (retimeRow >= 0) e.stopPropagation();
+      }}
       // Its own text plane (index.css): the blurred and karaoke rows get
       // layers of their own, and this keeps them from pulling the header
       // and the sharp rows out of ClearType.
@@ -1127,7 +1253,7 @@ export function LyricsPanel({
       <div
         ref={listRef}
         onClick={(e) => {
-          if (!seekable) return;
+          if (!seekable || retimeRow >= 0) return;
           const row = (e.target as HTMLElement).closest("[data-line]");
           const line = row ? lines[Number(row.getAttribute("data-line"))] : undefined;
           if (!line) return;
@@ -1175,6 +1301,14 @@ export function LyricsPanel({
               anchor={anchor}
               cascadeDelayMs={cascadeDelayMs}
               words={karaoke ? line.words : undefined}
+              retime={
+                i === retimeRow && fix.retime
+                  ? {
+                      tapped: fix.retime.presses.length + (fix.retime.down !== null ? 1 : 0),
+                      timedWeight: karaoke && !!line.words?.length,
+                    }
+                  : undefined
+              }
             />
           );
         })}
@@ -1213,7 +1347,17 @@ export function LyricsPanel({
         aria-live="polite"
         className={`pointer-events-none absolute inset-x-0 z-10 flex justify-center ${showReturn && !nowBelow ? SCALE[scale].chipBottom : SCALE[scale].chipTop}`}
       >
-        {karaoke && leadCaption && (
+        {fix.note ? (
+          // Keyed by the note, so each new step announces itself once; the
+          // count ticks over in place.
+          <span
+            key={fix.note === "count" ? "count" : fix.note + (fix.retime?.take ?? "")}
+            className="rounded-full border border-border/10 bg-surface-2/90 px-2.5 py-1 text-[11px] leading-none text-muted tabular-nums [animation:caption-in_140ms_var(--ease-out-tk)_both]"
+          >
+            {retimeCaption(fix.note, fix.retime)}
+            {fix.retime && fix.note !== "count" && <span className="text-muted/60"> · Esc to stop</span>}
+          </span>
+        ) : karaoke && leadCaption && (
           <span className="rounded-full border border-border/10 bg-surface-2/90 px-2.5 py-1 text-[11px] leading-none text-muted [animation:caption-in_140ms_var(--ease-out-tk)_both]">
             {leadCaption}
           </span>

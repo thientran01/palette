@@ -292,7 +292,7 @@ fn redecode(
             title: job.file.title,
             album: job.file.album,
             duration_ms: job.file.duration_ms,
-            words,
+            words: super::fixes::apply(root, &job.key, Some(&job.synced), words),
         },
     );
     Ok(())

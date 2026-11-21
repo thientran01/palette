@@ -49,6 +49,21 @@ pub struct Word {
     /// Held notes only: the singer's pitch and loudness (voice.rs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<crate::voice::VoiceTrack>,
+    /// Timed by the listener's hand, never by the aligner
+    /// (karaoke/fixes.rs). Only ever set on words as they're read for
+    /// display; a saved sync never carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<Fix>,
+}
+
+/// How the listener fixed a line by hand.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Fix {
+    /// Its words tapped in as they were sung.
+    Timed,
+    /// Lit whole on its stamp: one word holding the line's text.
+    Plain,
 }
 
 /// Sample-index → track-position map for one recording: a least-squares

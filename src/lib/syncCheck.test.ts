@@ -20,6 +20,8 @@ describe("sync check", () => {
       .toBe("A second listen on isolated vocals fixed 3 of 3 lines it doubted.");
     expect(checkSummary(check(0.9, { unsure: 1 }))).toBe("1 line may be off.");
     expect(checkSummary(check(0.99))).toBe("Every line passed the check.");
+    expect(checkSummary(check(0.99, { hand: 2 }))).toBe("Every line passed the check. You fixed 2 lines by hand.");
+    expect(checkSummary(check(0.9, { unsure: 1, hand: 1 }))).toBe("1 line may be off. You fixed 1 line by hand.");
   });
 
   it("says when a sync was learned in days, then as a date", () => {

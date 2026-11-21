@@ -1,5 +1,6 @@
 //! Local word-karaoke store, capture, and align.
 
+pub(crate) mod fixes;
 mod redecode;
 pub(crate) mod research;
 
@@ -498,7 +499,11 @@ pub fn load(
     synced: Option<&str>,
 ) -> Vec<Word> {
     let key = lyrics::key_for_ms(artist, title, album, duration_ms);
-    load_cached(dir, &key, synced, crate::vocal_preview::enabled())
+    let words = load_cached(dir, &key, synced, crate::vocal_preview::enabled());
+    match dir.parent() {
+        Some(root) => fixes::apply(root, &key, synced, words),
+        None => words,
+    }
 }
 
 fn load_cached(dir: &Path, key: &str, synced: Option<&str>, preview_enabled: bool) -> Vec<Word> {
@@ -2200,7 +2205,7 @@ fn commit_recording(
         title: rec.title,
         album: rec.album,
         duration_ms: rec.duration_ms,
-        words,
+        words: fixes::apply(root, &rec.key, Some(&synced), words),
     });
 }
 
