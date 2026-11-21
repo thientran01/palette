@@ -3620,7 +3620,7 @@ dependencies = [
 
 [[package]]
 name = "pulse"
-version = "1.0.14"
+version = "1.0.15"
 dependencies = [
  "base64 0.22.1",
  "cpal",

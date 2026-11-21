@@ -8,6 +8,8 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+## [1.0.15] - 2026-11-20
+
 ### Added
 
 - Fix a bad karaoke line yourself. Right-click a lyric line and choose **Tap in this line**: Palette jumps back a few seconds, and you press Space (or hold the mouse on the lyrics) as each word is sung, holding through long notes. A line too fast to tap takes one long press from its first word to its last. **Show this line plain** lights the line whole instead, and **Undo fix** brings back Palette's timing. Fixes are kept apart from the learned timing, so relearning a song never undoes them. Works in the widget and focus mode.
@@ -15,10 +17,12 @@ Installed apps self-update at launch, so most users are always on the latest rel
 ### Changed
 
 - Word karaoke no longer animates a line it's sure it got wrong. When the review is very unsure of a line's words as a whole (about 2 lines in 100), that line lights up as a whole on its timestamp, like plain lyrics, instead of filling word by word at the wrong moments. Lines it's only unsure of in places keep their word timing.
+- The pill's waveform is bigger. Its bars are 14px tall and 3px wide instead of 9px by 2px, so they read as a waveform instead of a row of dots, and they move exactly like the card, expanded and focus waveforms.
 
 ### Fixed
 
 - Word karaoke no longer wrecks a line when one timestamp in the lyrics is off. Each line is looked for only between its own timestamp and the next one, so a stamp a second or two off left part of the singing outside, and the words got crammed into the wrong spot. These lines often looked "sure", so nothing gave them a second listen and the sync percent stayed high. Palette now looks again for a line that's unsure, or jammed against the edge of where it was looked for, in the gap between the lines on either side it's sure of. It keeps the new timing only when it's more confident in it. On the 79-song test with one line in six stamped 1.5 s late, the badly wrong lines halved (396 to 201) and words more than 300 ms off fell from 16.2% to 9.0%. With on-time stamps they fell from 5.0% to 4.6%. A saved song with a jammed line relearns once on its next full listen.
+- Lyrics no longer play their entrance twice when you skip songs. A skip's album or length often arrives a moment after the title, and each late piece made Palette look the lyrics up again and slide them in a second time. The lines now stay put and update in place.
 
 ## [1.0.14] - 2026-11-10
 
