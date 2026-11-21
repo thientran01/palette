@@ -29,7 +29,11 @@ import {
 import { DUR, EASE } from "./lib/tokens";
 
 /** Four renditions of the same instrument: "sm" is the pill's inline text
- * separator (5 bars); "md" is the card and lyrics-header separator (7 bars,
+ * separator (5 bars; GROWN 2026-11-20 from 9px×2px to 14px×3px, Thien: "you
+ * can barely tell it's even moving" — the 34px-tall pill had the room. Same
+ * motion math as every other size: a per-bar range stretch was tried the
+ * same day and rejected, it made the bars jump independently of each other
+ * and read as a different instrument); "md" is the card and lyrics-header separator (7 bars,
  * scaled up — those containers are ~3× the pill's, so the separator steps
  * with them; the lyrics header is also that view's only now-playing signal);
  * "lg" is the standalone hero in the expanded big-art view (9 bars — the
@@ -53,7 +57,7 @@ import { DUR, EASE } from "./lib/tokens";
  * collapsing would re-seat everything around them. */
 type Size = "sm" | "md" | "lg" | "room";
 const GEOM = {
-  sm: { bar: "h-[9px] w-[2px]", dot: "h-[2px] w-[2px]", survivor: "h-[3px] w-[3px]", dropBlur: "blur-[1.5px]", boxH: "h-[11px]", aliveW: "w-[18px]", restW: "w-[5px]" },
+  sm: { bar: "h-[14px] w-[3px]", dot: "h-[2px] w-[2px]", survivor: "h-[3px] w-[3px]", dropBlur: "blur-[1.5px]", boxH: "h-[16px]", aliveW: "w-[23px]", restW: "w-[5px]" },
   md: { bar: "h-[18px] w-[4px]", dot: "h-[3px] w-[3px]", survivor: "h-[4px] w-[4px]", dropBlur: "blur-[2px]", boxH: "h-[20px]", aliveW: "w-[46px]", restW: "w-[6px]" },
   lg: { bar: "h-[26px] w-[5px]", dot: "h-[5px] w-[5px]", survivor: "h-[7px] w-[7px]", dropBlur: "blur-[3px]", boxH: "h-[30px]", aliveW: "w-[85px]", restW: "w-[85px]" },
   room: { bar: "h-[100px] w-[12px]", dot: "h-[6px] w-[6px]", survivor: "h-[10px] w-[10px]", dropBlur: "blur-[4px]", boxH: "h-[120px]", aliveW: "w-[780px]", restW: "w-[780px]" },
