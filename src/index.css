@@ -190,6 +190,11 @@ html[data-opaque] {
   box-shadow: inset 0 0 0 1px rgb(var(--fg) / 0.18);
   pointer-events: none;
 }
+/* A cover flush with the shell (the card): only the inner edge gets the
+ * line, since the shell's own border already outlines the other three. */
+.art-edge-bleed:has(> img)::after {
+  box-shadow: inset -1px 0 0 rgb(var(--fg) / 0.18);
+}
 
 /* The resting pulse — the presence layer's licensed ambient element
  * (CLAUDE.md Presence clause 2): with no media session, one muted dot

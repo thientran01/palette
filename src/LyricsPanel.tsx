@@ -605,6 +605,70 @@ function placeAccentBar(
   shown.first = false;
 }
 
+/** The card's lyric slot (Thien, 2026-11-25, design "E · Edge-to-edge
+ * cover"): only the current line, under the titles. A timed line fills
+ * letter by letter through the same driver and the same --lit rule as the
+ * expanded rows, so the card and expanded read as one karaoke. Before the
+ * first line and through an instrumental break it previews the next sung
+ * line, dimmed, so the slot never sits empty mid-song. It wraps to at most
+ * two rows: the card reserves both, so a line change never moves the
+ * titles above it. No synced lyrics renders nothing (the caller drops the
+ * slot and the titles center). */
+export function CardLyricLine({
+  lines,
+  leadMs,
+  karaoke,
+}: {
+  lines: LyricLine[];
+  leadMs: number;
+  karaoke: boolean;
+}) {
+  const wordLead = useWordLead();
+  const idx = useLyricIndex(lines, leadMs, karaoke ? wordLead.leadMs : null);
+  let shown = idx;
+  if (shown < 0 || lines[shown]?.end !== undefined) {
+    shown = lines.findIndex((l, i) => i > idx && l.end === undefined && l.text.trim() !== "");
+  }
+  const upcoming = shown !== idx;
+  const line = shown >= 0 ? lines[shown] : undefined;
+  const words = karaoke && !upcoming && line?.words?.length ? line.words : undefined;
+  const rowRef = useRef<HTMLParagraphElement>(null);
+  const lead = leadMs + wordLead.leadMs;
+  useLayoutEffect(() => {
+    const el = rowRef.current;
+    if (!el || !words) return;
+    const letters = Array.from(el.querySelectorAll<HTMLElement>("[data-word]"), (w) =>
+      Array.from(w.querySelectorAll<HTMLElement>("[data-letter]"), (l) => l.style));
+    // Hidden windows still get full-rate rAF (lib/windowShown.ts).
+    return driveWordRows([{ index: shown, words, style: el.style, el, letters }], shown, lead, whileShown(posClock), {
+      request: (cb) => requestAnimationFrame(cb),
+      cancel: (id) => cancelAnimationFrame(id),
+    });
+  }, [words, shown, lead]);
+  if (!line) return null;
+  return (
+    <p
+      ref={rowRef}
+      // Remount per line: the incoming line fades in on its own (an event,
+      // not ambient motion), and the driver binds the new letter spans.
+      // Timed lines are medium in both states (like the expanded rows), so
+      // the preview never rewraps when it starts to sing.
+      key={shown}
+      className={`lyric-row line-clamp-2 whitespace-pre-wrap text-[15px] leading-5 [animation:caption-in_140ms_var(--ease-out-tk)_both] ${
+        keepHangulWords(line.text) ? "break-keep" : ""
+      } ${karaoke && line.words?.length ? "font-medium" : ""} ${upcoming ? "text-muted/60" : words ? "text-muted/80" : "text-fg"}`}
+    >
+      {words
+        ? words.map((w, wi) => (
+            <span key={`${w.t}-${wi}`} data-word className="inline-block">
+              {letterSegments(w.text).map((seg, si) => (seg.letter ? <span key={si} data-letter>{seg.text}</span> : seg.text))}
+            </span>
+          ))
+        : line.text}
+    </p>
+  );
+}
+
 /** One lyric line. Memoized so a line advance reconciles the two rows whose
  * `current` flipped instead of the whole list; clicks are delegated to the
  * list container via data-line, so rows carry no per-render closures. */

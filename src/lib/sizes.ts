@@ -18,12 +18,12 @@ export type Mode = "pill" | "card" | "expanded";
  * click-through hit rect (dock.rs). */
 export const MODE_SIZES: Record<Mode, [number, number]> = {
   pill: [300, 48],
-  // anchored-cluster handoff: 52px art row, full-width progress, bottom
-  // transport. 138 = SHELL_CHROME 14 + the card column's sum: pt-3 12 +
-  // art 52 + gap 6 + progress 16 + gap 6 + h-7 transport 28 + pb-1 4 = 124.
-  // Re-derive when the column changes — 132 drifted 6px short after #46's
-  // pb-1 and #51's shell chrome, and the art overflowed its row for a week.
-  card: [380, 138],
+  // The mini lyrics view (Thien, 2026-11-25, design "E"): the cover bleeds
+  // to the shell's left edge at the content height, titles + one lyric line
+  // beside it, the pill's accent hairline as progress, controls on hover.
+  // 108 = SHELL_CHROME 14 + the 94px content row (= the cover's side). The
+  // lyric slot reserves two 20px rows: title 20 + meta 16 + gap 8 + 40 = 84.
+  card: [380, 108],
   expanded: [380, 440], // lyrics home; big-art fallback gets breathing room
 };
 
