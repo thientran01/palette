@@ -351,6 +351,12 @@ const SHELL_GUTTER_PX = 12;
  * side. Change the seat inset or border, change this. */
 const SHELL_CHROME_PX = 14;
 
+/** The card's cover: inset this far from the shell's top, left and bottom
+ * inner edges, so its side is the content height less two insets. */
+const CARD_ART_INSET = 8;
+const CARD_ART_PX = MODE_SIZES.card[1] - SHELL_CHROME_PX - 2 * CARD_ART_INSET;
+const CARD_ART_RADIUS = 6;
+
 /** Trailing debounce for the popover ResizeObserver's hit-rect updates: the
  * popover's max-height rides the 200ms mode glide, so a glide at cap fires
  * the observer per frame — the hit rect only has to be right once the
@@ -766,19 +772,7 @@ const ART_XFADE_MS = DUR[1];
  * art never moves. Covers track-change swaps, the pref=art view, and
  * media.rs's stale-art rev-bump heals. Timer, not transitionend — the
  * outgoing top layer unmounts, so it can't report its own end. */
-function Art({
-  url: rawUrl,
-  size,
-  radiusPx,
-  bleed = false,
-}: {
-  url: string | null;
-  size: number;
-  radiusPx: number;
-  /** Flush against the shell's edges (the card): the shell border already
-   * draws the outer sides, so the hairline is only the inner, right edge. */
-  bleed?: boolean;
-}) {
+function Art({ url: rawUrl, size, radiusPx }: { url: string | null; size: number; radiusPx: number }) {
   // Resampled to this box's device pixels (lib/crispArt) — the crossfade
   // below runs on the crisp copy, so a track change fades once.
   const url = useCrispArt(rawUrl, size);
@@ -797,7 +791,7 @@ function Art({
   const incoming = url !== null && url !== settled ? url : null;
   return (
     <div
-      className={`${bleed ? "art-edge art-edge-bleed" : "art-edge"} grid shrink-0 place-items-center overflow-hidden bg-surface-2 text-muted`}
+      className="art-edge grid shrink-0 place-items-center overflow-hidden bg-surface-2 text-muted"
       style={{ width: size, height: size, borderRadius: radiusPx }}
     >
       {settled ? (
@@ -2253,22 +2247,24 @@ function App() {
             <Hairline np={np} />
           </>
         ) : mode === "card" ? (
-          /* The mini lyrics view (Thien, 2026-11-25, design "E · Edge-to-edge
-             cover", replacing the 2026-07-08 anchored-cluster card he found
-             too big to keep up and too plain to want up): the cover bleeds to
-             the shell's left edge at the full content height, the titles and
-             the current lyric line sit beside it, and progress is the pill's
-             accent hairline (no scrub bar, no times). At rest it is pure
+          /* The mini lyrics view (Thien, 2026-11-25, design "E", replacing the
+             2026-07-08 anchored-cluster card he found too big to keep up and
+             too plain to want up): a big cover, the titles and the current
+             lyric line beside it, and the pill's accent hairline as progress
+             (no scrub bar, no times). The cover first bled to the shell's
+             edges; Thien wanted it inset ("it needs some slight padding"), so
+             it sits CARD_ART_INSET in on three sides. At rest it is pure
              glance. On widget hover the cover dims under prev / play-pause /
              next, and the queue joins the corner cluster on its 4px rhythm
              (the card's bottom-left is the cover now, so QueueSeat skips it,
              same reason as the pill). All reveals cross at 140ms EASE.out,
              opacity only, and pin open on keyboard focus. */
           <>
-            <div className="absolute inset-y-0 left-0">
-              <Art url={shownArt} size={MODE_SIZES.card[1] - SHELL_CHROME_PX} radiusPx={0} bleed />
+            <div className="absolute" style={{ left: CARD_ART_INSET, top: CARD_ART_INSET }}>
+              <Art url={shownArt} size={CARD_ART_PX} radiusPx={CARD_ART_RADIUS} />
               <div
                 className="pointer-events-none absolute inset-0 flex items-center justify-center bg-surface/60 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100"
+                style={{ borderRadius: CARD_ART_RADIUS }}
                 // Same swallow as the pill scrim: a press between buttons
                 // must not fall through to the window drag.
                 onMouseDown={(e) => e.stopPropagation()}
@@ -2279,9 +2275,15 @@ function App() {
               </div>
             </div>
             <MarqueeGroup>
+              {/* With lyrics the titles sit on the cover's top line and the
+                  lyric slot takes the rest; without, the titles center. */}
               <div
-                className="absolute inset-y-0 right-0 flex min-w-0 flex-col justify-center pl-3.5 pr-3"
-                style={{ left: MODE_SIZES.card[1] - SHELL_CHROME_PX }}
+                className={`absolute right-0 flex min-w-0 flex-col pl-3 pr-3 ${cardLyricsLive ? "" : "justify-center"}`}
+                style={{
+                  left: CARD_ART_INSET + CARD_ART_PX,
+                  top: cardLyricsLive ? CARD_ART_INSET - 2 : 0,
+                  bottom: 0,
+                }}
               >
                 {/* Title row: same flex grammar as before — the title
                     truncates in its own box and the md waveform never
@@ -2320,11 +2322,11 @@ function App() {
                   </p>
                   {remoteDevice && <DeviceTag device={remoteDevice} playing={playing} />}
                 </div>
-                {/* Two reserved rows, so a short line and a wrapped one leave
-                    the titles in the same place. No synced lyrics drops the
-                    slot and the titles center on the cover. */}
+                {/* The line centers in the space between the artist line and
+                    the bottom edge (Thien, 2026-11-25), one row or two; the
+                    titles above never move. No synced lyrics drops the slot. */}
                 {cardLyricsLive && (
-                  <div className="mt-2 h-10">
+                  <div className="flex min-h-0 flex-1 items-center">
                     <CardLyricLine lines={lyrics.lines} leadMs={VOCAL_LEAD_MS[np.player]} karaoke={karaoke} />
                   </div>
                 )}

@@ -611,9 +611,9 @@ function placeAccentBar(
  * expanded rows, so the card and expanded read as one karaoke. Before the
  * first line and through an instrumental break it previews the next sung
  * line, dimmed, so the slot never sits empty mid-song. It wraps to at most
- * two rows: the card reserves both, so a line change never moves the
- * titles above it. No synced lyrics renders nothing (the caller drops the
- * slot and the titles center). */
+ * two rows and centers in the card's lyric slot, which has room for both,
+ * so a line change never moves the titles above it. No synced lyrics
+ * renders nothing (the caller drops the slot and the titles center). */
 export function CardLyricLine({
   lines,
   leadMs,
@@ -654,7 +654,7 @@ export function CardLyricLine({
       // Timed lines are medium in both states (like the expanded rows), so
       // the preview never rewraps when it starts to sing.
       key={shown}
-      className={`lyric-row line-clamp-2 whitespace-pre-wrap text-[15px] leading-5 [animation:caption-in_140ms_var(--ease-out-tk)_both] ${
+      className={`lyric-row line-clamp-2 w-full whitespace-pre-wrap text-[15px] leading-5 [animation:caption-in_140ms_var(--ease-out-tk)_both] ${
         keepHangulWords(line.text) ? "break-keep" : ""
       } ${karaoke && line.words?.length ? "font-medium" : ""} ${upcoming ? "text-muted/60" : words ? "text-muted/80" : "text-fg"}`}
     >

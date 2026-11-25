@@ -18,11 +18,11 @@ export type Mode = "pill" | "card" | "expanded";
  * click-through hit rect (dock.rs). */
 export const MODE_SIZES: Record<Mode, [number, number]> = {
   pill: [300, 48],
-  // The mini lyrics view (Thien, 2026-11-25, design "E"): the cover bleeds
-  // to the shell's left edge at the content height, titles + one lyric line
-  // beside it, the pill's accent hairline as progress, controls on hover.
-  // 108 = SHELL_CHROME 14 + the 94px content row (= the cover's side). The
-  // lyric slot reserves two 20px rows: title 20 + meta 16 + gap 8 + 40 = 84.
+  // The mini lyrics view (Thien, 2026-11-25, design "E"): a 78px cover
+  // inset 8px, titles + the current lyric line beside it, the pill's accent
+  // hairline as progress, controls on hover. 108 = SHELL_CHROME 14 + the
+  // 94px content row (cover 78 + 2 x 8 inset). Beside it: 6 + title 20 +
+  // meta 16, then the lyric slot's 52px, which fits a two-row line.
   card: [380, 108],
   expanded: [380, 440], // lyrics home; big-art fallback gets breathing room
 };

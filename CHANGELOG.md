@@ -11,7 +11,7 @@ Installed apps self-update at launch, so most users are always on the latest rel
 ### Changed
 
 - The pill no longer shows the song's time. The accent line along its bottom already shows how far in you are, so the title and artist get that room instead and get cut off less. The expanded size still shows the time.
-- The card is now a mini lyrics view, and shorter. The album cover runs to the card's left edge, the current lyric line sits under the title and fills as it's sung, and the accent line along the bottom shows progress like the pill. Playback controls show on the cover when you hover, and the queue sits with the size buttons.
+- The card is now a mini lyrics view, and shorter. The album cover is bigger, the current lyric line sits under the title and fills as it's sung, and the accent line along the bottom shows progress like the pill. Playback controls show on the cover when you hover, and the queue sits with the size buttons.
 
 ## [1.0.15] - 2026-11-20
 
