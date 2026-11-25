@@ -2282,7 +2282,10 @@ function App() {
                 style={{
                   left: CARD_ART_INSET + CARD_ART_PX,
                   top: cardLyricsLive ? CARD_ART_INSET - 2 : 0,
-                  bottom: 0,
+                  // The slot stops on the cover's bottom line, clear of the
+                  // hairline: centered on the raw edge the line sat visibly
+                  // low (Thien, 2026-11-25).
+                  bottom: cardLyricsLive ? CARD_ART_INSET : 0,
                 }}
               >
                 {/* Title row: same flex grammar as before — the title
@@ -2323,7 +2326,7 @@ function App() {
                   {remoteDevice && <DeviceTag device={remoteDevice} playing={playing} />}
                 </div>
                 {/* The line centers in the space between the artist line and
-                    the bottom edge (Thien, 2026-11-25), one row or two; the
+                    the cover's bottom line (Thien, 2026-11-25), one row or two; the
                     titles above never move. No synced lyrics drops the slot. */}
                 {cardLyricsLive && (
                   <div className="flex min-h-0 flex-1 items-center">

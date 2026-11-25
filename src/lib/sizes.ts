@@ -22,7 +22,8 @@ export const MODE_SIZES: Record<Mode, [number, number]> = {
   // inset 8px, titles + the current lyric line beside it, the pill's accent
   // hairline as progress, controls on hover. 108 = SHELL_CHROME 14 + the
   // 94px content row (cover 78 + 2 x 8 inset). Beside it: 6 + title 20 +
-  // meta 16, then the lyric slot's 52px, which fits a two-row line.
+  // meta 16, then the lyric slot's 44px down to the cover's bottom line,
+  // which fits a two-row line.
   card: [380, 108],
   expanded: [380, 440], // lyrics home; big-art fallback gets breathing room
 };
