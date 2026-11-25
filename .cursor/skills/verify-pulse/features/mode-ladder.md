@@ -7,7 +7,7 @@ The widget steps pill → card → expanded from one anchored bracket cluster. E
 - `mode-card` is the baseline garment: art, title, artist, seekable transport.
 - `mode-expand-lyrics` grows the shell into the lyrics home.
 - `mode-collapse-card` returns expanded to card without losing the track.
-- `mode-collapse-pill` shrinks card to the glance pill (art · title · artist · time).
+- `mode-collapse-pill` shrinks card to the glance pill (art · title · artist; no time, the bottom hairline shows progress).
 - `mode-expand-card` grows the pill back to card.
 - `mode-nothing` shows the resting empty state when nothing is playing.
 - `mode-focus-mock` opens the focus room at `/?window=focus`.

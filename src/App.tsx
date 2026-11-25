@@ -752,31 +752,6 @@ function Hairline({ np }: { np: NowPlaying }) {
   );
 }
 
-/** The pill's resting elapsed label — rAF-driven exactly like the card's
- * (position never enters React state; the Waveform pattern). Fades out
- * opacity-only on widget hover (ANIMATIONS.md §3) so the title/artist line
- * never reflows as the controls take the corner. aria-hidden: the pill's
- * Hairline progressbar already announces position, so the visible label is a
- * glance-only duplicate. Also fades on keyboard focus (has-[:focus-visible],
- * matching the controls' reveal signal exactly) — a keyboard user tabbing to
- * play/pause must not see it fight the still-visible time label, and a
- * mouse click's residual focus must not keep it hidden. */
-function PillTime({ np }: { np: NowPlaying }) {
-  const timeRef = useRef<HTMLSpanElement>(null);
-  // Label only: the bar/fill refs stay unattached (useProgressDom null-guards
-  // them), so this drives no second progress surface.
-  const bar = useRef<HTMLDivElement>(null);
-  const fill = useRef<HTMLDivElement>(null);
-  useProgressDom(np.duration_ms, np.status === "playing", bar, fill, timeRef);
-  return (
-    <span
-      ref={timeRef}
-      aria-hidden
-      className="shrink-0 text-[11px] leading-4 tabular-nums text-muted transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:opacity-0 group-has-[:focus-visible]/widget:opacity-0"
-    />
-  );
-}
-
 /** How long an incoming cover fades in over the settled one — DUR[1], one
  * rung with the track slide (2026-07-24) so the chrome-seat art can't be
  * the slow member of a swap everything else finishes in 90ms. An identity
@@ -2154,12 +2129,14 @@ function App() {
             }
           />
         ) : mode === "pill" ? (
-          /* "5a — time at rest" (ANIMATIONS.md §3): at rest the pill is pure
-             glance — art · title · artist · elapsed time, no buttons. On widget
-             hover the time fades out (keeping its flex slot so the title/artist
-             line never reflows) and a right-edge scrim carrying play/pause
-             fades in; the anchored bracket cluster joins from the app root. All
-             three cross at 140ms EASE.out, opacity only. */
+          /* At rest the pill is pure glance — art · title · artist, no
+             buttons and no time readout: the accent hairline along the
+             bottom already shows progress, so an elapsed label was a
+             duplicate that cost the title/artist its width (Thien,
+             2026-11-24; it used to fade out on hover, "5a — time at rest").
+             On widget hover a right-edge scrim carrying play/pause fades in
+             over the artist's tail; the anchored bracket cluster joins from
+             the app root. Both cross at 140ms EASE.out, opacity only. */
           <>
             {/* pl-1.5, not px-3: the art gets ~5px of air vertically, so a
                 12px left inset read as stranded (Thien, 2026-07-10). 6px
@@ -2215,7 +2192,6 @@ function App() {
                   </TrackFadeSpan>
                 </p>
               </MarqueeGroup>
-              <PillTime np={np} />
             </div>
             {/* Scrim + [queue][play/pause], revealed on hover. Absolute over
                 the row so nothing reflows; the gradient lets the artist text

@@ -8,6 +8,10 @@ Installed apps self-update at launch, so most users are always on the latest rel
 
 ## [Unreleased]
 
+### Changed
+
+- The pill no longer shows the song's time. The accent line along its bottom already shows how far in you are, so the title and artist get that room instead and get cut off less. The card and expanded sizes still show the time.
+
 ## [1.0.15] - 2026-11-20
 
 ### Added
