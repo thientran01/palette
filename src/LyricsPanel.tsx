@@ -30,6 +30,7 @@ import { isProvisionalDuration, NO_SONG_MEMORY, rememberSong, trackIdOf, type So
 import { driveWordRows, type WordDriver, type WordRow } from "./lib/wordWipeDriver";
 import { whileShown } from "./lib/windowShown";
 import { letterSegments } from "./lib/letterFill";
+import { lineSpan, panOffset } from "./lib/cardLinePan";
 import { keepHangulWords, lyricWrapSegments } from "./lib/lyricWrap";
 import {
   SETTLE_MS,
@@ -605,15 +606,16 @@ function placeAccentBar(
   shown.first = false;
 }
 
-/** The card's lyric slot (Thien, 2026-11-25, design "E · Edge-to-edge
- * cover"): only the current line, under the titles. A timed line fills
- * letter by letter through the same driver and the same --lit rule as the
- * expanded rows, so the card and expanded read as one karaoke. Before the
- * first line and through an instrumental break it previews the next sung
- * line, dimmed, so the slot never sits empty mid-song. It wraps to at most
- * two rows and centers in the card's lyric slot, which has room for both,
- * so a line change never moves the titles above it. No synced lyrics
- * renders nothing (the caller drops the slot and the titles center). */
+/** The card's lyric slot (Thien, 2026-11-25, design "E"): only the
+ * current line, under the titles. A timed line fills letter by letter
+ * through the same driver and the same --lit rule as the expanded rows, so
+ * the card and expanded read as one karaoke. Before the first line and
+ * through an instrumental break it previews the next sung line, dimmed, so
+ * the slot never sits empty mid-song. Always one row: two rows looked wrong
+ * in the small card, so a line that doesn't fit pans with the singing
+ * (lib/cardLinePan.ts), with soft edges on whichever side has more text.
+ * No synced lyrics renders nothing (the caller drops the slot and the
+ * titles center). */
 export function CardLyricLine({
   lines,
   leadMs,
@@ -631,8 +633,10 @@ export function CardLyricLine({
   }
   const upcoming = shown !== idx;
   const line = shown >= 0 ? lines[shown] : undefined;
+  const next = shown >= 0 ? lines[shown + 1] : undefined;
   const words = karaoke && !upcoming && line?.words?.length ? line.words : undefined;
   const rowRef = useRef<HTMLParagraphElement>(null);
+  const inkRef = useRef<HTMLSpanElement>(null);
   const lead = leadMs + wordLead.leadMs;
   useLayoutEffect(() => {
     const el = rowRef.current;
@@ -645,6 +649,62 @@ export function CardLyricLine({
       cancel: (id) => cancelAnimationFrame(id),
     });
   }, [words, shown, lead]);
+  // The pan: a transform on the ink, written only when the rounded px
+  // changes, and a frame loop only while a line that overflows is playing.
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    const ink = inkRef.current;
+    if (!row || !ink || !line) return;
+    const span = lineSpan(line, next);
+    const clock = whileShown(posClock);
+    let overflow = 0;
+    let last = -1;
+    let raf = 0;
+    let disposed = false;
+    const write = () => {
+      const x = upcoming ? 0 : panOffset(overflow, span, clock.now() + lead);
+      if (x === last) return;
+      last = x;
+      ink.style.transform = x ? `translateX(${-x}px)` : "";
+      const left = x > 0;
+      const right = x < overflow;
+      row.dataset.fade = left && right ? "both" : left ? "l" : right ? "r" : "";
+    };
+    const moving = () => clock.isPlaying() && overflow > 0 && !upcoming;
+    const tick = () => {
+      raf = 0;
+      if (disposed) return;
+      write();
+      if (moving()) raf = requestAnimationFrame(tick);
+    };
+    const kick = () => {
+      if (disposed) return;
+      write();
+      if (moving()) {
+        if (!raf) raf = requestAnimationFrame(tick);
+      } else if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+    };
+    const measure = () => {
+      overflow = Math.max(0, Math.ceil(ink.offsetWidth - row.clientWidth));
+      last = -1;
+      kick();
+    };
+    measure();
+    const unsubscribe = clock.subscribe(kick);
+    // Re-measure when the row resizes or the web font lands.
+    const ro = new ResizeObserver(measure);
+    ro.observe(row);
+    ro.observe(ink);
+    return () => {
+      disposed = true;
+      unsubscribe();
+      ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [line, next, shown, upcoming, lead]);
   if (!line) return null;
   return (
     <p
@@ -652,19 +712,23 @@ export function CardLyricLine({
       // Remount per line: the incoming line fades in on its own (an event,
       // not ambient motion), and the driver binds the new letter spans.
       // Timed lines are medium in both states (like the expanded rows), so
-      // the preview never rewraps when it starts to sing.
+      // the preview's width never changes when it starts to sing.
       key={shown}
-      className={`lyric-row line-clamp-2 w-full whitespace-pre-wrap text-[15px] leading-5 [animation:caption-in_140ms_var(--ease-out-tk)_both] ${
-        keepHangulWords(line.text) ? "break-keep" : ""
-      } ${karaoke && line.words?.length ? "font-medium" : ""} ${upcoming ? "text-muted/60" : words ? "text-muted/80" : "text-fg"}`}
+      className={`lyric-row card-line w-full overflow-hidden whitespace-pre text-[15px] leading-5 [animation:caption-in_140ms_var(--ease-out-tk)_both] ${
+        karaoke && line.words?.length ? "font-medium" : ""
+      } ${upcoming ? "text-muted/60" : words ? "text-muted/80" : "text-fg"}`}
     >
-      {words
-        ? words.map((w, wi) => (
-            <span key={`${w.t}-${wi}`} data-word className="inline-block">
-              {letterSegments(w.text).map((seg, si) => (seg.letter ? <span key={si} data-letter>{seg.text}</span> : seg.text))}
-            </span>
-          ))
-        : line.text}
+      {/* max-content wide, so it never wraps (the rows break between the
+          word boxes otherwise); pre keeps each word's trailing space. */}
+      <span ref={inkRef} className="inline-block w-max">
+        {words
+          ? words.map((w, wi) => (
+              <span key={`${w.t}-${wi}`} data-word className="inline-block">
+                {letterSegments(w.text).map((seg, si) => (seg.letter ? <span key={si} data-letter>{seg.text}</span> : seg.text))}
+              </span>
+            ))
+          : line.text}
+      </span>
     </p>
   );
 }

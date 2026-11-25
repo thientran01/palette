@@ -352,8 +352,11 @@ const SHELL_GUTTER_PX = 12;
 const SHELL_CHROME_PX = 14;
 
 /** The card's cover: inset this far from the shell's top, left and bottom
- * inner edges, so its side is the content height less two insets. */
-const CARD_ART_INSET = 8;
+ * inner edges, so its side is the content height less two insets. 6px, the
+ * pill's inset, keeps its 6px radius concentric with the shell's 12px
+ * corner (outer = inset + inner); 8px read as floating (Thien, 2026-11-25:
+ * "closer to the corner"). */
+const CARD_ART_INSET = 6;
 const CARD_ART_PX = MODE_SIZES.card[1] - SHELL_CHROME_PX - 2 * CARD_ART_INSET;
 const CARD_ART_RADIUS = 6;
 
@@ -2253,7 +2256,8 @@ function App() {
              lyric line beside it, and the pill's accent hairline as progress
              (no scrub bar, no times). The cover first bled to the shell's
              edges; Thien wanted it inset ("it needs some slight padding"), so
-             it sits CARD_ART_INSET in on three sides. At rest it is pure
+             it sits CARD_ART_INSET in on three sides. The lyric is one row
+             that pans when it doesn't fit (CardLyricLine). At rest it is pure
              glance. On widget hover the cover dims under prev / play-pause /
              next, and the queue joins the corner cluster on its 4px rhythm
              (the card's bottom-left is the cover now, so QueueSeat skips it,
@@ -2326,8 +2330,8 @@ function App() {
                   {remoteDevice && <DeviceTag device={remoteDevice} playing={playing} />}
                 </div>
                 {/* The line centers in the space between the artist line and
-                    the cover's bottom line (Thien, 2026-11-25), one row or two; the
-                    titles above never move. No synced lyrics drops the slot. */}
+                    the cover's bottom line (Thien, 2026-11-25). No synced
+                    lyrics drops the slot. */}
                 {cardLyricsLive && (
                   <div className="flex min-h-0 flex-1 items-center">
                     <CardLyricLine lines={lyrics.lines} leadMs={VOCAL_LEAD_MS[np.player]} karaoke={karaoke} />
