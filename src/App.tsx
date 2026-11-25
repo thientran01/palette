@@ -28,8 +28,9 @@ import { IntroBubble } from "./IntroBubble";
 import { WidgetMenu, WIDGET_MENU_W, WIDGET_MENU_H, LINE_ITEMS_H, type LineTarget } from "./WidgetMenu";
 import { hasWordSync } from "./lib/lineFix";
 import { VOCAL_LEAD_MS } from "./lib/lrc";
-import { PlayPauseButton, ProgressBar, Transport, useProgressDom } from "./Transport";
+import { PlayPauseButton, ProgressBar, SkipButton, Transport, useProgressDom } from "./Transport";
 import {
+  CardLyricLine,
   LyricsPanel,
   lyricsKeyOf,
   lyricsVerdictOf,
@@ -349,6 +350,15 @@ const SHELL_GUTTER_PX = 12;
  * gutter per side (SHELL_SEAT's 1.5 inset) + the shell's 1px border per
  * side. Change the seat inset or border, change this. */
 const SHELL_CHROME_PX = 14;
+
+/** The card's cover: inset this far from the shell's top, left and bottom
+ * inner edges, so its side is the content height less two insets. 6px, the
+ * pill's inset, keeps its 6px radius concentric with the shell's 12px
+ * corner (outer = inset + inner); 8px read as floating (Thien, 2026-11-25:
+ * "closer to the corner"). */
+const CARD_ART_INSET = 6;
+const CARD_ART_PX = MODE_SIZES.card[1] - SHELL_CHROME_PX - 2 * CARD_ART_INSET;
+const CARD_ART_RADIUS = 6;
 
 /** Trailing debounce for the popover ResizeObserver's hit-rect updates: the
  * popover's max-height rides the 200ms mode glide, so a glide at cap fires
@@ -1578,6 +1588,9 @@ function App() {
   useHistoryThumb(np?.art_id ?? null);
   const lyrics = useLyrics(np);
   const karaoke = useKaraokePreference();
+  // The card's lyric slot: the current track's synced lines only (the same
+  // key guard as the expanded view, so a skip never sings the old song).
+  const cardLyricsLive = lyrics.status === "synced" && lyrics.key === lyricsKeyOf(np);
   // Resolved global-hotkey table (seeded below), so onboarding surfaces render
   // the LIVE Search / show-hide chords rather than a hardcoded default.
   const [hotkeys, setHotkeys] = useState<HotkeyInfo[]>([]);
@@ -2237,80 +2250,110 @@ function App() {
             <Hairline np={np} />
           </>
         ) : mode === "card" ? (
-          /* Anchored-cluster handoff (2026-07-08, supersedes Figma 874:299):
-             art+titles fill the top, then full-width progress, then the
-             transport as the very-bottom row — centered, sharing its band
-             with the corner cluster. pb-1 (+ the shell's 1px border) seats
-             the h-7 transport row's center on the 25px control centerline
-             (see ModeCluster), so the cluster and transport hold still
-             across every mode. */
-          <div className="flex h-full flex-col gap-1.5 px-3 pb-1 pt-3">
-            <div className="flex min-h-0 flex-1 items-center gap-3">
-              <Art url={shownArt} size={52} radiusPx={8} />
-              <MarqueeGroup>
-                <div className="min-w-0 flex-1">
-                  {/* The living separator rides the TITLE here, trailing (rest =
-                      nothing, bars only while playing): at md — the size rung
-                      steps with the container (pill sm → card md → expanded md
-                      header / lg hero) — it overpowered the 12px artist·album
-                      line as a separator, so that line keeps a static dot and
-                      the waveform sits where the card has presence to spare
-                      (Thien, 2026-07-10). One living instance per view.
-                      FLEX row, not inline flow, same as the lyrics header: the
-                      title truncates in its own box, and items-center seats the
-                      capsules on the line box's center — inline align-middle
-                      hangs an md box ~5px under the baseline, visibly low
-                      against a cap-height bold title. ml-1 over the waveform's
-                      own mx-1.5 = the 10px gap. */}
-                  <div className="flex min-w-0 items-center">
-                    {/* One track-change grammar (2026-07-23): the card's titles
-                        join the directional slide — the waveform beside them
-                        never moves (its announcement is the pill's beat). */}
-                    <p className="min-w-0 text-[15px] font-medium text-fg">
-                      <TrackFadeSpan
-                        key={`ct:${slideEpoch}`}
-                        k={trackIdOf(np)}
-                        suppress={announceSuppressed}
-                        dx={trackDir * SLIDE_PX.card}
-                        className="block min-w-0"
-                      >
-                        <Marquee>{np.title}</Marquee>
-                      </TrackFadeSpan>
-                    </p>
-                    <span className="wave-seat ml-1 flex shrink-0 items-center">
-                      <Waveform size="md" trailing playing={np.status === "playing"} />
-                    </span>
-                  </div>
-                  {/* The device tag rides the metadata line, icon-only (name in
-                      the tooltip) — the fixed card has no room for a third line.
-                      Only when the audio is on a non-PC device (remoteDevice),
-                      so it explains the waveform sitting on its resting dot. */}
-                  <div className="flex min-w-0 items-center gap-1">
-                    <p className="min-w-0 flex-1 text-xs leading-4 text-muted">
-                      <TrackFadeSpan
-                        key={`ca:${slideEpoch}`}
-                        k={trackIdOf(np)}
-                        suppress={announceSuppressed}
-                        dx={trackDir * SLIDE_PX.card}
-                        className="block min-w-0"
-                      >
-                        <Marquee>
-                          {np.artist}
-                          {np.album && <SeparatorDot />}
-                          {np.album}
-                        </Marquee>
-                      </TrackFadeSpan>
-                    </p>
-                    {remoteDevice && <DeviceTag device={remoteDevice} playing={playing} />}
-                  </div>
+          /* The mini lyrics view (Thien, 2026-11-25, design "E", replacing the
+             2026-07-08 anchored-cluster card he found too big to keep up and
+             too plain to want up): a big cover, the titles and the current
+             lyric line beside it, and the pill's accent hairline as progress
+             (no scrub bar, no times). The cover first bled to the shell's
+             edges; Thien wanted it inset ("it needs some slight padding"), so
+             it sits CARD_ART_INSET in on three sides. The lyric is one row
+             that pans when it doesn't fit (CardLyricLine). At rest it is pure
+             glance. On widget hover the cover dims under prev / play-pause /
+             next, and the queue joins the corner cluster on its 4px rhythm
+             (the card's bottom-left is the cover now, so QueueSeat skips it,
+             same reason as the pill). All reveals cross at 140ms EASE.out,
+             opacity only, and pin open on keyboard focus. */
+          <>
+            <div className="absolute" style={{ left: CARD_ART_INSET, top: CARD_ART_INSET }}>
+              <Art url={shownArt} size={CARD_ART_PX} radiusPx={CARD_ART_RADIUS} />
+              <div
+                className="pointer-events-none absolute inset-0 flex items-center justify-center bg-surface/60 opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100"
+                style={{ borderRadius: CARD_ART_RADIUS }}
+                // Same swallow as the pill scrim: a press between buttons
+                // must not fall through to the window drag.
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <SkipButton size="xs" dir={-1} />
+                <PlayPauseButton size="sm" playing={playing} />
+                <SkipButton size="xs" dir={1} />
+              </div>
+            </div>
+            <MarqueeGroup>
+              {/* With lyrics the titles sit on the cover's top line and the
+                  lyric slot takes the rest; without, the titles center. */}
+              <div
+                className={`absolute right-0 flex min-w-0 flex-col pl-3 pr-3 ${cardLyricsLive ? "" : "justify-center"}`}
+                style={{
+                  left: CARD_ART_INSET + CARD_ART_PX,
+                  top: cardLyricsLive ? CARD_ART_INSET - 2 : 0,
+                  // The slot stops on the cover's bottom line, clear of the
+                  // hairline: centered on the raw edge the line sat visibly
+                  // low (Thien, 2026-11-25).
+                  bottom: cardLyricsLive ? CARD_ART_INSET : 0,
+                }}
+              >
+                {/* Title row: same flex grammar as before — the title
+                    truncates in its own box and the md waveform never
+                    shrinks (see the expanded header). */}
+                <div className="flex min-w-0 items-center">
+                  <p className="min-w-0 text-[15px] font-medium text-fg">
+                    <TrackFadeSpan
+                      key={`ct:${slideEpoch}`}
+                      k={trackIdOf(np)}
+                      suppress={announceSuppressed}
+                      dx={trackDir * SLIDE_PX.card}
+                      className="block min-w-0"
+                    >
+                      <Marquee>{np.title}</Marquee>
+                    </TrackFadeSpan>
+                  </p>
+                  <span className="wave-seat ml-1 flex shrink-0 items-center">
+                    <Waveform size="md" trailing playing={np.status === "playing"} />
+                  </span>
                 </div>
-              </MarqueeGroup>
+                <div className="flex min-w-0 items-center gap-1">
+                  <p className="min-w-0 flex-1 text-xs leading-4 text-muted">
+                    <TrackFadeSpan
+                      key={`ca:${slideEpoch}`}
+                      k={trackIdOf(np)}
+                      suppress={announceSuppressed}
+                      dx={trackDir * SLIDE_PX.card}
+                      className="block min-w-0"
+                    >
+                      <Marquee>
+                        {np.artist}
+                        {np.album && <SeparatorDot />}
+                        {np.album}
+                      </Marquee>
+                    </TrackFadeSpan>
+                  </p>
+                  {remoteDevice && <DeviceTag device={remoteDevice} playing={playing} />}
+                </div>
+                {/* The line centers in the space between the artist line and
+                    the cover's bottom line (Thien, 2026-11-25). No synced
+                    lyrics drops the slot. */}
+                {cardLyricsLive && (
+                  <div className="flex min-h-0 flex-1 items-center">
+                    <CardLyricLine lines={lyrics.lines} leadMs={VOCAL_LEAD_MS[np.player]} karaoke={karaoke} />
+                  </div>
+                )}
+              </div>
+            </MarqueeGroup>
+            {/* Queue, revealed beside the corner cluster: it ends 71px from
+                the right edge, 4px before the cluster's reach (7 + 28 + 4 +
+                28 = 67), so the three read as one group. The bottom-band
+                scrim lets the lyric's tail fade under them. */}
+            <div
+              className={`pointer-events-none absolute bottom-0.5 right-0 flex h-9 w-[150px] items-end justify-end pb-0.5 pr-[71px] opacity-0 transition-opacity duration-2 ease-out-tk group-data-[hot]/widget:pointer-events-auto group-data-[hot]/widget:opacity-100 group-has-[:focus-visible]/widget:pointer-events-auto group-has-[:focus-visible]/widget:opacity-100 ${
+                queueOpen ? "pointer-events-auto opacity-100" : ""
+              }`}
+              style={{ background: "linear-gradient(90deg, transparent, rgb(var(--surface) / 0.96) 30%)" }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <QueueButton open={queueOpen} onToggle={() => setQueueOpen((o) => !o)} />
             </div>
-            <ProgressBar np={np} />
-            <div className="flex h-7 items-center justify-center">
-              <Transport np={np} seekable={seekable} playing={playing} compact />
-            </div>
-          </div>
+            <Hairline np={np} />
+          </>
         ) : (
           <ExpandedView
             np={np}
@@ -2340,7 +2383,9 @@ function App() {
       {/* Rendered with nothing playing too — the mode ladder and the queue
           stay reachable in silence (Thien, 2026-10-05). The idle expanded
           view shows the queue as its body, so it has no toggle to offer. */}
-      {(mode === "card" || (mode === "expanded" && !nothing)) && (
+      {/* The playing card's queue rides its hover reveal instead (the
+          bottom-left corner is the cover). */}
+      {((mode === "card" && nothing) || (mode === "expanded" && !nothing)) && (
         <QueueSeat queueOpen={queueOpen} onToggle={() => setQueueOpen((o) => !o)} />
       )}
       <ModeCluster
